@@ -168,27 +168,55 @@ Every instruction word is 16 bits wide and executes in a single cycle plus an op
 ## 5. Protocol Capabilities Matrix
 
 ```mermaid
-mindmap
-  root((OmniBus Protocols))
-    Standard Baseline
-      UART (300 to 25 Mbps, RS232/485)
-      SPI (Modes 0, 1, 2, 3 up to 25 MHz)
-      I2C (Standard, Fast, Fast-Mode+, SMBus)
-    Debugging & Test
-      JTAG TAP Controller (State Sequencer)
-      ARM SWD (Single-Wire Debug)
-      1-Wire (Dallas DS18B20, iButton)
-    High-Speed & Industrial
-      USB 1.1 Low-Speed (1.5 Mbps) & Full-Speed (12 Mbps)
-      CAN Bus 2.0A/B (125k, 250k, 500k, 1 Mbps)
-      10BASE-T Ethernet (Manchester 10 Mbps)
-    Retro & Creative Physical
-      Nintendo 64 / GameCube Joybus
-      NES / SNES Controller Bus
-      WS2812B NeoPixel & APA102 LED Strips
-      MIDI & DMX512 Lighting
-      Delta-Sigma 1-bit Chiptune Audio DAC
+graph LR
+    Root["OmniBus Protocol Matrix"]
+    
+    subgraph Baseline ["Standard Baseline"]
+        UART["UART (300 baud - 25 Mbps, RS-232/485)"]
+        SPI["SPI (Modes 0, 1, 2, 3 up to 25 MHz)"]
+        I2C["I2C (Standard, Fast, Fast-Mode+, SMBus)"]
+    end
+    
+    subgraph Debug ["Debugging & Test"]
+        JTAG["JTAG TAP Controller (State Sequencer)"]
+        SWD["ARM SWD (Single-Wire Debug)"]
+        ONEWIRE["1-Wire (Dallas DS18B20, iButton)"]
+    end
+    
+    subgraph Industrial ["High-Speed & Industrial"]
+        USB["USB 1.1 (Low-Speed 1.5 Mbps, Full-Speed 12 Mbps)"]
+        CAN["CAN Bus 2.0A/B (125k, 250k, 500k, 1 Mbps)"]
+        ETH["10BASE-T Ethernet (Manchester 10 Mbps)"]
+    end
+    
+    subgraph Retro ["Retro & Creative Physical"]
+        JOY["Nintendo 64 / GameCube Joybus"]
+        PAD["NES / SNES Controller Bus"]
+        LED["WS2812B NeoPixel & APA102 LED Strips"]
+        AUDIO["Delta-Sigma 1-bit Chiptune Audio DAC"]
+        STAGE["MIDI & DMX512 Lighting"]
+    end
+    
+    Root --> Baseline
+    Root --> Debug
+    Root --> Industrial
+    Root --> Retro
 ```
+
+| Category | Protocol | Physical Layer | Max Speed | Hardware Assist Used |
+| :--- | :--- | :--- | :--- | :--- |
+| **Baseline** | UART / RS-232 / RS-485 | Single-ended / Diff | 25 Mbps | Glitch filter, Sidecar delay |
+| **Baseline** | SPI (Modes 0, 1, 2, 3) | Synchronous serial | 25 MHz | Dual SERDES (OSR/ISR), Auto-CS |
+| **Baseline** | I2C / SMBus | Open-drain, 2-wire | 1 MHz | Open-drain driver, SCL wait |
+| **Debug** | JTAG (IEEE 1149.1) | 4-wire synchronous | 15 MHz | TAP state sequencer, Loop counters |
+| **Debug** | ARM SWD | Bidirectional 2-wire | 15 MHz | Turnaround cycle timing, Parity |
+| **Debug** | 1-Wire (Dallas) | Open-drain single-wire | 142 kbps | Precision timing, CRC-8 assist |
+| **Industrial** | USB 1.1 (LS / FS) | Differential (D+, D-) | 1.5 / 12 Mbps | NRZI, Bit-stuffing, CRC-5/16 |
+| **Industrial** | CAN Bus 2.0A / 2.0B | Differential | 1 Mbps | Bit-stuffing (5-bit), CRC-15 |
+| **Industrial** | 10BASE-T Ethernet | Differential | 10 Mbps | Manchester encoder/decoder |
+| **Creative** | N64 / GameCube Joybus | Open-collector 1-wire | 250 kbps | Precision sidecar delay (1us/3us) |
+| **Creative** | WS2812B NeoPixel | Single-wire NRZ | 800 kHz | Asymmetric high/low timing |
+| **Creative** | Chiptune Audio / MIDI | PDM / 31.25 kbaud | 44.1 kHz | 1-bit Delta-Sigma modulator |
 
 ---
 
