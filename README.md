@@ -1,12 +1,24 @@
-# ProtocolEmulator Module
+# ProtoMorph ASIC: Adaptive Protocol Chameleon & Fuzzing Engine
 
-This Verilog module implements...
+An open-source, general-purpose protocol emulator ASIC targeting the **Jane Street & Tiny Tapeout ASIC Competition** (IHP 130nm CMOS5L process, 6×4 tile allocation).
 
-## Features
+> 📘 **Full Architectural Specification**: See [CONCEPT.md](CONCEPT.md) for the complete outside-the-box design, 16-bit ISA, hardware protocol assists, reverse engineering profiler, and formal verification plan.
 
-* Feature1
-* Feature2
-* Feature3
+## Overview
+**ProtoMorph** goes far beyond standard protocol bit-banging. It operates in **three distinct personalities**:
+1. 🎭 **The Impersonator**: Cycle-exact protocol emulator for UART, SPI, I2C, USB 1.1, CAN, 10Mbit Ethernet, and retro gamepads.
+2. 🕵️ **The Detective**: Autonomous reverse-engineering profiler with hardware pulse-width histogramming and auto-baud / clock-phase discovery.
+3. ⚡ **The Chameleon**: Wire-speed active Man-in-the-Middle (MitM) packet mutator and cycle-accurate glitch/fault fuzzer for hardware security testing.
+
+## Key Innovations
+
+* **Deterministic 16-bit "Proto-Byte" ISA**: Single-cycle execution with hardware sidecar delays (0–31 cycles)
+* **Autonomous Stream Accelerators**: On-the-fly NRZI, Bit-Stuffing (USB/CAN), Manchester encoding, and multi-polynomial CRC (CRC-5/8/16)
+* **Wire-Speed MitM & Glitch Injection**: Dynamic rule-based byte replacement and sub-cycle fault triggering
+* **Retro & Creative Protocols**: Native support for N64/GameCube Joybus, NES/SNES gamepads, NeoPixel LED strips, and 1-bit chiptune audio DAC
+* **Multi-Target Prototyping**: Complete build and test flows for Sipeed Tang Console 60K, Nano 20K, and Nano 9K before CMOS5L tapeout
+
+
 
 ## Usage
 
