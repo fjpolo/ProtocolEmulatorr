@@ -10,6 +10,9 @@ IO_PORT "i_sys_clk"   IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=OFF;
 IO_LOC  "i_sys_rst_n" AA13; // S0 button (active-low reset)
 IO_PORT "i_sys_rst_n" IO_TYPE=LVCMOS15 PULL_MODE=UP DRIVE=OFF BANK_VCCIO=1.5;
 
+IO_LOC  "i_btn_s1_n"  AB13; // S1 button (active-low reset)
+IO_PORT "i_btn_s1_n"  IO_TYPE=LVCMOS15 PULL_MODE=UP DRIVE=OFF BANK_VCCIO=1.5;
+
 // -----------------------------------------------------------------------------
 // Upper PMOD (PMOD1): PMOD-LEDx8 (8 Status / Activity LEDs)
 // -----------------------------------------------------------------------------
