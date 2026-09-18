@@ -1,0 +1,47 @@
+// Physical Constraints for Sipeed Tang Console 60K
+// Device: GW5AT-LV60PG484AC1/I0 (GW5AT-60B)
+
+// -----------------------------------------------------------------------------
+// Clock (50 MHz Oscillator) & Reset (S0 Button)
+// -----------------------------------------------------------------------------
+IO_LOC  "i_sys_clk"   V22;
+IO_PORT "i_sys_clk"   IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=OFF;
+
+IO_LOC  "i_sys_rst_n" AA13; // S0 button (active-low reset)
+IO_PORT "i_sys_rst_n" IO_TYPE=LVCMOS15 PULL_MODE=UP DRIVE=OFF BANK_VCCIO=1.5;
+
+// -----------------------------------------------------------------------------
+// Upper PMOD (PMOD1): PMOD-LEDx8 (8 Status / Activity LEDs)
+// -----------------------------------------------------------------------------
+IO_LOC  "o_led[0]"    D21;  // PMOD1 Pin 10 (IO7)
+IO_PORT "o_led[0]"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC  "o_led[1]"    E21;  // PMOD1 Pin 4  (IO6)
+IO_PORT "o_led[1]"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC  "o_led[2]"    D22;  // PMOD1 Pin 9  (IO5)
+IO_PORT "o_led[2]"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC  "o_led[3]"    E22;  // PMOD1 Pin 3  (IO4)
+IO_PORT "o_led[3]"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC  "o_led[4]"    F20;  // PMOD1 Pin 8  (IO3)
+IO_PORT "o_led[4]"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC  "o_led[5]"    F19;  // PMOD1 Pin 2  (IO2)
+IO_PORT "o_led[5]"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC  "o_led[6]"    W20;  // PMOD1 Pin 7  (IO1)
+IO_PORT "o_led[6]"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+IO_LOC  "o_led[7]"    W19;  // PMOD1 Pin 1  (IO0)
+IO_PORT "o_led[7]"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+
+// -----------------------------------------------------------------------------
+// USB-UART to BL616 Microcontroller (Uncomment if using Manta Logic Analyzer)
+// -----------------------------------------------------------------------------
+// IO_LOC  "uart_tx"     U15;  // FPGA TX -> BL616 RX
+// IO_PORT "uart_tx"     IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+//
+// IO_LOC  "uart_rx"     V14;  // FPGA RX <- BL616 TX
+// IO_PORT "uart_rx"     IO_TYPE=LVCMOS33 PULL_MODE=UP BANK_VCCIO=3.3;

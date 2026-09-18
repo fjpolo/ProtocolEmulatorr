@@ -12,5 +12,7 @@
 **/obj_dir/
 **/sim_build/
 **/__pycache__
+**/impl/
+*.gprj.user
 
 
