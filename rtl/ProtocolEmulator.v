@@ -35,17 +35,17 @@ module ProtocolEmulator(
     initial begin
         // UART Transmitter sending 'U' (0x55 = 8'b01010101) @ 115200 baud
         // 50 MHz clock / 115200 baud = 434 cycles/bit (1 execution + 433 delay)
-        rom[0]  = 16'h30B1; // SET tx=0 [433] (Start bit, logic 0)
-        rom[1]  = 16'h32B1; // SET tx=1 [433] (Bit 0 = 1)
-        rom[2]  = 16'h30B1; // SET tx=0 [433] (Bit 1 = 0)
-        rom[3]  = 16'h32B1; // SET tx=1 [433] (Bit 2 = 1)
-        rom[4]  = 16'h30B1; // SET tx=0 [433] (Bit 3 = 0)
-        rom[5]  = 16'h32B1; // SET tx=1 [433] (Bit 4 = 1)
-        rom[6]  = 16'h30B1; // SET tx=0 [433] (Bit 5 = 0)
-        rom[7]  = 16'h32B1; // SET tx=1 [433] (Bit 6 = 1)
-        rom[8]  = 16'h30B1; // SET tx=0 [433] (Bit 7 = 0)
-        rom[9]  = 16'h32B1; // SET tx=1 [433] (Stop bit, logic 1)
-        rom[10] = 16'h00B1; // NOP      [433] (Inter-character gap)
+        rom[0]  = 16'h31B1; // SET tx=0 [433] (Start bit, logic 0)
+        rom[1]  = 16'h33B1; // SET tx=1 [433] (Bit 0 = 1)
+        rom[2]  = 16'h31B1; // SET tx=0 [433] (Bit 1 = 0)
+        rom[3]  = 16'h33B1; // SET tx=1 [433] (Bit 2 = 1)
+        rom[4]  = 16'h31B1; // SET tx=0 [433] (Bit 3 = 0)
+        rom[5]  = 16'h33B1; // SET tx=1 [433] (Bit 4 = 1)
+        rom[6]  = 16'h31B1; // SET tx=0 [433] (Bit 5 = 0)
+        rom[7]  = 16'h33B1; // SET tx=1 [433] (Bit 6 = 1)
+        rom[8]  = 16'h31B1; // SET tx=0 [433] (Bit 7 = 0)
+        rom[9]  = 16'h33B1; // SET tx=1 [433] (Stop bit, logic 1)
+        rom[10] = 16'h01B1; // NOP      [433] (Inter-character gap, idle 1)
         rom[11] = 16'h8000; // JMP 0x0        (Repeat transmission)
         rom[12] = 16'h0000;
         rom[13] = 16'h0000;

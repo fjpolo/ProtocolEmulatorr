@@ -74,7 +74,22 @@
 	//
 	// Cover
 	//
-	////////////////////////////////////////////////////     
+	////////////////////////////////////////////////////    
+
+	reg [31:0] f_clk_counter = 'b0;
+	always @(posedge i_clk) begin
+		if(!f_past_valid || !i_reset_n) begin
+			f_clk_counter <= 'b0;
+		end else begin
+			f_clk_counter <= f_clk_counter + 'd1;
+		end
+	end
+
+	always @(posedge i_clk) begin
+		if(f_past_valid && i_reset_n && (pc != $past(pc))) begin
+			cover(f_clk_counter == 'd1024);
+		end
+	end 
            
 `endif
 

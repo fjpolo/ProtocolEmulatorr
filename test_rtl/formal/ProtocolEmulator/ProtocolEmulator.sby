@@ -9,7 +9,7 @@ bound:  depth 16
 prf:    mode prove
 prf:    depth 8
 cvr:    mode cover
-cvr:    depth 64
+cvr:    depth 1030
 cvr:    append 20
 
 
