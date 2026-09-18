@@ -1,0 +1,1235 @@
+<!DOCTYPE html>
+<!-- saved from url=(0063)https://blog.janestreet.com/protocol-emulator-asic-competition/ -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  
+  <title>Jane Street Blog - Can you design a chip? Announcing the protocol emulator ASIC competition </title>
+  
+  <meta content="width=device-width, initial-scale=1, maximum-scale=1" name="viewport">
+  <link href="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/css" rel="stylesheet" type="text/css">
+  <link href="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/91c6697f-d1f8-4e5e-815e-96f5e7970857.css" rel="stylesheet" type="text/css">
+  <link rel="shortcut icon" href="https://blog.janestreet.com/static/img/lambda_logo.ico">
+  <link rel="stylesheet" href="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/main.css">
+  <link rel="stylesheet" id="switch-style" href="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/grid.css">
+  <link rel="alternate" type="application/atom+xml" title="Jane Street Blog" href="https://blog.janestreet.com/feed.xml">
+  <meta name="twitter:title" content="Can you design a chip? Announcing the protocol emulator ASIC competition">
+<meta name="twitter:url" content="https://blog.janestreet.com/protocol-emulator-asic-competition/">
+
+  <meta name="twitter:description" content="">
+
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://blog.janestreet.com/protocol-emulator-asic-competition/classic-phosphor-sweep.gif">
+
+
+<meta property="og:locale" content="en_US">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Can you design a chip? Announcing the protocol emulator ASIC competition">
+<meta property="og:description" content="">
+<meta property="og:url" content="https://blog.janestreet.com/protocol-emulator-asic-competition/">
+<meta property="og:site_name" content="Jane Street Blog">
+<meta property="og:image" content="https://blog.janestreet.com/protocol-emulator-asic-competition/classic-phosphor-sweep.gif">
+
+  
+
+
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag() {
+        dataLayer.push(arguments);
+    }
+    // set the default consent state on page load
+    if (localStorage.getItem("consentMode") === null) {
+        gtag("consent", "default", {
+            ad_storage: "denied",
+            ad_user_data: "denied",
+            ad_personalization: "denied",
+            analytics_storage: "denied",
+            personalization_storage: "denied",
+            functionality_storage: "denied",
+            security_storage: "denied"
+        });
+    } else {
+        gtag("consent", "default", JSON.parse(localStorage.getItem("consentMode")));
+    }
+</script>
+
+<!-- Google tag (gtag.js) -->
+<script async="" src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/js"></script>
+<script>
+    gtag('js', new Date());
+    gtag('config', 'G-SGY4B2FDND');
+</script>
+
+<style>[data-columns]::before{display:block;visibility:hidden;position:absolute;font-size:1px;}</style></head>
+
+
+<body>
+  <header>
+  <div class="logo-wrapper">
+    <a href="https://blog.janestreet.com/" class="logo noline">
+      <img src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/header.png" alt="Jane Street Blog logo">
+    </a>
+  </div>
+  <div class="main-menu">
+  <div class="container content">
+    <div class="wrapper">
+      <div class="left-container">
+        <a id="hamburger" href="https://blog.janestreet.com/protocol-emulator-asic-competition/#menu" class="toggle-link noline">
+          <i class="fa fa-navicon"></i>
+        </a>
+        <nav id="menu">
+          <a class="toggle-link noline"><i class="fa fa-close fa-lg"></i></a>
+          <ul class="links">
+            <li class="text-link">
+              <a href="https://blog.janestreet.com/">Home</a>
+            </li>
+            <li class="text-link">
+              <a href="https://blog.janestreet.com/archive">All Posts</a>
+            </li>
+            <li class="text-link">
+              <a href="https://blog.janestreet.com/machine-learning">Machine Learning</a>
+            </li>
+            <li class="text-link">
+              <a href="https://blog.janestreet.com/authors">Authors Index</a>
+            </li>
+            <li class="text-link">
+              <a href="http://www.janestreet.com/">Jane Street</a>
+            </li>
+            <li class="text-link mobile email-updates">
+              <a href="https://blog.janestreet.com/protocol-emulator-asic-competition/#">Subscribe to email updates</a>
+              <div id="mc-signup">
+  <form action="https://janestreet.us10.list-manage.com/subscribe/post?u=c4f6c23879b87e463fac38cd1&amp;id=7baebe4e72&amp;f_id=00c4d1e5f0" method="post" name="mc-subscribe-form" target="_blank" novalidate="">
+	    <label for="mc-email" class="active"><h3 class="title">Subscribe to Email Updates</h3></label>
+	    <input type="email" value="" name="EMAIL" id="mc-email" placeholder="Email Address" required="">
+      <div class="hidden-input" aria-hidden="true"><input type="text" name="b_c4f6c23879b87e463fac38cd1_7baebe4e72" tabindex="-1" value=""></div>
+      <input type="submit" value="Subscribe" name="subscribe" id="mc-subscribe">
+  </form>
+</div> 
+            </li>
+            <li class="text-link mobile top-posts">
+              <a href="https://blog.janestreet.com/protocol-emulator-asic-competition/#">Featured Reads</a>
+              <span>
+                <ul>
+  <li>
+    <article>
+      <a href="https://blog.janestreet.com/using-ascii-waveforms-to-test-hardware-designs/">
+        <span class="img-wrap featured-img centered">
+          <img src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/scientist_testing.jpg">
+          <div class="image-overlay">
+            <div class="flexbox">
+              <div class="text-overlay">
+                <hr class="separator">
+                <span class="read-more">Read more</span>
+                <hr class="separator">
+              </div>
+            </div>
+          </div>
+        </span>
+        <p>Using ASCII waveforms to test hardware designs</p>
+      </a>
+    </article>
+  </li>
+  <li>
+    <article>
+      <a href="https://blog.janestreet.com/finding-memory-leaks-with-memtrace/">
+        <span class="img-wrap featured-img centered">
+          <img src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/memory-leak.jpg">
+          <div class="image-overlay">
+            <div class="flexbox">
+              <div class="text-overlay">
+                <hr class="separator">
+                <span class="read-more">Read more</span>
+                <hr class="separator">
+              </div>
+            </div>
+          </div>
+        </span>
+        <p>Finding memory leaks with Memtrace</p>
+      </a>
+    </article>
+  </li>
+</ul>
+
+              </span>
+            </li>
+            <li class="text-link mobile tags">
+              <a href="https://blog.janestreet.com/protocol-emulator-asic-competition/#">Tags</a>
+              <span>
+                <ul class="tag-list">
+  
+  
+    
+      <li><a href="https://blog.janestreet.com/tag/async">async</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/book">book</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/c">c</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/camlp4">camlp4</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/code-review">code-review</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/comments">comments</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/compiler">compiler</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/core">core</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/hackerschool">hackerschool</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/hg">hg</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/incremental">incremental</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/internship">internship</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/interviewing">interviewing</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/machine-learning">machine-learning</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/ocaml">ocaml</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/parallel-programming">parallel-programming</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/performance">performance</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/ppx">ppx</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/real-world-ocaml">real-world-ocaml</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/registers">registers</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/speed">speed</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/ui">ui</a></li>
+    
+  
+  
+</ul>
+
+              </span>
+            </li>
+            <li class="text-link mobile">
+              <a target="_blank" href="https://blog.janestreet.com/feed.xml">Get the RSS feed</a>
+            </li>
+            <li class="text-link mobile">
+              <a target="_blank" href="https://opensource.janestreet.com/">Jane Street Open Source</a>
+            </li>
+            <li class="text-link mobile">
+              <a target="_blank" rel="noopener" href="https://www.janestreet.com/technology/">Join Our Team</a>
+            </li>
+          </ul>
+        </nav>
+      </div>
+      <div class="stickyLogo">
+        <a href="https://blog.janestreet.com/" class="logo noline"><img id="logo" src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/header.png" alt="Jane Street logo"></a>
+      </div>
+      <div class="right-container">
+        <form role="search" class="search" method="get" action="https://blog.janestreet.com/search.html">
+          <input class="navbar-search" type="search" placeholder="Type to search">
+        </form>
+        <a id="search-icon" href="https://blog.janestreet.com/protocol-emulator-asic-competition/#search">
+          <i class="fa fa-search" aria-hidden="true"></i>
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+</header>
+
+  <div class="main container">
+    <div class="content">
+      <div class="content-container">
+    <article>
+        <div class="post-header">
+            <div class="post-title">
+                <h3>Can you design a chip? Announcing the protocol emulator ASIC competition</h3>
+                
+            </div>
+            <span class="date">Sep 10, 2026 | </span>
+            <span class="reading-time" title="Estimated read time">
+                
+
+<span class="reading-time" title="Estimated read time">
+
+  4 min read
+
+</span>
+
+            </span>
+            <ul class="social-share">
+  <li>
+    <a href="https://www.facebook.com/sharer.php?u=https://blog.janestreet.com/protocol-emulator-asic-competition/" title="Share on Facebook" target="_blank" rel="noopener">
+      <i class="fa fa-facebook-square fa-2x" aria-hidden="true"></i>
+      <span class="sr-only">Share on Facebook</span>
+    </a>
+  </li>
+  <li>
+    <a href="https://twitter.com/intent/tweet?source=https://blog.janestreet.com/protocol-emulator-asic-competition/&amp;text=Jane%20Street%20Blog%20-%20Can%20you%20design%20a%20chip?%20Announcing%20the%20protocol%20emulator%20ASIC%20competition%20https://blog.janestreet.com/protocol-emulator-asic-competition/" target="_blank" rel="noopener" title="Tweet">
+      <i class="fa fa-twitter-square fa-2x" aria-hidden="true"></i>
+      <span class="sr-only">Share on Twitter</span>
+    </a>
+  </li>
+  <li>
+    <a href="http://www.linkedin.com/shareArticle?mini=true&amp;url=https://blog.janestreet.com/protocol-emulator-asic-competition/&amp;title=Jane%20Street%20Blog%20-%20Can%20you%20design%20a%20chip?%20Announcing%20the%20protocol%20emulator%20ASIC%20competition&amp;summary=Last%20month,%20we%20asked%20you%20to%20reverse%20engineer%20a%20chip%20from%20nothing%20but%20its%20layout%20and%20teased%20a%20bigger%20challenge.%20Results%20and%20our%20favorite%20writeups%20are%20coming%20soon.%20In%20the%20meantime,%20here%E2%80%99s%20our%20next%20challenge!%20This%20time,%20you%E2%80%99re%20designing%20the%20chip,%20and%20we%E2%80%99ll%20pay%20to%20fabricate%20our%20favorite%20designs!%20We%E2%80%99re...&amp;source=https://blog.janestreet.com/protocol-emulator-asic-competition/" target="_blank" rel="noopener" title="Share on LinkedIn">
+      <i class="fa fa-linkedin-square fa-2x" aria-hidden="true"></i>
+      <span class="sr-only">Share on LinkedIn</span>
+    </a>
+  </li>
+</ul>
+
+            
+            
+            
+            
+            
+            
+
+
+  
+  
+    
+    <div class="author img">
+      
+        <div class="author-avatar">
+          <a href="https://blog.janestreet.com/author/bdevlin"><img src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/bdevlin.jpg" alt="bdevlin avatar"></a>
+        </div>
+      
+      
+      <div class="name">By: <a href="https://blog.janestreet.com/author/bdevlin">Benjamin Devlin</a></div>
+    </div>
+  
+
+
+            
+            
+            
+            
+
+
+  
+  
+    
+    <div class="author img">
+      
+        <div class="author-avatar">
+          <a href="https://blog.janestreet.com/author/asinghani"><img src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/asinghani.jpg" alt="asinghani avatar"></a>
+        </div>
+      
+      
+      <div class="name">By: <a href="https://blog.janestreet.com/author/asinghani">Anish Singhani</a></div>
+    </div>
+  
+
+
+            
+            
+            
+
+        </div>
+        <div class="post-content">
+            <p><a href="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/oscilloscope-clean.png"><img src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/oscilloscope-clean.png" alt="Vintage oscilloscope illustration with UART, SPI, I2C, USB and 10BASE-T traces; independent time scales, not a real acquisition" style="display: block; width: 100%; height: auto;"></a></p>
+
+<p>Last month, we asked you to <a href="https://blog.janestreet.com/can-you-reverse-engineer-an-asic/">reverse engineer a
+chip</a> from nothing but its
+layout and teased a bigger challenge. Results and our favorite writeups are coming soon.
+In the meantime, here’s our next challenge!</p>
+
+<p>This time, you’re designing the chip, and we’ll pay to fabricate our favorite designs!
+We’re particularly interested in projects with unique functionality, as well as those
+that demonstrate novel approaches to design and verification methodologies! Winners will
+receive a fabricated copy of their chip, mounted on a dev boards, so they can test their
+design in real silicon.</p>
+
+<h2 id="the-challenge">The challenge</h2>
+
+<p>Design an <strong>open-source, general-purpose protocol emulator ASIC</strong>.</p>
+
+<p>Hardware protocols like UART, SPI, and I2C are simple enough that people routinely
+“bit-bang” them: toggle pins from software with careful timing instead of using a
+dedicated peripheral. A protocol emulator is a small chip built to do exactly that: a tiny
+CPU with an instruction set designed for reading pins, writing pins, counting cycles, and
+hitting timing precisely enough that you can implement a real protocol in firmware rather
+than in fixed logic. Something like that is a useful tool for hardware debugging and
+reverse engineering, which is a good part of what we do.</p>
+
+<p>The hard part is flexibility. The goal isn’t to put a UART block, an SPI block, and an
+I2C block on one die and call it done. Your chip should be reprogrammable enough to support
+new protocols <em>after</em> fabrication, within its timing and I/O constraints. For inspiration,
+look at the PIO state machines on the RP2040 or the PRU cores on TI’s Sitara parts, and
+consider what you’d do differently.</p>
+
+<ul>
+  <li>Start with UART, SPI, and I2C.</li>
+  <li>Stretch goals include low-speed USB and 10Mbit Ethernet.</li>
+  <li>Other interesting protocols to consider: JTAG, SWD, PS/2, CAN bus</li>
+  <li>If you have access to an FPGA, consider using it to test your RTL before the ASIC flow.</li>
+  <li>Show us anything else your architecture makes possible that we haven’t thought of.</li>
+</ul>
+
+<p>At Jane Street, we use <a href="https://hardcaml.org/">Hardcaml</a> to generate the RTL for our FPGA
+and ASIC designs. We are excited to see the languages and verification techniques you use,
+including formal methods, random constrained tests, AI-assisted verification, and more.
+As AI-assisted chip design becomes more common, we believe verification will be an
+extremely important aspect of the ASIC design flow going forwards.</p>
+
+<h2 id="the-rules">The rules</h2>
+
+<ul>
+  <li><strong>Process:</strong> We’re targeting IHP’s 130nm CMOS5L process through our friends at
+<a href="https://www.tinytapeout.com/">Tiny Tapeout</a>. Start with the <a href="https://github.com/TinyTapeout/ttihp-verilog-template/tree/cmos5l">CMOS5L Verilog
+template</a>, which
+takes you from RTL to GDS. Set the tile size in <code class="highlighter-rouge">info.yaml</code> to 6x4.</li>
+  <li><strong>Area:</strong> The current maximum area is 6x4 tiles per design. <strong>We are working on the
+possibility of scaling up to 8x4 tiles (~30% more area). We’ll update this page, as well
+as emailing everyone who has <a href="https://docs.google.com/forms/d/e/1FAIpQLSeF7fq756MegxZRQxotBwUJYZx-cL9MrGjxV0z4uD_J0sADxQ/viewform">signed
+up</a>
+if the larger tile size becomes available.</strong></li>
+  <li><strong>Open source:</strong> Your submission should be open source so others can use and build on it.
+Unlike the reverse-engineering puzzle, there’s no need to keep your work hidden until
+the deadline, so feel free to build in public!</li>
+  <li><strong>Teams:</strong> This is a much bigger project than the puzzle, so we strongly recommend
+working in teams.</li>
+  <li><strong>Deadline:</strong> Submit your design by <strong>January 18th, 2027</strong>.</li>
+  <li><strong>Prize:</strong> We’ll pay to tape out the most novel designs on a Tiny Tapeout shuttle.
+We’re targeting the <strong>March 2027 CMOS5L shuttle</strong>, subject to the foundry schedule.
+Winners will receive chips and dev boards back after fabrication, so you can test your
+design in silicon.</li>
+</ul>
+
+<h2 id="how-much-fits">How much fits?</h2>
+
+<p>An 6x4 allocation is 24 tiles. At approximately 200um × 150um per tile, that’s about 0.7
+mm² of nominal tile area. As a rough estimate, budget for about 1K logic cells per tile.
+You may need to get creative to fit the functionality you want.</p>
+
+<p>For instruction memory, SRAM can be more area-efficient than flip-flops. Tiny Tapeout has
+<a href="https://www.tinytapeout.com/chips/ttihp0p2/tt_um_urish_sram_test">examples of SRAM</a>
+running on this process node you can reference.</p>
+
+<p>Run synthesis early, check the mapped cell area, and leave room for clock-tree buffers
+and routing. Then run the full place-and-route flow and check timing. A design that looks
+small enough after synthesis can still be difficult to route or too slow at your chosen
+clock frequency.</p>
+
+<h2 id="getting-started">Getting started</h2>
+
+<p>If you’ve never taped out a chip before, the
+<a href="https://www.tinytapeout.com/">Tiny Tapeout documentation</a> walks through the process end
+to end, and the tools are all free and open source. Start by getting a UART transmitter
+out of a pin. Then make it programmable.</p>
+
+<p><strong>Sign-up</strong> If you’re interested, please fill out our <a href="https://docs.google.com/forms/d/e/1FAIpQLSeF7fq756MegxZRQxotBwUJYZx-cL9MrGjxV0z4uD_J0sADxQ/viewform">sign-up
+form</a>.
+We’ll send updates about the tapeout template, deadlines, as well as providing the final
+submission link. Note that filling out the form is not a commitment to participating, it’s
+just to receive updates!</p>
+
+<p>We’ll add a final submission form to this page closer to the deadline!</p>
+
+<p>If you have questions along the way, reach out to
+<a href="mailto:asic-competition@janestreet.com">asic-competition@janestreet.com</a>.</p>
+
+<h2 id="hardware-at-jane-street">Hardware at Jane Street</h2>
+
+<p>The hardware team at Jane Street designs FPGAs and ASICs that run some of the fastest
+trading systems in the world. If designing a chip for fun sounds like your kind of thing,
+take a look at our hardware
+<a href="https://www.janestreet.com/join-jane-street/position/8624440002/">internships</a> and
+<a href="https://www.janestreet.com/join-jane-street/position/8646893002/">full-time roles</a>. You can
+also explore <a href="https://hardcaml.org/">Hardcaml</a>, our open-source OCaml hardware design
+libraries, or <a href="https://bit.ly/4lEqiqb">stay in touch</a>.</p>
+
+        </div>
+        <div class="bios-container">
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            <p class="bio">Ben is a hardware developer at Jane Street. Originally from New
+Zealand, with a Ph.D. in EE from the University of Tokyo, he is
+interested in the outdoors, sci-fi, cryptography, and pretty much
+anything tech related.
+</p>
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            <p class="bio">Anish joined Jane Street as an FPGA engineer in 2024 after graduating from
+Carnegie Mellon. He particularly enjoys building software tools to make
+hardware design more efficient.
+</p>
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+        </div>
+        
+        <p class="tag-label">
+
+  </p><div class="tags">
+    
+  </div>
+
+<p></p>
+        
+    </article>
+    <div class="post-nav">
+  
+    <a class="btn prev" href="https://blog.janestreet.com/can-you-reverse-engineer-an-asic/"><i class="fa fa-angle-left"></i><span class="short"> prev</span><span class="long">ious post</span></a>
+  
+  
+    <a class="btn next" href="https://blog.janestreet.com/a-study-of-sequence-weighting-at-scale/"><span class="short">next </span><span class="long">post </span><i class="fa fa-angle-right"></i></a>
+  
+</div>
+
+</div>
+
+    </div>
+    <div class="sidebar">
+  <div class="widget email-signup">
+    <div id="mc-signup">
+  <form action="https://janestreet.us10.list-manage.com/subscribe/post?u=c4f6c23879b87e463fac38cd1&amp;id=7baebe4e72&amp;f_id=00c4d1e5f0" method="post" name="mc-subscribe-form" target="_blank" novalidate="">
+	    <label for="mc-email" class="active"><h3 class="title">Subscribe to Email Updates</h3></label>
+	    <input type="email" value="" name="EMAIL" id="mc-email" placeholder="Email Address" required="">
+      <div class="hidden-input" aria-hidden="true"><input type="text" name="b_c4f6c23879b87e463fac38cd1_7baebe4e72" tabindex="-1" value=""></div>
+      <input type="submit" value="Subscribe" name="subscribe" id="mc-subscribe">
+  </form>
+</div> 
+  </div>
+
+  <div class="widget">
+    <h3 class="title">Signals &amp; Threads Podcast</h3>
+    <div class="input-wrap">
+      <a target="_blank" href="https://signalsandthreads.com/">
+         <img src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/signals-and-threads-promo.jpg" style="border: solid 1px #e6e5e5">
+      </a>
+      <a target="_blank" href="https://signalsandthreads.com/wrestling-the-world-into-rows/">
+        <div style="height:35px; margin-top:20px; border: 1px solid #e6e5e5; background:#EDEFF2; text-align:center;">
+          <p style="margin-top:4px">Listen to the latest episode</p>
+        </div>
+      </a>
+    </div>
+  </div>
+
+  <div class="widget">
+    <h3 class="title">Featured Tech Talk</h3>
+    <div class="input-wrap">
+      <a target="_blank" href="https://www.youtube.com/watch?v=Rt3XyeFHvt4">
+         <p style="font-size:14px; line-height:1.4;">The Algorithm for Precision Medicine</p>
+         <img src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/youtube.png">
+      </a>
+      <a target="_blank" href="https://www.youtube.com/channel/UCDsVC_ewpcEW_AQcO-H-RDQ/videos">
+        <div style="height:35px; margin-top:20px; border: 1px solid #e6e5e5; background:#EDEFF2; text-align:center;">
+          <p style="margin-top:4px">Jane Street YouTube Channel</p>
+        </div>
+      </a>
+    </div>
+  </div>
+
+  <div class="widget top-posts">
+    <h3 class="title">Featured Reads</h3>
+    <ul>
+  <li>
+    <article>
+      <a href="https://blog.janestreet.com/using-ascii-waveforms-to-test-hardware-designs/">
+        <span class="img-wrap featured-img centered">
+          <img src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/scientist_testing.jpg">
+          <div class="image-overlay">
+            <div class="flexbox">
+              <div class="text-overlay">
+                <hr class="separator">
+                <span class="read-more">Read more</span>
+                <hr class="separator">
+              </div>
+            </div>
+          </div>
+        </span>
+        <p>Using ASCII waveforms to test hardware designs</p>
+      </a>
+    </article>
+  </li>
+  <li>
+    <article>
+      <a href="https://blog.janestreet.com/finding-memory-leaks-with-memtrace/">
+        <span class="img-wrap featured-img centered">
+          <img src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/memory-leak.jpg">
+          <div class="image-overlay">
+            <div class="flexbox">
+              <div class="text-overlay">
+                <hr class="separator">
+                <span class="read-more">Read more</span>
+                <hr class="separator">
+              </div>
+            </div>
+          </div>
+        </span>
+        <p>Finding memory leaks with Memtrace</p>
+      </a>
+    </article>
+  </li>
+</ul>
+
+  </div>
+
+  <div class="widget tags-list">
+    <h3 class="title">Tags</h3>
+    <ul class="tag-list">
+  
+  
+    
+      <li><a href="https://blog.janestreet.com/tag/async">async</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/book">book</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/c">c</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/camlp4">camlp4</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/code-review">code-review</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/comments">comments</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/compiler">compiler</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/core">core</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/hackerschool">hackerschool</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/hg">hg</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/incremental">incremental</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/internship">internship</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/interviewing">interviewing</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/machine-learning">machine-learning</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/ocaml">ocaml</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/parallel-programming">parallel-programming</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/performance">performance</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/ppx">ppx</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/real-world-ocaml">real-world-ocaml</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/registers">registers</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/speed">speed</a></li>
+    
+      <li><a href="https://blog.janestreet.com/tag/ui">ui</a></li>
+    
+  
+  
+</ul>
+
+  </div>
+
+  <div class="widget">
+    <h3 class="title">RSS</h3>
+    <div class="input-wrap">
+      <a target="_blank" href="https://blog.janestreet.com/feed.xml">Get the RSS feed</a>
+    </div>
+  </div>
+
+  <div class="widget">
+    <h3 class="title">Jane Street Open Source</h3>
+    <div class="input-wrap">
+      <a target="_blank" href="https://opensource.janestreet.com/">From committing patches to the Linux kernel to releasing our own projects, we’re always looking for ways to participate in the open source community.</a>
+    </div>
+  </div>
+
+  <div class="widget">
+    <h3 class="title">Join Our Team</h3>
+    <div class="sidebar-callout">
+  <a target="_blank" rel="noopener" href="https://www.janestreet.com/technology/">
+    <img class="logo" src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/janestreet_logo.jpg" alt="Jane Street">
+    <div class="slogan">Where FP meets the real world.</div>
+    <p>If you're interested in working at a place where functional programming meets the real world, then apply for a job at Jane Street.</p>
+    <p>Learn more</p>
+  </a>
+</div>
+
+  </div>
+</div>
+
+  </div>
+  <footer>
+  <div class="container">
+    <div class="content">
+      
+        
+          <ul>
+            
+              <li><a href="https://www.janestreet.com/who-we-are/">Who We Are</a></li>
+            
+          </ul>
+        
+        
+      
+        
+          <ul>
+            
+              <li><a href="https://www.janestreet.com/what-we-do/overview/">What We Do</a></li>
+            
+          </ul>
+        
+        
+      
+        
+          <ul>
+            
+              <li><a href="https://www.janestreet.com/what-we-do/client-offering/">Client Offering</a></li>
+            
+          </ul>
+        
+        
+      
+        
+          <ul>
+            
+              <li><a href="https://www.janestreet.com/the-latest/">The Latest</a></li>
+            
+          </ul>
+        
+        
+      
+        
+          <ul>
+            
+              <li><a href="https://www.janestreet.com/culture/overview/">Culture</a></li>
+            
+          </ul>
+        
+        
+      
+        
+          <ul>
+            
+              <li><a href="https://www.janestreet.com/join-jane-street/overview/">Join Jane Street</a></li>
+            
+          </ul>
+        
+        
+      
+        
+          <ul>
+            
+              <li><a href="https://www.janestreet.com/contact-us/">Contact Us</a></li>
+            
+          </ul>
+        
+        
+      
+        
+        
+          <div class="legal">
+            <div class="disclosures-policies"><a href="https://www.janestreet.com/disclosures-and-policies/">Disclosures &amp; Policies</a></div>
+            <p class="copyright">
+              © Copyright 2015-2026 Jane Street Group, LLC. All rights reserved. Services are provided in the U.S. by Jane Street Capital, LLC and Jane Street Execution Services, LLC, each of which is a SEC-registered broker dealer and member of FINRA (<a href="https://www.finra.org/">www.finra.org</a>). Regulated activities are undertaken in Europe by Jane Street Financial Limited, an investment firm authorized and regulated by the U.K. Financial Conduct Authority, and Jane Street Netherlands B.V., an investment firm authorized and regulated by the Netherlands Authority for the Financial Markets (<i>Autoriteit Financiële Markten</i>), and in Hong Kong by Jane Street Hong Kong Limited, a regulated entity under the Hong Kong Securities and Futures Commission (CE No. BAL548). Each of these entities is a wholly owned subsidiary of Jane Street Group, LLC. This material is provided for informational purposes only and does not constitute an offer or solicitation for the purchase or sale of any security or other financial instrument. | Jane Street and the concentric circle mark are registered trademarks of Jane Street.
+            </p>
+            <span class="policy-links">
+              
+                <a target="_blank" rel="noopener" href="https://www.janestreet.com/privacy-notice/">Privacy</a>
+              
+                <a target="_blank" rel="noopener" href="https://www.janestreet.com/ad-cookie-policy/">Cookies</a>
+              
+            </span>
+          </div>
+        
+      
+    </div>
+  </div>
+</footer>
+<script src="./Jane Street Blog - Can you design a chip_ Announcing the protocol emulator ASIC competition_files/main.js.Download"></script>
+
+  <div class="backtotop">
+    <i class="fa fa-chevron-up" aria-hidden="true"></i>
+  </div>
+  <!-- cookie consent banner -->
+<div id="cookie-consent-banner" class="cc-window cc-banner cc-type-info cc-theme-block cc-bottom" style="display: block;">
+  <span class="cc-message">
+    Jane Street Group, LLC uses cookies and similar technologies, including third-party cookies, on this Site to provide basic functionalities and perform analytics. You may accept or decline cookies by selecting “Accept” or “Reject”. For information regarding our cookie practices, see Jane Street’s
+    <a rel="noopener noreferrer nofollow" class="cc-link" href="https://www.janestreet.com/ad-cookie-policy" target="_blank">Ad and Cookie Policy</a>.
+  </span>
+  <div class="cc-compliance">
+    <a id="btn-accept-all" class="cc-btn cc-dismiss cookie-consent-button">Accept All</a>
+    <a id="btn-reject-all" class="cc-btn cc-deny cookie-consent-button">Reject All</a>
+  </div>
+</div>
+
+<!-- handle consent updates -->
+<script>
+  function hideBanner() {
+    document.getElementById("cookie-consent-banner").style.display = "none";
+  }
+
+  if (localStorage.getItem("consentMode") === null) {
+    document
+      .getElementById("btn-accept-all")
+      .addEventListener("click", function () {
+        setConsent({
+          necessary: true,
+          analytics: true,
+          preferences: true,
+          marketing: true,
+        });
+        hideBanner();
+      });
+    document
+      .getElementById("btn-reject-all")
+      .addEventListener("click", function () {
+        setConsent({
+          necessary: false,
+          analytics: false,
+          preferences: false,
+          marketing: false,
+        });
+        hideBanner();
+      });
+    document.getElementById("cookie-consent-banner").style.display = "block";
+  } else {
+    hideBanner();
+  }
+
+  function setConsent(consent) {
+    const consentMode = {
+      ad_storage: consent.marketing ? "granted" : "denied",
+      ad_user_data: consent.marketing ? "granted" : "denied",
+      ad_personalization: consent.marketing ? "granted" : "denied",
+      analytics_storage: consent.analytics ? "granted" : "denied",
+      personalization_storage: consent.preferences ? "granted" : "denied",
+      functionality_storage: consent.necessary ? "granted" : "denied",
+      security_storage: consent.necessary ? "granted" : "denied"
+    };
+    gtag("consent", "update", consent);
+    localStorage.setItem("consentMode", JSON.stringify(consentMode));
+  }
+</script>
+
+
+
+
+<div class="hiddendiv common"></div></body></html>
