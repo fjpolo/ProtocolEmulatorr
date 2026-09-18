@@ -1,0 +1,6 @@
+*.vcd
+*.v
+*.il
+ProtocolEmulator/
+template_bmc/
+template_cover/
