@@ -2,7 +2,9 @@
 
 An open-source, general-purpose protocol emulator ASIC targeting the **Jane Street and Tiny Tapeout ASIC Competition** (IHP 130nm CMOS5L process, 6x4 tile allocation).
 
-> Detailed Architectural Specification: See [CONCEPT.md](CONCEPT.md) for the complete design, 16-bit ISA, hardware protocol assists, reverse engineering profiler, and formal verification plan.
+> Detailed Specifications:
+> - Architecture and Hardware ISA: [CONCEPT.md](CONCEPT.md)
+> - Assembler, Compiler, and Toolchain: [TOOLCHAIN_CONCEPT.md](TOOLCHAIN_CONCEPT.md)
 
 ## Overview
 **OmniBus** operates in three distinct modes:

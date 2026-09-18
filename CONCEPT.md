@@ -4,6 +4,7 @@
 > **Target Process**: IHP 130nm CMOS5L (`ttihp-verilog-template`)  
 > **Area Budget**: 6×4 Tiles (~0.72 mm², ~20k standard cells)  
 > **Submission Deadline**: January 18, 2027 (March 2027 Shuttle)  
+> **Toolchain Specification**: See [TOOLCHAIN_CONCEPT.md](TOOLCHAIN_CONCEPT.md) for assembler and compiler details  
 > **Repository**: [github.com/fjpolo/ProtocolEmulatorr](https://github.com/fjpolo/ProtocolEmulatorr)
 
 ---
