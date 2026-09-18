@@ -38,10 +38,10 @@ IO_LOC  "o_led[7]"    W19;  // PMOD1 Pin 1  (IO0)
 IO_PORT "o_led[7]"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 
 // -----------------------------------------------------------------------------
-// USB-UART to BL616 Microcontroller (Uncomment if using Manta Logic Analyzer)
+// USB-UART to BL616 Microcontroller
 // -----------------------------------------------------------------------------
-// IO_LOC  "uart_tx"     U15;  // FPGA TX -> BL616 RX
-// IO_PORT "uart_tx"     IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC  "uart_tx"     U15;  // FPGA TX -> BL616 RX
+IO_PORT "uart_tx"     IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 //
 // IO_LOC  "uart_rx"     V14;  // FPGA RX <- BL616 TX
 // IO_PORT "uart_rx"     IO_TYPE=LVCMOS33 PULL_MODE=UP BANK_VCCIO=3.3;
