@@ -1,24 +1,50 @@
 import os
+import sys
 from pathlib import Path
 
-from cocotb.runner import get_runner
+try:
+    from cocotb_tools.runner import get_runner
+except ImportError:
+    from cocotb.runner import get_runner
 
 
-def test_my_design_runner():
-    sim = os.getenv("SIM", "icarus")
-
+def test_protocol_emulator_runner():
+    sim = os.getenv("SIM", "verilator")
     proj_path = Path(__file__).resolve().parent
+    rtl_path = (proj_path / "../../../../rtl/ProtocolEmulator.v").resolve()
 
-    sources = [proj_path / "ProtocolEmulator.v"]
+    # Prefer local copy if present, otherwise use central rtl path
+    source_file = proj_path / "ProtocolEmulator.v"
+    if not source_file.exists():
+        source_file = rtl_path
+
+    oss_lib = str(Path.home() / "oss-cad-suite/lib")
+    extra_env = {
+        "DYLD_LIBRARY_PATH": oss_lib,
+        "DYLD_FALLBACK_LIBRARY_PATH": oss_lib,
+    }
 
     runner = get_runner(sim)
     runner.build(
-        sources=sources,
+        sources=[source_file],
         hdl_toplevel="ProtocolEmulator",
+        always=True,
+        waves=True,
+        build_args=[
+            "--trace",
+            "-Wall",
+            "-LDFLAGS",
+            f"-Wl,-rpath,{oss_lib}",
+        ],
     )
 
-    runner.test(hdl_toplevel="ProtocolEmulator", test_module="testbench")
+    runner.test(
+        hdl_toplevel="ProtocolEmulator",
+        test_module="testbench",
+        waves=True,
+        extra_env=extra_env,
+    )
 
 
 if __name__ == "__main__":
-    test_my_design_runner()
+    test_protocol_emulator_runner()

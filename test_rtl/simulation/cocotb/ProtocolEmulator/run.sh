@@ -1,4 +1,4 @@
-# !/bin/bash
+#!/bin/bash
 
 # Source the OSS CAD Suite environment
 echo "          [COCOTB] Sourcing OSS CAD Suite environment..."
@@ -8,10 +8,18 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Copy original ProtocolEmulator.v
-cp ${PWD}/../../../../rtl/ProtocolEmulator.v .
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# Call cocoTB
+cleanup() {
+    rm -f ProtocolEmulator.v
+}
+trap cleanup EXIT
+
+# Copy original ProtocolEmulator.v if needed
+cp "$SCRIPT_DIR/../../../../rtl/ProtocolEmulator.v" .
+
+# Call cocoTB with Icarus Verilog
 echo "        [COCOTB][ICARUS] Running testbench..."
 python3 testrunner_icarus.py
 if [ $? -ne 0 ]; then
@@ -20,6 +28,7 @@ if [ $? -ne 0 ]; then
 fi
 echo "        [COCOTB][ICARUS] PASS: CocoTB simulation passed!"
 
+# Call cocoTB with Verilator
 echo "        [COCOTB][VERILATOR] Running testbench..."
 python3 testrunner_verilator.py
 if [ $? -ne 0 ]; then
@@ -27,6 +36,3 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 echo "        [COCOTB][VERILATOR] PASS: CocoTB simulation passed!"
-
-# Remove ProtocolEmulator.-v
-rm ProtocolEmulator.v
