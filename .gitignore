@@ -14,5 +14,11 @@
 **/__pycache__
 **/impl/
 *.gprj.user
+*_bound/
+*_cvr/
+*_prf/
+*.yw
+*.smtc
+template_formal.v
 
 

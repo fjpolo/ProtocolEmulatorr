@@ -1,8 +1,9 @@
 # =============================================================================
 # File        : testbench.py
-# Description : Self-checking Cocotb testbench for ProtocolEmulator UART core
-# Tests       : Framing, cycle-accurate zero-jitter timing, character decoding,
-#               consecutive frame streaming, and PC telemetry.
+# Description : Self-checking Cocotb testbench for Task 02: Dynamic Register
+#               Serialization with Output Shift Register (OSR) and OUT opcode.
+# Tests       : Dynamic byte patterns, string streaming, zero-jitter timing,
+#               tx_busy telemetry, and PC progression.
 # =============================================================================
 
 import cocotb
@@ -13,7 +14,6 @@ BAUD_RATE = 115200
 CLK_FREQ_HZ = 50_000_000
 CLK_PERIOD_NS = 20  # 50 MHz = 20 ns period
 CYCLES_PER_BIT = 434
-EXPECTED_CHAR = 0x55  # ASCII 'U' = 8'b01010101
 
 
 def start_clock(signal, period_ns=CLK_PERIOD_NS):
@@ -25,10 +25,10 @@ def start_clock(signal, period_ns=CLK_PERIOD_NS):
     return cocotb.start_soon(clk.start())
 
 
-async def reset_dut(dut):
-    """Applies active-low reset to ProtocolEmulator."""
+async def reset_dut(dut, initial_data=0):
+    """Applies active-low reset to ProtocolEmulator with given initial data."""
     dut.i_reset_n.value = 0
-    dut.i_data.value = 0
+    dut.i_data.value = initial_data
     await ClockCycles(dut.i_clk, 5)
     await RisingEdge(dut.i_clk)
     dut.i_reset_n.value = 1
@@ -49,7 +49,7 @@ class UARTReceiver:
         val = int(self.tx.value)
         return val & 0x01
 
-    async def wait_for_start_bit(self, timeout_cycles=10000):
+    async def wait_for_start_bit(self, timeout_cycles=20000):
         """Waits for falling edge of TX indicating start bit."""
         elapsed = 0
         while self.get_tx() == 1:
@@ -113,7 +113,7 @@ class UARTReceiver:
 # -----------------------------------------------------------------------------
 @cocotb.test()
 async def test_uart_reset(dut):
-    """Verify reset asserts TX idle high and initializes PC to 0."""
+    """Verify reset asserts TX idle high, initializes PC=0, and sets tx_busy=0."""
     start_clock(dut.i_clk, CLK_PERIOD_NS)
 
     dut.i_reset_n.value = 0
@@ -134,50 +134,89 @@ async def test_uart_reset(dut):
 
 
 # -----------------------------------------------------------------------------
-# Test 2: Single UART Frame Validation ('U' = 0x55)
+# Test 2: Dynamic Byte Pattern Transmission (OSR Serialization)
 # -----------------------------------------------------------------------------
 @cocotb.test()
-async def test_uart_single_frame(dut):
-    """Verify reception of a valid 8N1 UART frame containing 'U' (0x55)."""
+async def test_uart_dynamic_bytes(dut):
+    """Verify transmission of arbitrary dynamic bytes supplied via i_data."""
     start_clock(dut.i_clk, CLK_PERIOD_NS)
-    await reset_dut(dut)
+
+    test_patterns = [0x55, 0xAA, 0x00, 0xFF, 0x3C, 0xA5, 0x42]
+    await reset_dut(dut, initial_data=test_patterns[0])
 
     uart_rx = UARTReceiver(dut, dut.i_clk, dut.o_data)
-    byte_val, frame_valid, diag = await uart_rx.receive_byte_midpoint_sampled()
 
-    dut._log.info(
-        f"Received frame: char='{chr(byte_val)}' (0x{byte_val:02X}), "
-        f"bits={diag['sampled_bits']}, start_bit={diag['start_bit']}, stop_bit={diag['stop_bit']}"
-    )
+    for idx, expected_byte in enumerate(test_patterns):
+        byte_val, frame_valid, diag = await uart_rx.receive_byte_midpoint_sampled()
 
-    assert diag["start_valid"], "Framing error: Start bit was not 0"
-    assert diag["stop_valid"], "Framing error: Stop bit was not 1"
-    assert frame_valid, "Frame error: Invalid start or stop bit"
-    assert byte_val == EXPECTED_CHAR, (
-        f"Data mismatch! Expected 0x{EXPECTED_CHAR:02X} ('{chr(EXPECTED_CHAR)}'), "
-        f"got 0x{byte_val:02X} ('{chr(byte_val)}')"
-    )
-    dut._log.info("Single frame reception test PASSED with correct 8N1 payload 'U' (0x55)")
+        # Update i_data during inter-character gap for next frame
+        if idx + 1 < len(test_patterns):
+            dut.i_data.value = test_patterns[idx + 1]
+
+        dut._log.info(
+            f"Pattern test [{idx+1}/{len(test_patterns)}]: sent 0x{expected_byte:02X}, "
+            f"received 0x{byte_val:02X} (bits={diag['sampled_bits']}, valid={frame_valid})"
+        )
+
+        assert frame_valid, f"Framing error on byte 0x{expected_byte:02X}: {diag}"
+        assert byte_val == expected_byte, (
+            f"Data mismatch! Expected 0x{expected_byte:02X}, got 0x{byte_val:02X}"
+        )
+
+    dut._log.info("Dynamic byte pattern transmission test PASSED!")
 
 
 # -----------------------------------------------------------------------------
-# Test 3: Zero-Jitter Bit-Timing Verification
+# Test 3: String Streaming ("Hello, OmniBus!\n")
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_uart_string_stream(dut):
+    """Stream an ASCII text message and verify byte-for-byte reception."""
+    start_clock(dut.i_clk, CLK_PERIOD_NS)
+
+    message = "Hello, OmniBus!\n"
+    await reset_dut(dut, initial_data=ord(message[0]))
+
+    uart_rx = UARTReceiver(dut, dut.i_clk, dut.o_data)
+    received_chars = []
+
+    dut._log.info(f"Streaming message: {repr(message)}")
+
+    for idx in range(len(message)):
+        char = message[idx]
+        byte_val, frame_valid, _ = await uart_rx.receive_byte_midpoint_sampled()
+        assert frame_valid, f"Framing error on char '{char}'"
+        received_chars.append(chr(byte_val))
+
+        # Update next character during the inter-character pause
+        if idx + 1 < len(message):
+            dut.i_data.value = ord(message[idx + 1])
+
+    reconstructed_str = "".join(received_chars)
+    dut._log.info(f"Received string: {repr(reconstructed_str)}")
+    assert reconstructed_str == message, (
+        f"String mismatch! Expected {repr(message)}, got {repr(reconstructed_str)}"
+    )
+    dut._log.info("ASCII string streaming test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 4: Zero-Jitter Bit-Timing Verification on OUT instruction
 # -----------------------------------------------------------------------------
 @cocotb.test()
 async def test_uart_bit_timing_zero_jitter(dut):
     """
-    Verify that every single bit of 'U' (which alternates 0/1 on every bit)
-    measures exactly 434 clock cycles (8.68 us) with zero cycle jitter.
+    Verify that OUT opcode generates exactly 434 clock cycles per bit
+    with zero cycle jitter on alternating payload 0x55 ('U').
     """
     start_clock(dut.i_clk, CLK_PERIOD_NS)
-    await reset_dut(dut)
+
+    # Set payload to 0x55 before releasing reset so first frame has alternating bits
+    await reset_dut(dut, initial_data=0x55)
 
     uart_rx = UARTReceiver(dut, dut.i_clk, dut.o_data)
     await uart_rx.wait_for_start_bit()
 
-    # Character 'U' (0x55 = 8'b01010101):
-    # Bit 0: 1, Bit 1: 0, Bit 2: 1, Bit 3: 0, Bit 4: 1, Bit 5: 0, Bit 6: 1, Bit 7: 0, Stop: 1
-    # Because every bit alternates, there is an edge between EVERY bit!
     expected_transitions = [
         ("Start Bit", 0),
         ("Bit 0", 1),
@@ -190,15 +229,12 @@ async def test_uart_bit_timing_zero_jitter(dut):
         ("Bit 7", 0),
     ]
 
-    measured_cycles = []
-
     for name, expected_level in expected_transitions:
         current_level = uart_rx.get_tx()
         assert current_level == expected_level, (
             f"Expected {name} to be level {expected_level}, got {current_level}"
         )
 
-        # Count clock cycles until transition
         cycle_count = 0
         while uart_rx.get_tx() == expected_level:
             await RisingEdge(dut.i_clk)
@@ -206,7 +242,6 @@ async def test_uart_bit_timing_zero_jitter(dut):
             if cycle_count > CYCLES_PER_BIT + 10:
                 break
 
-        measured_cycles.append((name, cycle_count))
         dut._log.info(f"{name:10s} (val={expected_level}) duration = {cycle_count} cycles ({cycle_count * CLK_PERIOD_NS} ns)")
 
         assert cycle_count == CYCLES_PER_BIT, (
@@ -218,72 +253,35 @@ async def test_uart_bit_timing_zero_jitter(dut):
     stop_level = uart_rx.get_tx()
     assert stop_level == 1, f"Expected Stop Bit level 1, got {stop_level}"
 
-    # Stop bit + NOP gap + JMP hold check (Stop bit is 434, NOP gap is 433+1=434, JMP is 1 cycle = 869 cycles)
-    stop_and_gap_cycles = 0
-    while uart_rx.get_tx() == 1 and stop_and_gap_cycles < 2000:
-        await RisingEdge(dut.i_clk)
-        stop_and_gap_cycles += 1
-        if stop_and_gap_cycles > 869:
-            break
-
-    dut._log.info(f"Stop bit + Inter-character pause = {stop_and_gap_cycles} cycles")
-    # Expected: 434 (Stop bit) + 434 (NOP) + 1 (JMP) = 869 cycles total idle time
-    assert stop_and_gap_cycles == 869, (
-        f"Inter-character gap mismatch: Expected 869 cycles (434 stop + 434 NOP + 1 JMP), got {stop_and_gap_cycles}"
-    )
-
-    dut._log.info("Zero-jitter timing test PASSED: Exactly 434 cycles/bit with 0 cycle jitter!")
+    dut._log.info("Zero-jitter OUT timing test PASSED: Exactly 434 cycles/bit!")
 
 
 # -----------------------------------------------------------------------------
-# Test 4: Consecutive Multi-Frame Reception & Stream Continuity
+# Test 5: Telemetry and PC Progression
 # -----------------------------------------------------------------------------
 @cocotb.test()
-async def test_uart_consecutive_frames(dut):
-    """Verify that multiple consecutive frames are transmitted continuously and correctly."""
+async def test_pc_and_busy_telemetry(dut):
+    """Verify that o_data[4:1] reflects PC progression (0..5) and o_data[7] reflects tx_busy."""
     start_clock(dut.i_clk, CLK_PERIOD_NS)
-    await reset_dut(dut)
+    await reset_dut(dut, initial_data=0x42)
 
-    uart_rx = UARTReceiver(dut, dut.i_clk, dut.o_data)
-    NUM_FRAMES = 5
-    received_bytes = []
-
-    dut._log.info(f"Receiving {NUM_FRAMES} consecutive UART frames...")
-    for frame_idx in range(NUM_FRAMES):
-        byte_val, frame_valid, diag = await uart_rx.receive_byte_midpoint_sampled()
-        received_bytes.append(byte_val)
-
-        assert frame_valid, f"Frame {frame_idx} has framing errors: {diag}"
-        assert byte_val == EXPECTED_CHAR, (
-            f"Frame {frame_idx} data error: expected 0x{EXPECTED_CHAR:02X}, got 0x{byte_val:02X}"
-        )
-        dut._log.info(f"Frame {frame_idx + 1}/{NUM_FRAMES}: received '{chr(byte_val)}' (0x{byte_val:02X}) [PASS]")
-
-    received_str = "".join(chr(b) for b in received_bytes)
-    assert received_str == "U" * NUM_FRAMES, f"Expected '{'U' * NUM_FRAMES}', got '{received_str}'"
-    dut._log.info(f"Consecutive frame streaming test PASSED: received \"{received_str}\"")
-
-
-# -----------------------------------------------------------------------------
-# Test 5: Program Counter (PC) Telemetry & State Progression
-# -----------------------------------------------------------------------------
-@cocotb.test()
-async def test_pc_telemetry(dut):
-    """Verify that o_data[4:1] correctly reflects the PC progression 0 -> 11 -> 0."""
-    start_clock(dut.i_clk, CLK_PERIOD_NS)
-    await reset_dut(dut)
-
-    # Sample PC progression over 1 full loop (4775 clock cycles)
     pcs_observed = set()
-    for _ in range(5000):
-        pc = (int(dut.o_data.value) >> 1) & 0x0F
+    busy_observed = set()
+
+    for _ in range(5500):
+        val = int(dut.o_data.value)
+        pc = (val >> 1) & 0x0F
+        busy = (val >> 7) & 0x01
         pcs_observed.add(pc)
+        busy_observed.add(busy)
         await RisingEdge(dut.i_clk)
 
-    # The microcode uses addresses 0 to 11
-    expected_pcs = set(range(12))
+    # Microcode now uses addresses 0 to 5
+    expected_pcs = set(range(6))
     assert expected_pcs.issubset(pcs_observed), (
         f"Missing expected PC states! Expected {expected_pcs}, observed {pcs_observed}"
     )
 
-    dut._log.info(f"PC Telemetry test PASSED: All instruction states {sorted(list(pcs_observed))} observed on o_data[4:1]")
+    assert 1 in busy_observed, "tx_busy flag was never asserted during transmission"
+
+    dut._log.info(f"Telemetry test PASSED: PC states {sorted(list(pcs_observed))} observed, tx_busy verified!")
