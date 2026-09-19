@@ -1,4 +1,12 @@
 ProtocolEmulator/
+ProtocolEmulator_bound/
+ProtocolEmulator_cvr/
+ProtocolEmulator_prf/
 template_bound/
 template_cvr/
 template_prf/
+*.vcd
+*.yw
+*.smtc
+*.log
+template_formal.v

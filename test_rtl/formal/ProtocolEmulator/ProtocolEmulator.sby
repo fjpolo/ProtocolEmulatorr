@@ -4,19 +4,18 @@ prf
 cvr
 
 [options]
-bound:  mode bmc
-bound:  depth 16
-prf:    mode prove
-prf:    depth 8
-cvr:    mode cover
-cvr:    depth 1030
-cvr:    append 20
-
+bound: mode bmc
+bound: depth 20
+prf:   mode prove
+prf:   depth 10
+cvr:   mode cover
+cvr:   depth 25
+cvr:   append 5
 
 [engines]
-bound:  smtbmc
-prf:    smtbmc yices
-cvr:    smtbmc
+bound: smtbmc
+prf:   smtbmc yices
+cvr:   smtbmc
 
 [script]
 read_verilog -sv -DPROTOCOLEMULATOR -formal template_formal.v
