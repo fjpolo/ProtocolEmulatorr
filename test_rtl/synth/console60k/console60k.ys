@@ -1,0 +1,17 @@
+# Yosys synthesis script for Sipeed Tang Console 60K (top module)
+
+# Read Verilog source files
+read_verilog -sv ../../../rtl/ProtocolEmulator.v
+read_verilog -sv ../../../boards/sipeed/console60k/src/top.v
+
+# Elaborate and synthesize for Gowin Arora-V (GW5A architecture)
+synth_gowin -family gw5a -top top -json console60k.json
+
+# Clean up unused logic
+clean
+
+# Write gate-level netlist
+write_verilog console60k_synth.v
+
+# Display resource utilization
+stat

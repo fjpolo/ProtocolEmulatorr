@@ -1,0 +1,21 @@
+# =============================================================================
+# Yosys Open-Source Synthesis Script for Sipeed Tang Console 60K
+# Target FPGA : Gowin GW5AT-LV60PG484AC1/I0 (Arora-V / GW5A)
+# Top Module  : top
+# =============================================================================
+
+# Read Verilog source files
+read_verilog -sv ../../../rtl/ProtocolEmulator.v
+read_verilog -sv src/top.v
+
+# Elaborate and synthesize for Gowin Arora-V (GW5A architecture)
+synth_gowin -family gw5a -top top -json impl/pnr/console60k_synth.json
+
+# Clean up redundant logic
+clean
+
+# Write gate-level netlist
+write_verilog impl/pnr/console60k_synth.v
+
+# Display synthesis resource utilization
+stat

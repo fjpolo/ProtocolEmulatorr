@@ -20,5 +20,7 @@
 *.yw
 *.smtc
 template_formal.v
+*.json
+*.dot
 
 
