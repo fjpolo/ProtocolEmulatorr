@@ -31,6 +31,10 @@ async def reset_dut(dut):
     dut.i_reset_n.value = 0
     dut.i_rx.value = 1  # UART line idles high
     dut.i_data.value = 0
+    dut.i_prog_en.value = 0
+    dut.i_prog_we.value = 0
+    dut.i_prog_addr.value = 0
+    dut.i_prog_data.value = 0
     await ClockCycles(dut.i_clk, 5)
     await RisingEdge(dut.i_clk)
     dut.i_reset_n.value = 1
@@ -324,3 +328,150 @@ async def test_uart_echo_timing_zero_jitter(dut):
     await timing_task
 
     dut._log.info("Zero-jitter echo timing test PASSED: Exactly 434 cycles/bit!")
+
+
+# -----------------------------------------------------------------------------
+# Test 6 (Task 04): IMEM Programming Port & Readback Verification
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_imem_programming_interface(dut):
+    """Verify runtime microcode programming port and combinational readback."""
+    start_clock(dut.i_clk, CLK_PERIOD_NS)
+    await reset_dut(dut)
+
+    # 1. Verify power-on default readback (Echo microcode at addresses 0..8)
+    expected_defaults = [
+        0x40D8, 0x01B1, 0x21B1, 0x4200, 0xA000, 0x31B1, 0x11B1, 0x33B1, 0x8000
+    ]
+    for addr, expected_val in enumerate(expected_defaults):
+        dut.i_prog_addr.value = addr
+        await Timer(1, units="ns") # Combinational settling
+        readback = int(dut.o_prog_rdata.value)
+        assert readback == expected_val, (
+            f"Default IMEM mismatch at 0x{addr:02X}: Expected 0x{expected_val:04X}, got 0x{readback:04X}"
+        )
+    dut._log.info("Power-on IMEM default contents verified!")
+
+    # 2. Enter programming mode and write new instructions across all 32 words
+    dut.i_prog_en.value = 1
+    await RisingEdge(dut.i_clk)
+
+    test_program = {}
+    for addr in range(32):
+        # Unique test word: 0x5000 | (addr << 4) | (addr & 0xF)
+        val = 0x5000 | (addr << 4) | (addr & 0xF)
+        test_program[addr] = val
+        dut.i_prog_addr.value = addr
+        dut.i_prog_data.value = val
+        dut.i_prog_we.value = 1
+        await RisingEdge(dut.i_clk)
+        dut.i_prog_we.value = 0
+        await RisingEdge(dut.i_clk)
+
+    # 3. Verify readback across all 32 words
+    for addr, expected_val in test_program.items():
+        dut.i_prog_addr.value = addr
+        await Timer(1, units="ns")
+        readback = int(dut.o_prog_rdata.value)
+        assert readback == expected_val, (
+            f"Written IMEM mismatch at 0x{addr:02X}: Expected 0x{expected_val:04X}, got 0x{readback:04X}"
+        )
+
+    dut.i_prog_en.value = 0
+    await RisingEdge(dut.i_clk)
+    dut._log.info("IMEM 32-word runtime write and readback verified 100%!")
+
+
+async def load_program_direct(dut, instructions):
+    """Halts core, loads microcode words into IMEM via programming port, and releases core."""
+    dut.i_prog_en.value = 1
+    await RisingEdge(dut.i_clk)
+    for addr, word in enumerate(instructions):
+        dut.i_prog_addr.value = addr
+        dut.i_prog_data.value = word
+        dut.i_prog_we.value = 1
+        await RisingEdge(dut.i_clk)
+        dut.i_prog_we.value = 0
+        await RisingEdge(dut.i_clk)
+    dut.i_prog_en.value = 0
+    await RisingEdge(dut.i_clk)
+
+
+# -----------------------------------------------------------------------------
+# Test 7 (Task 04): Dynamic Microcode Execution Switching In-Flight
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_runtime_dynamic_reprogram(dut):
+    """
+    Test live reprogramming in simulation:
+    1. Load standard Echo microcode into IMEM.
+    2. Verify Echo program receives 0x42 and echoes 0x42.
+    3. Halt core with i_prog_en, load custom continuous transmitter microcode.
+    4. Release i_prog_en, verify core autonomously transmits the programmed byte!
+    """
+    start_clock(dut.i_clk, CLK_PERIOD_NS)
+    await reset_dut(dut)
+
+    tx_host = UARTTransmitter(dut, dut.i_clk, dut.i_rx)
+    rx_host = UARTReceiver(dut, dut.i_clk, dut.o_tx)
+
+    echo_prog = [
+        0x40D8, # WAIT rx=0 [216]
+        0x01B1, # NOP       [433]
+        0x21B1, # IN  rx, 8 [433]
+        0x4200, # WAIT rx=1 [0]
+        0xA000, # PUSH
+        0x31B1, # SET tx=0  [433]
+        0x11B1, # OUT tx, 8 [433]
+        0x33B1, # SET tx=1  [433]
+        0x8000, # JMP 0x0
+    ]
+
+    # Step 1: Load Echo program & test loopback
+    await load_program_direct(dut, echo_prog)
+    dut._log.info("Step 1: Echo program loaded into IMEM")
+
+    rx_task = cocotb.start_soon(rx_host.receive_byte_midpoint_sampled())
+    await tx_host.transmit_byte(0x42)
+    val, valid, _ = await rx_task
+    assert valid and val == 0x42, f"Initial echo failed: got {val}"
+    dut._log.info("Step 1: Default Echo verified live!")
+
+    # Step 2: Reprogram core to autonomously transmit '!' (0x21 = 0010_0001b)
+    # Bit pattern LSB-first: 1, 0, 0, 0, 0, 1, 0, 0
+    # Include an initial idle delay so receiver can arm before start bit falls!
+    custom_prog = [
+        0x01B1, # NOP 433 (Inter-frame idle delay)
+        0x31B1, # SET 0, 433 (Start bit)
+        0x33B1, # SET 1, 433 (Bit 0: 1)
+        0x31B1, # SET 0, 433 (Bit 1: 0)
+        0x31B1, # SET 0, 433 (Bit 2: 0)
+        0x31B1, # SET 0, 433 (Bit 3: 0)
+        0x31B1, # SET 0, 433 (Bit 4: 0)
+        0x33B1, # SET 1, 433 (Bit 5: 1)
+        0x31B1, # SET 0, 433 (Bit 6: 0)
+        0x31B1, # SET 0, 433 (Bit 7: 0)
+        0x33B1, # SET 1, 433 (Stop bit)
+        0x8000, # JMP 0     (Repeat)
+    ]
+
+    # Arm receiver before releasing core
+    rx_task = cocotb.start_soon(rx_host.receive_byte_midpoint_sampled())
+
+    # Step 2: Load custom transmitter program
+    await load_program_direct(dut, custom_prog)
+    dut._log.info("Step 2: Core released into custom transmitter program!")
+
+    # Step 3: Monitor UART TX - core should transmit '!' (0x21) autonomously!
+    val, valid, _ = await rx_task
+    assert valid, "Framing error on custom microcode transmission"
+    assert val == 0x21, f"Expected custom char '!' (0x21), got 0x{val:02X}"
+    dut._log.info(f"Step 3: Core autonomously transmitted '{chr(val)}' (0x{val:02X}) as programmed!")
+
+    # Verify a second transmission follows seamlessly
+    rx_task = cocotb.start_soon(rx_host.receive_byte_midpoint_sampled())
+    val, valid, _ = await rx_task
+    assert valid and val == 0x21, f"Second transmission failed: got 0x{val:02X}"
+    dut._log.info(f"Step 4: Continuous loop confirmed '{chr(val)}' (0x{val:02X})!")
+
+    dut._log.info("Dynamic runtime reprogramming test PASSED 100%!")

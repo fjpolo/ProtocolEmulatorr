@@ -6,6 +6,7 @@
 
 # Read Verilog source files
 read_verilog -sv ../../../rtl/ProtocolEmulator.v
+read_verilog -sv ../../../rtl/OmniBootloader.v
 read_verilog -sv src/top.v
 
 # Elaborate and synthesize for Gowin Arora-V (GW5A architecture)
