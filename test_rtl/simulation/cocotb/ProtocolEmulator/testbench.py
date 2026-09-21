@@ -10,6 +10,7 @@
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles, Timer
+from cocotb.utils import get_sim_time
 
 BAUD_RATE = 115200
 CLK_FREQ_HZ = 50_000_000
@@ -35,6 +36,7 @@ async def reset_dut(dut):
     dut.i_prog_we.value = 0
     dut.i_prog_addr.value = 0
     dut.i_prog_data.value = 0
+    dut.i_baud_div.value  = 433   # Default: 115200 baud @ 50 MHz
     await ClockCycles(dut.i_clk, 5)
     await RisingEdge(dut.i_clk)
     dut.i_reset_n.value = 1
@@ -547,3 +549,74 @@ async def test_call_ret_nested(dut):
     pc_val = int(dut.pc.value)
     assert pc_val == 2, f"Expected pc=2 (final JMP 2 loop after 2-deep CALL/RET), got pc={pc_val}"
     dut._log.info(f"Nested CALL/RET test PASSED: pc settled at {pc_val} (LIFO stack correct)")
+
+
+@cocotb.test()
+async def test_baud_div_configurable(dut):
+    """Test 06: $BAUD/$HBAUD sentinel tokens track i_baud_div at runtime.
+
+    Loads echo_configurable.asm (uses 0x1FF delay tokens), sets i_baud_div=216
+    (230400 baud @ 50 MHz), sends one byte, and verifies the echo is received
+    within the timing window expected for 230400 baud — not 115200 baud.
+    """
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    CLK_PERIOD_NS = 20  # 50 MHz
+    BAUD_DIV      = 216  # 230400 baud @ 50 MHz  (clk/baud - 1)
+    BIT_NS        = (BAUD_DIV + 1) * CLK_PERIOD_NS  # 4340 ns per bit
+
+    # Switch to 230400 baud by overriding i_baud_div
+    dut.i_baud_div.value = BAUD_DIV
+    dut._log.info(f"Test 06: Set i_baud_div={BAUD_DIV} ({50_000_000//(BAUD_DIV+1):,} baud)")
+
+    # Load echo_configurable program ($BAUD tokens = 0x1FF)
+    #   [0] WAIT 0, $HBAUD  0x41FE
+    #   [1] NOP  $BAUD       0x01FF
+    #   [2] IN   8, $BAUD    0x21FF
+    #   [3] WAIT 1, 0        0x4200
+    #   [4] PUSH             0xA000
+    #   [5] SET  0, $BAUD    0x31FF
+    #   [6] OUT  8, $BAUD    0x11FF
+    #   [7] SET  1, $BAUD    0x33FF
+    #   [8] JMP  start       0x8000
+    prog = [0x41FE, 0x01FF, 0x21FF, 0x4200, 0xA000, 0x31FF, 0x11FF, 0x33FF, 0x8000]
+    await load_program_direct(dut, prog)
+
+    # Send byte 0xA5 at 230400 baud
+    TEST_BYTE = 0xA5
+    bits = [0] + [(TEST_BYTE >> i) & 1 for i in range(8)] + [1]  # start + data + stop
+
+    t_start = get_sim_time('ns')
+    for bit in bits:
+        dut.i_rx.value = bit
+        await Timer(BIT_NS, units='ns')
+    dut.i_rx.value = 1  # idle
+
+    # Wait for echo to appear on o_tx (at 230400 baud, full frame ≈ 10 * 4340 = 43400 ns)
+    echo_timeout_ns = BIT_NS * 25  # generous timeout
+
+    # Wait for start bit on TX (falling edge from idle high)
+    for _ in range(int(echo_timeout_ns // CLK_PERIOD_NS) + 50):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_tx.value) == 0:
+            break
+    else:
+        assert False, "Timeout: no echo start bit detected at 230400 baud"
+
+    # Sample echo bits at bit-center of each bit period
+    await Timer(BIT_NS // 2, units='ns')   # skip start bit, land at center
+    received = 0
+    for i in range(8):
+        await Timer(BIT_NS, units='ns')
+        b = int(dut.o_tx.value)
+        received |= (b << i)
+
+    assert received == TEST_BYTE, (
+        f"Echo mismatch at 230400 baud: sent 0x{TEST_BYTE:02X}, got 0x{received:02X}"
+    )
+    t_end = get_sim_time('ns')
+    dut._log.info(
+        f"Baud-div configurable test PASSED: 0x{TEST_BYTE:02X} echoed correctly at "
+        f"BAUD_DIV={BAUD_DIV} ({50_000_000//(BAUD_DIV+1):,} baud) in {t_end - t_start:.0f} ns"
+    )

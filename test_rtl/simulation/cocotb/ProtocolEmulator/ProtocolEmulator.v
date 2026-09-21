@@ -2,8 +2,9 @@
 // File        : ProtocolEmulator.v
 // Module      : ProtocolEmulator (OmniBus Deterministic Protocol Engine)
 // Description : Cycle-deterministic micro-engine with Output Shift Register (OSR),
-//               multi-cycle bit serializer (OUT), and 4-deep hardware call stack
-//               supporting CALL/RET subroutine instructions.
+//               multi-cycle bit serializer (OUT), 4-deep hardware call stack
+//               supporting CALL/RET, and runtime-configurable baud rate via
+//               i_baud_div input port with magic delay sentinel tokens.
 // License     : MIT License
 // =============================================================================
 
@@ -17,6 +18,13 @@ module ProtocolEmulator(
     input   wire    [7:0]   i_data,
     output  wire            o_tx,
     output  reg     [7:0]   o_data,
+
+    // Runtime Baud Rate Divisor (cycles_per_bit - 1)
+    // Default 433 = 115200 baud @ 50 MHz.
+    // Magic delay sentinels in instructions:
+    //   9'h1FF = use i_baud_div[8:0]     (BIT_DELAY  token in assembler: $BAUD)
+    //   9'h1FE = use i_baud_div[8:0]>>1  (HALF_DELAY token in assembler: $HBAUD)
+    input   wire    [15:0]  i_baud_div,
 
     // Runtime Microcode Programming Interface
     input   wire            i_prog_en,
@@ -126,6 +134,12 @@ module ProtocolEmulator(
     wire [8:0]  delay   = instr[8:0];
     wire [4:0]  target  = instr[4:0];
 
+    // Resolved delay: magic sentinels 9'h1FF/$BAUD and 9'h1FE/$HBAUD
+    // substitute i_baud_div at runtime, all other values pass through unchanged.
+    wire [8:0] eff_delay = (delay == 9'h1FF) ? i_baud_div[8:0] :
+                           (delay == 9'h1FE) ? (i_baud_div[8:0] >> 1) :
+                           delay;
+
     // 2-stage input synchronizer for i_rx to prevent metastability
     reg rx_sync_0, rx_sync_1;
     always @(posedge i_clk) begin
@@ -163,7 +177,7 @@ module ProtocolEmulator(
                 case (opcode)
                     4'h4: begin // WAIT: Wait until rx_in matches pin_val, then delay
                         if (rx_in == pin_val) begin
-                            delay_cnt <= delay;
+                            delay_cnt <= eff_delay;
                             pc        <= pc + 5'd1;
                         end else begin
                             delay_cnt <= 9'd0;
@@ -172,7 +186,7 @@ module ProtocolEmulator(
                     end
                     4'h2: begin // IN: Multi-cycle dynamic deserialization into ISR
                         isr       <= {rx_in, isr[7:1]};
-                        delay_cnt <= delay;
+                        delay_cnt <= eff_delay;
                         if (rx_bit_cnt == 4'd0) begin
                             // First bit sampled; 7 more bits follow
                             rx_bit_cnt <= 4'd7;
@@ -200,7 +214,7 @@ module ProtocolEmulator(
                     4'h1: begin // OUT: Multi-cycle dynamic serialization from OSR
                         tx_reg    <= osr[0];
                         osr       <= {1'b0, osr[7:1]};
-                        delay_cnt <= delay;
+                        delay_cnt <= eff_delay;
                         if (bit_cnt == 4'd0) begin
                             // First bit being driven; 7 more bits follow
                             bit_cnt <= 4'd7;
@@ -217,11 +231,11 @@ module ProtocolEmulator(
                     end
                     4'h3: begin // SET: Drive immediate pin value
                         tx_reg    <= pin_val;
-                        delay_cnt <= delay;
+                        delay_cnt <= eff_delay;
                         pc        <= pc + 5'd1;
                     end
                     4'h0: begin // NOP: Pure delay
-                        delay_cnt <= delay;
+                        delay_cnt <= eff_delay;
                         pc        <= pc + 5'd1;
                     end
                     4'h8: begin // JMP: Jump to target address

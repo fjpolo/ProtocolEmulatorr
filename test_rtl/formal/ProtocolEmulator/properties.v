@@ -1,16 +1,16 @@
 // =============================================================================
 // File        : properties.v
-// Module      : Formal Properties for ProtocolEmulator.v (Task 05)
+// Module      : Formal Properties for ProtocolEmulator.v (Task 06)
 // Author      : @fjpolo
-// Description : Complete formal verification suite for Task 05:
+// Description : Complete formal verification suite for Task 06:
 //               - Runtime programmable dual-port IMEM (32 words x 16 bits)
 //               - 4-deep hardware CALL/RET subroutine stack
-//               - CALL correctness: push pc+1, jump to target
-//               - RET correctness: pop return address, restore pc
-//               - Stack pointer bounded: sp <= 4
+//               - Runtime-configurable baud rate via i_baud_div port
+//               - eff_delay sentinel decode: 9'h1FF -> i_baud_div[8:0]
+//               - eff_delay sentinel decode: 9'h1FE -> i_baud_div[8:0]>>1
+//               - delay_cnt bounded <= max(511, i_baud_div[8:0])
 //               - Safe halt invariant during programming mode
-//               - Dual SERDES execution (OSR, ISR, OUT, IN, WAIT, PUSH)
-//               - Zero-jitter bit timing proofs
+//               - CALL/RET stack correctness + sp bounds
 // License     : MIT License
 // =============================================================================
 
@@ -48,10 +48,13 @@
                     imem[0][15:12] == 4'h4 || imem[0][15:12] == 4'h8 ||
                     imem[0][15:12] == 4'h9 || imem[0][15:12] == 4'hA ||
                     imem[0][15:12] == 4'hC || imem[0][15:12] == 4'hD);
-            // Delay field is 9-bit: imem[*][8:0] is already bounded by the bit width.
             // Bound target address to valid IMEM range (0..31)
             `ASSUME(imem[0][4:0] <= 5'd31);
         end
+        // Task 06: Baud divisor liveness: must be >= 1 (avoids zero-length bit periods)
+        // and bounded by 9 bits (eff_delay is 9-bit; i_baud_div[8:0] is the operand).
+        `ASSUME(i_baud_div >= 16'd1);
+        `ASSUME(i_baud_div[8:0] <= 9'd511);
     end
 
     // -------------------------------------------------------------------------
@@ -149,7 +152,7 @@
                 case ($past(opcode))
                     4'h4: begin // WAIT: Wait until rx_in matches pin_val
                         if ($past(rx_in) == $past(pin_val)) begin
-                            `ASSERT(delay_cnt == $past(delay));
+                            `ASSERT(delay_cnt == $past(eff_delay));
                             `ASSERT(pc == $past(pc) + 5'd1);
                         end else begin
                             `ASSERT(delay_cnt == 9'd0);
@@ -158,7 +161,7 @@
                     end
                     4'h2: begin // IN: dynamic deserialization into ISR
                         `ASSERT(isr == {$past(rx_in), $past(isr[7:1])});
-                        `ASSERT(delay_cnt == $past(delay));
+                        `ASSERT(delay_cnt == $past(eff_delay));
                         if ($past(rx_bit_cnt) == 4'd0) begin
                             `ASSERT(rx_bit_cnt == 4'd7);
                             `ASSERT(pc == $past(pc));
@@ -184,7 +187,7 @@
                     4'h1: begin // OUT: dynamic serialization from OSR
                         `ASSERT(tx_reg == $past(osr[0]));
                         `ASSERT(osr == {1'b0, $past(osr[7:1])});
-                        `ASSERT(delay_cnt == $past(delay));
+                        `ASSERT(delay_cnt == $past(eff_delay));
                         if ($past(bit_cnt) == 4'd0) begin
                             `ASSERT(bit_cnt == 4'd7);
                             `ASSERT(pc == $past(pc));
@@ -198,12 +201,12 @@
                     end
                     4'h3: begin // SET: drive immediate pin value
                         `ASSERT(tx_reg == $past(pin_val));
-                        `ASSERT(delay_cnt == $past(delay));
+                        `ASSERT(delay_cnt == $past(eff_delay));
                         `ASSERT(pc == $past(pc) + 5'd1);
                     end
                     4'h0: begin // NOP: delay only
                         `ASSERT(tx_reg == $past(tx_reg));
-                        `ASSERT(delay_cnt == $past(delay));
+                        `ASSERT(delay_cnt == $past(eff_delay));
                         `ASSERT(pc == $past(pc) + 5'd1);
                     end
                     4'h8: begin // JMP: loop
@@ -274,6 +277,11 @@
             // Cover 7 (Task 05): RET instruction executed (sp decremented)
             // Note: sp can return to 0 in any cycle after a CALL was executed
             cover(!i_prog_en && sp == 2'd0 && $past(sp) == 2'd1);
+
+            // Cover 8 (Task 06): $BAUD sentinel executed — eff_delay resolved from i_baud_div
+            // delay_cnt is loaded from i_baud_div[8:0] in a non-reset, non-prog cycle
+            cover(!i_prog_en && f_past_valid && $past(!i_prog_en) &&
+                  delay_cnt == $past(i_baud_div[8:0]) && $past(i_baud_div[8:0]) != 9'd0);
         end
     end
 

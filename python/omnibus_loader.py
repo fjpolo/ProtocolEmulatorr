@@ -269,19 +269,55 @@ class OmnibusLoader:
             running = False
             print("\n[*] Disconnected from serial monitor.")
 
+    def set_baud_div(self, divisor):
+        """Send SetBaud command ('B') to OmniBootloader to update baud_div register.
+        divisor = cycles_per_bit - 1  (e.g. 433 for 115200 @ 50 MHz)
+        """
+        div_hi = (divisor >> 8) & 0xFF
+        div_lo = divisor & 0xFF
+        self.ser.write(bytes([ord('B'), div_hi, div_lo]))
+        self.ser.flush()
+        # Expect: ACK (0x06) + echo div_hi + echo div_lo
+        resp = self.ser.read(3)
+        if len(resp) < 3 or resp[0] != 0x06:
+            raise RuntimeError(f"SetBaud failed: unexpected response {resp.hex() if resp else 'timeout'}")
+        echoed = (resp[1] << 8) | resp[2]
+        if echoed != divisor:
+            raise RuntimeError(f"SetBaud echo mismatch: sent {divisor}, got {echoed}")
+        print(f"[OK] Baud divisor set to {divisor} ({50_000_000 // (divisor + 1):,} baud @ 50 MHz)")
+
     def close(self):
         if self.ser and self.ser.is_open:
             self.ser.close()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="OmniBus Microcode Host Loader")
+    parser = argparse.ArgumentParser(
+        description="OmniBus Microcode Host Loader",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  Load echo program at default 115200 baud:
+    python omnibus_loader.py --file examples/echo_configurable.asm --terminal
+
+  Switch core to 57600 baud then load configurable echo:
+    python omnibus_loader.py --set-baud 57600 --file examples/echo_configurable.asm --terminal
+
+  Set divisor directly (867 = 57600 baud @ 50 MHz):
+    python omnibus_loader.py --set-div 867 --file examples/echo_configurable.asm
+""")
     parser.add_argument("-p", "--port", default=None, help="Serial port (e.g. COM19). Auto-detects if omitted.")
-    parser.add_argument("-b", "--baud", type=int, default=115200, help="Baud rate (default: 115200)")
+    parser.add_argument("-b", "--baud", type=int, default=115200, help="Baud rate for UART communication (default: 115200)")
     parser.add_argument("-f", "--file", help="Microcode file to load (.asm or .hex)")
     parser.add_argument("-t", "--terminal", action="store_true", help="Launch interactive serial terminal after loading")
     parser.add_argument("-d", "--dump", action="store_true", help="Dump all 32 words of IMEM")
     parser.add_argument("--no-verify", action="store_true", help="Skip readback verification")
+    parser.add_argument("--set-baud", type=int, default=None, metavar="HZ",
+                        help="Set core baud rate (Hz). Computes divisor = 50MHz/rate - 1. "
+                             "e.g. --set-baud 57600")
+    parser.add_argument("--set-div", type=int, default=None, metavar="N",
+                        help="Set baud divisor directly (cycles_per_bit - 1). "
+                             "e.g. --set-div 867")
 
     args = parser.parse_args()
 
@@ -290,11 +326,24 @@ def main():
         print("Error: No serial port found. Connect your FPGA board or specify with --port COMx", file=sys.stderr)
         sys.exit(1)
 
+    # Resolve baud divisor if requested
+    baud_divisor = None
+    if args.set_div is not None:
+        baud_divisor = args.set_div
+    elif args.set_baud is not None:
+        CLK_HZ = 50_000_000
+        baud_divisor = max(1, round(CLK_HZ / args.set_baud) - 1)
+        print(f"[*] Computed divisor {baud_divisor} for {args.set_baud:,} baud @ {CLK_HZ//1_000_000} MHz")
+
     loader = OmnibusLoader(port=port, baud=args.baud)
 
     try:
         loader.connect()
         loader.sync()
+
+        # Optional: configure core baud rate before uploading microcode
+        if baud_divisor is not None:
+            loader.set_baud_div(baud_divisor)
 
         if args.dump:
             print("[*] Dumping IMEM contents (32 words):")

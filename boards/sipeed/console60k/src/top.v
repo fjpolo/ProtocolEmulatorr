@@ -27,6 +27,7 @@ module top (
     wire [15:0] prog_rdata;
     wire        bootloader_tx;
     wire        prog_active;
+    wire [15:0] baud_div;     // Runtime baud divisor from bootloader
 
     ProtocolEmulator DUT (
         .i_clk        (i_sys_clk),
@@ -35,6 +36,7 @@ module top (
         .i_data       (8'h00),
         .o_tx         (core_tx),
         .o_data       (core_data),
+        .i_baud_div   (baud_div),
         .i_prog_en    (prog_en),
         .i_prog_we    (prog_we),
         .i_prog_addr  (prog_addr),
@@ -51,6 +53,7 @@ module top (
         .i_rx         (uart_rx),
         .o_tx         (bootloader_tx),
         .o_prog_active(prog_active),
+        .o_baud_div   (baud_div),
         .o_prog_en    (prog_en),
         .o_prog_we    (prog_we),
         .o_prog_addr  (prog_addr),

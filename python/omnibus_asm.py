@@ -4,6 +4,9 @@
 # Description : OmniBus Microcode Assembler
 #               Assembles human-readable microcode into 16-bit binary/hex words
 #               for runtime execution on the OmniBus Protocol Emulator.
+#               Supports $BAUD / $HBAUD magic delay tokens that resolve to
+#               9'h1FF / 9'h1FE at assembly time, deferring actual timing to
+#               the i_baud_div runtime register in ProtocolEmulator.
 # License     : MIT License
 # =============================================================================
 
@@ -44,9 +47,13 @@ class OmnibusAssembler:
         """Assembles assembly source text into a list of (address, 16-bit word, source_line)."""
         lines = source_text.splitlines()
         labels = {}
+        # Baud-rate aware symbols (computed from clock/baud parameters)
         symbols = {
-            "BIT_DELAY": self.bit_delay,
+            "BIT_DELAY":  self.bit_delay,
             "HALF_DELAY": self.half_bit_delay,
+            # Magic sentinel tokens: substitute i_baud_div at runtime
+            "$BAUD":  0x1FF,  # 9'h1FF = use i_baud_div[8:0]   (full bit period)
+            "$HBAUD": 0x1FE,  # 9'h1FE = use i_baud_div[8:0]>>1 (half bit period)
         }
 
         # ---------------------------------------------------------------------
