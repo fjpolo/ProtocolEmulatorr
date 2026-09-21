@@ -20,9 +20,9 @@ for dir in */; do
 
     # Check if the script failed
     if [ $exit_status -ne 0 ]; then
-      echo "    [SYNTHESIS] FAIL: ProtocolEmulator failed!"
+      echo "    [SYNTHESIS] FAIL: ${dir%/} failed!"
     else
-      echo "    [SYNTHESIS] PASS: ProtocolEmulator passed!"
+      echo "    [SYNTHESIS] PASS: ${dir%/} passed!"
     fi
   else
     echo "    [SYNTHESIS] ERROR: No run.sh found in $dir"

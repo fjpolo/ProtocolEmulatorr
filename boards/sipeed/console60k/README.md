@@ -58,3 +58,10 @@ build.bat -Scan
 # Flash to persistent SPI Flash
 .\build.ps1 -NoBuild -Flash flash
 ```
+
+### Open-Source Yosys Flow (`build_yosys.sh`)
+```bash
+# Synthesize top module for GW5AT-60B (Arora-V) using Yosys
+./build_yosys.sh
+```
+

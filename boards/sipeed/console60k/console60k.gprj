@@ -7,6 +7,7 @@
     <FileList>
         <File path="src/top.v" type="file.verilog" enable="1"/>
         <File path="../../../rtl/ProtocolEmulator.v" type="file.verilog" enable="1"/>
+        <File path="../../../rtl/OmniBootloader.v" type="file.verilog" enable="1"/>
         <File path="src/console60k.cst" type="file.cst" enable="1"/>
         <File path="src/console60k.sdc" type="file.sdc" enable="1"/>
     </FileList>

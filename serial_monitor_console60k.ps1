@@ -44,17 +44,29 @@ function Get-AvailablePorts {
     foreach ($name in $allNames) {
         $desc = "Serial Port"
         $isUsb = $false
+        $isFtdi = $false
+        $isBlocked = $false
         $match = $pnpDevices | Where-Object { $_.Caption -like "*($name)*" }
         if ($match) {
             $desc = $match.Caption
-            if ($match.DeviceID -match "USB|FTDI|VID_" -or $match.Manufacturer -match "FTDI") {
+            $hwid = $match.DeviceID
+            if ($hwid -match "USB|FTDI|VID_" -or $match.Manufacturer -match "FTDI") {
                 $isUsb = $true
+            }
+            if ($hwid -match "VID_0403|VID:PID=0403") {
+                $isFtdi = $true
+            }
+            # Block Raspberry Pi Pico (VID 2E8A) and Bluetooth
+            if ($hwid -match "VID_2E8A|VID:PID=2E8A" -or $desc -match "Bluetooth") {
+                $isBlocked = $true
             }
         }
         $ports.Add([PSCustomObject]@{
             Port        = $name
             Description = $desc
             IsUsb       = $isUsb
+            IsFtdi      = $isFtdi
+            IsBlocked   = $isBlocked
         })
     }
     return $ports
@@ -75,19 +87,30 @@ if (-not $Port) {
     Write-Host "Auto-detecting Tang Console 60K USB-UART port..." -ForegroundColor Cyan
     $available = @(Get-AvailablePorts)
 
-    $consolePort = $available | Where-Object { $_.Port -eq "COM19" }
+    # Priority 1: COM19 specifically (Tang Console 60K known port)
+    $consolePort = $available | Where-Object { $_.Port -eq "COM19" -and -not $_.IsBlocked }
     if ($consolePort) {
         $Port = $consolePort.Port
         Write-Host "[OK] Detected Tang Console 60K FPGA UART: $Port ($($consolePort.Description))" -ForegroundColor Green
     } else {
-        $usbPorts = @($available | Where-Object { $_.IsUsb -and $_.Description -notmatch "Bluetooth" })
-        if ($usbPorts.Count -ge 1) {
-            $selected = $usbPorts | Sort-Object Port -Descending | Select-Object -First 1
+        # Priority 2: Any FTDI device (VID 0403) that is not blocked
+        $ftdiPorts = @($available | Where-Object { $_.IsFtdi -and -not $_.IsBlocked })
+        if ($ftdiPorts.Count -ge 1) {
+            # Prefer highest COM number (Channel B > Channel A)
+            $selected = $ftdiPorts | Sort-Object { [int]($_.Port -replace '\D','') } -Descending | Select-Object -First 1
             $Port = $selected.Port
-            Write-Host "[OK] Selected FPGA USB Serial Port: $Port ($($selected.Description))" -ForegroundColor Green
+            Write-Host "[OK] Detected Tang Console 60K FTDI UART: $Port ($($selected.Description))" -ForegroundColor Green
         } else {
-            Write-Host "[ERROR] No USB serial ports found! Please ensure Tang Console 60K is plugged into the MCU USB-C port." -ForegroundColor Red
-            exit 1
+            # Priority 3: Any non-blocked USB serial port (highest COM number)
+            $usbPorts = @($available | Where-Object { $_.IsUsb -and -not $_.IsBlocked })
+            if ($usbPorts.Count -ge 1) {
+                $selected = $usbPorts | Sort-Object { [int]($_.Port -replace '\D','') } -Descending | Select-Object -First 1
+                $Port = $selected.Port
+                Write-Host "[OK] Selected FPGA USB Serial Port: $Port ($($selected.Description))" -ForegroundColor Green
+            } else {
+                Write-Host "[ERROR] No USB serial ports found! Please ensure Tang Console 60K is plugged into the MCU USB-C port." -ForegroundColor Red
+                exit 1
+            }
         }
     }
 }
@@ -106,6 +129,8 @@ Write-Host "============================================================`n" -For
 
 $sp = [System.IO.Ports.SerialPort]::new($Port, $BaudRate, [System.IO.Ports.Parity]::None, 8, [System.IO.Ports.StopBits]::One)
 $sp.Handshake = [System.IO.Ports.Handshake]::None
+$sp.DtrEnable = $true
+$sp.RtsEnable = $true
 $sp.ReadTimeout = 500
 $sp.WriteTimeout = 500
 $sp.Encoding = [System.Text.Encoding]::ASCII
@@ -119,7 +144,10 @@ if ($LogFile) {
 try {
     $sp.Open()
     $sp.DiscardInBuffer()
-    Write-Host "Connected to $Port @ $BaudRate baud. Waiting for data...`n" -ForegroundColor Green
+    $sp.DiscardOutBuffer()
+    Write-Host "Connected to $Port @ $BaudRate baud." -ForegroundColor Green
+    Write-Host "[ECHO MODE] Type characters in this terminal to test live hardware echo on Tang Console 60K:" -ForegroundColor Cyan
+    Write-Host "------------------------------------------------------------`n" -ForegroundColor DarkGray
 
     [Console]::TreatControlCAsInput = $false
     $buffer = New-Object byte[] 4096
@@ -143,6 +171,10 @@ try {
                 $keyInfo = [Console]::ReadKey($true)
                 if ($keyInfo.Modifiers -band [ConsoleModifiers]::Control -and $keyInfo.Key -eq [ConsoleKey]::C) {
                     break
+                }
+                $charToSend = $keyInfo.KeyChar
+                if ($charToSend -and [int]$charToSend -ne 0) {
+                    $sp.Write($charToSend.ToString())
                 }
             } else {
                 Start-Sleep -Milliseconds 5
