@@ -21,6 +21,8 @@ OPCODES = {
     "JMP":  0x8,
     "PULL": 0x9,
     "PUSH": 0xA,
+    "CALL": 0xC,  # Push pc+1 to call stack, jump to target
+    "RET":  0xD,  # Pop return address from call stack
 }
 
 class AssemblerError(Exception):
@@ -160,6 +162,17 @@ class OmnibusAssembler:
                 word = (opcode_val << 12) | target
 
             elif op in ("PUSH", "PULL"):
+                word = opcode_val << 12
+
+            elif op == "CALL":
+                # CALL target_label_or_addr
+                if len(tokens) < 2:
+                    raise AssemblerError(f"Line {line_num}: CALL requires a target address or label")
+                target = eval_arg(tokens[1]) & 0x1F
+                word = (opcode_val << 12) | target
+
+            elif op == "RET":
+                # RET — no operands
                 word = opcode_val << 12
 
             assembled.append((addr, word, line))
