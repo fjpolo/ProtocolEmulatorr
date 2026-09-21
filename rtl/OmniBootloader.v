@@ -4,6 +4,7 @@
 // Description : In-band UART microcode bootloader for the OmniBus architecture.
 //               Enables runtime loading, verification, and execution of microcode
 //               at 115200 baud on a 50 MHz system clock without FPGA re-synthesis.
+//               Supports runtime baud rate divisor configuration via 'B' command.
 // License     : MIT License
 // =============================================================================
 
@@ -19,6 +20,9 @@ module OmniBootloader #(
     input   wire            i_rx,
     output  wire            o_tx,
     output  wire            o_prog_active,
+
+    // Runtime baud divisor output → drives ProtocolEmulator.i_baud_div
+    output  wire    [15:0]  o_baud_div,
 
     // Interface to ProtocolEmulator IMEM
     output  wire            o_prog_en,
@@ -214,12 +218,18 @@ module OmniBootloader #(
         CMD_R_ADDR      = 4'd5,
         CMD_R_SETTLE    = 4'd6,
         CMD_SEND_RESP   = 4'd7,
-        CMD_EXIT_MODE   = 4'd8;
+        CMD_EXIT_MODE   = 4'd8,
+        CMD_B_HI        = 4'd9,   // SetBaud: receive baud_div MSB
+        CMD_B_LO        = 4'd10;  // SetBaud: receive baud_div LSB
 
     reg [3:0] cmd_state;
     reg [1:0] token_step;
     reg [7:0] data_hi_reg;
     reg       prog_active_reg;
+
+    // Runtime baud rate divisor register (default: 433 = 115200 baud @ 50 MHz)
+    reg [15:0] baud_div;
+    assign o_baud_div = baud_div;
 
     // Response buffer
     reg [7:0] resp_bytes [0:7];
@@ -244,6 +254,7 @@ module OmniBootloader #(
             resp_len        <= 3'd0;
             resp_idx        <= 3'd0;
             next_cmd_state  <= CMD_IDLE;
+            baud_div        <= 16'd433; // Default: 115200 baud @ 50 MHz
         end else begin
             o_prog_we    <= 1'b0; // 1-cycle default pulse
             tx_start_req <= 1'b0;
@@ -289,9 +300,10 @@ module OmniBootloader #(
                 CMD_WAIT_OP: begin
                     if (rx_valid) begin
                         case (rx_byte)
-                            8'h57: cmd_state <= CMD_W_ADDR;    // 'W'
-                            8'h52: cmd_state <= CMD_R_ADDR;    // 'R'
-                            8'h58: begin                      // 'X'
+                            8'h57: cmd_state <= CMD_W_ADDR;    // 'W' = Write IMEM
+                            8'h52: cmd_state <= CMD_R_ADDR;    // 'R' = Read IMEM
+                            8'h42: cmd_state <= CMD_B_HI;      // 'B' = SetBaud divisor
+                            8'h58: begin                      // 'X' = Exit / Run
                                 // Load response: ACK + "RUN\r\n"
                                 resp_bytes[0]  <= 8'h06; // ACK
                                 resp_bytes[1]  <= 8'h52; // 'R'
@@ -371,6 +383,29 @@ module OmniBootloader #(
                 CMD_EXIT_MODE: begin
                     prog_active_reg <= 1'b0;
                     cmd_state       <= CMD_IDLE;
+                end
+
+                CMD_B_HI: begin
+                    // SetBaud: receive high byte of baud divisor
+                    if (rx_valid) begin
+                        data_hi_reg <= rx_byte;
+                        cmd_state   <= CMD_B_LO;
+                    end
+                end
+
+                CMD_B_LO: begin
+                    // SetBaud: receive low byte, update baud_div, respond ACK
+                    if (rx_valid) begin
+                        baud_div       <= {data_hi_reg, rx_byte};
+                        // Reply ACK + echo new divisor MSB + LSB
+                        resp_bytes[0]  <= 8'h06;           // ACK
+                        resp_bytes[1]  <= data_hi_reg;     // div[15:8]
+                        resp_bytes[2]  <= rx_byte;         // div[7:0]
+                        resp_len       <= 3'd3;
+                        resp_idx       <= 3'd0;
+                        next_cmd_state <= CMD_WAIT_OP;
+                        cmd_state      <= CMD_SEND_RESP;
+                    end
                 end
 
                 default: cmd_state <= CMD_IDLE;
