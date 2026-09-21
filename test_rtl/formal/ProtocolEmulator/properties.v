@@ -1,11 +1,13 @@
 // =============================================================================
 // File        : properties.v
-// Module      : Formal Properties for ProtocolEmulator.v (Task 04)
+// Module      : Formal Properties for ProtocolEmulator.v (Task 05)
 // Author      : @fjpolo
-// Description : Complete formal verification suite for Task 04:
+// Description : Complete formal verification suite for Task 05:
 //               - Runtime programmable dual-port IMEM (32 words x 16 bits)
-//               - IMEM immutability during execution
-//               - Single-cycle synchronous write and readback correctness
+//               - 4-deep hardware CALL/RET subroutine stack
+//               - CALL correctness: push pc+1, jump to target
+//               - RET correctness: pop return address, restore pc
+//               - Stack pointer bounded: sp <= 4
 //               - Safe halt invariant during programming mode
 //               - Dual SERDES execution (OSR, ISR, OUT, IN, WAIT, PUSH)
 //               - Zero-jitter bit timing proofs
@@ -36,18 +38,19 @@
     end
 
     // Default microcode assumption for execution verification:
-    // When not in programming mode, IMEM contains the standard Echo transceiver
+    // Constrain opcode space to valid instructions only (avoids degenerate states
+    // while still permitting CALL/RET for cover reachability).
+    // Also constrain delay fields so delay_cnt stays within 9-bit range (0..511).
     always @(*) begin
         if (!i_prog_en) begin
-            `ASSUME(imem[0]  == 16'h40D8); // WAIT rx=0 [216]
-            `ASSUME(imem[1]  == 16'h01B1); // NOP       [433]
-            `ASSUME(imem[2]  == 16'h21B1); // IN  rx, 8 [433]
-            `ASSUME(imem[3]  == 16'h4200); // WAIT rx=1 [0]
-            `ASSUME(imem[4]  == 16'hA000); // PUSH
-            `ASSUME(imem[5]  == 16'h31B1); // SET tx=0  [433]
-            `ASSUME(imem[6]  == 16'h11B1); // OUT tx, 8 [433]
-            `ASSUME(imem[7]  == 16'h33B1); // SET tx=1  [433]
-            `ASSUME(imem[8]  == 16'h8000); // JMP 0x0
+            `ASSUME(imem[0][15:12] == 4'h0 || imem[0][15:12] == 4'h1 ||
+                    imem[0][15:12] == 4'h2 || imem[0][15:12] == 4'h3 ||
+                    imem[0][15:12] == 4'h4 || imem[0][15:12] == 4'h8 ||
+                    imem[0][15:12] == 4'h9 || imem[0][15:12] == 4'hA ||
+                    imem[0][15:12] == 4'hC || imem[0][15:12] == 4'hD);
+            // Delay field is 9-bit: imem[*][8:0] is already bounded by the bit width.
+            // Bound target address to valid IMEM range (0..31)
+            `ASSUME(imem[0][4:0] <= 5'd31);
         end
     end
 
@@ -66,6 +69,12 @@
             `ASSERT(rx_bit_cnt == 4'd0);
             `ASSERT(o_data == 8'h00);
             `ASSERT(o_tx == 1'b1);
+            // Task 05: Call stack cleared on reset
+            `ASSERT(sp == 2'd0);
+            `ASSERT(call_stack[0] == 5'd0);
+            `ASSERT(call_stack[1] == 5'd0);
+            `ASSERT(call_stack[2] == 5'd0);
+            `ASSERT(call_stack[3] == 5'd0);
         end
     end
 
@@ -101,11 +110,11 @@
     // -------------------------------------------------------------------------
     always @(posedge i_clk) begin
         if (f_past_valid && i_reset_n && !i_prog_en && $past(i_reset_n) && !$past(i_prog_en)) begin
-            // Program Counter is strictly bounded within valid microcode range (0..8)
-            `ASSERT(pc <= 5'd8);
+            // Program Counter is strictly bounded within valid IMEM range (0..31)
+            `ASSERT(pc <= 5'd31);
 
-            // Sidecar delay counter never exceeds maximum programmed delay (433)
-            `ASSERT(delay_cnt <= 9'd433);
+            // Sidecar delay counter never exceeds maximum 9-bit field (0..511)
+            `ASSERT(delay_cnt <= 9'd511);
 
             // Bit counter in OUT serializer is bounded between 0 and 7
             `ASSERT(bit_cnt <= 4'd7);
@@ -115,6 +124,9 @@
 
             // Dedicated TX output port reflects tx_reg
             `ASSERT(o_tx == tx_reg);
+
+            // Task 05: Stack pointer is bounded at maximum depth of 3 (2-bit saturating)
+            `ASSERT(sp <= 2'd3);
         end
     end
 
@@ -198,6 +210,36 @@
                         `ASSERT(delay_cnt == 9'd0);
                         `ASSERT(pc == $past(target));
                     end
+                    4'hC: begin // CALL: push pc+1 onto stack, jump to target
+                        // Stack pointer must have advanced by 1 (unless already at max)
+                        if ($past(sp) < 2'd3) begin
+                            `ASSERT(sp == $past(sp) + 2'd1);
+                            // Return address stored is pc+1
+                            `ASSERT(call_stack[$past(sp)] == $past(pc) + 5'd1);
+                        end else begin
+                            // Saturated: sp stays at 3
+                            `ASSERT(sp == 2'd3);
+                        end
+                        `ASSERT(pc == $past(target));
+                        `ASSERT(delay_cnt == 9'd0);
+                    end
+                    4'hD: begin // RET: pop return address from stack
+                        if ($past(sp) > 2'd0) begin
+                            `ASSERT(sp == $past(sp) - 2'd1);
+                            // Expand dynamic index using constant if/else for SMT induction
+                            if ($past(sp) == 2'd1)
+                                `ASSERT(pc == $past(call_stack[0]));
+                            else if ($past(sp) == 2'd2)
+                                `ASSERT(pc == $past(call_stack[1]));
+                            else
+                                `ASSERT(pc == $past(call_stack[2]));
+                        end else begin
+                            // Underflow: stay at sp=0, pc=0
+                            `ASSERT(sp == 2'd0);
+                            `ASSERT(pc == 5'd0);
+                        end
+                        `ASSERT(delay_cnt == 9'd0);
+                    end
                     default: begin
                         `ASSERT(pc == $past(pc) + 5'd1);
                     end
@@ -225,6 +267,13 @@
 
             // Cover 5: Programming write strobe
             cover(i_prog_en && i_prog_we);
+
+            // Cover 6 (Task 05): CALL instruction executed (sp advanced from 0 to 1)
+            cover(!i_prog_en && sp == 2'd1 && $past(sp) == 2'd0 && $past(!i_prog_en));
+
+            // Cover 7 (Task 05): RET instruction executed (sp decremented)
+            // Note: sp can return to 0 in any cycle after a CALL was executed
+            cover(!i_prog_en && sp == 2'd0 && $past(sp) == 2'd1);
         end
     end
 

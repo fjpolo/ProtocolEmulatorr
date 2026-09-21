@@ -475,3 +475,75 @@ async def test_runtime_dynamic_reprogram(dut):
     dut._log.info(f"Step 4: Continuous loop confirmed '{chr(val)}' (0x{val:02X})!")
 
     dut._log.info("Dynamic runtime reprogramming test PASSED 100%!")
+
+
+@cocotb.test()
+async def test_call_ret_basic(dut):
+    """Test 05a: CALL jumps to subroutine and RET restores caller return address."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Program layout:
+    #   [0] CALL 3     -> push 1 onto stack, jump to addr 3
+    #   [1] NOP 0      -> return landing pad (pc should come back here after RET)
+    #   [2] JMP 2      -> infinite loop sentinel (should NOT be reached)
+    #   [3] RET        -> pop stack -> pc=1
+    #
+    # Expected trace: pc=0 (CALL) -> pc=3 (RET) -> pc=1 (NOP) -> pc=2 (JMP 2 loops)
+    CALL_3 = (0xC << 12) | 0x03   # 0xC003
+    NOP_0  = (0x0 << 12) | 0x000  # 0x0000
+    JMP_2  = (0x8 << 12) | 0x002  # 0x8002
+    RET    = (0xD << 12)           # 0xD000
+
+    prog = [CALL_3, NOP_0, JMP_2, RET]
+    await load_program_direct(dut, prog)
+
+    # Observe pc transitions directly via DUT signals
+    # Give the core enough clock cycles to execute the sequence
+    await ClockCycles(dut.i_clk, 10)
+
+    pc_val = int(dut.pc.value)
+    # After CALL->RET->NOP->JMP 2, pc should be cycling at 2
+    assert pc_val == 2, f"Expected pc=2 (JMP 2 loop after RET), got pc={pc_val}"
+    dut._log.info(f"CALL/RET basic test PASSED: pc settled at {pc_val} (correct loop after RET)")
+
+
+@cocotb.test()
+async def test_call_ret_nested(dut):
+    """Test 05b: Two-deep nested CALL/RET restores return addresses in LIFO order."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Program layout:
+    #   [0] CALL 4     -> push 1, jump to 4 (outer sub)
+    #   [1] NOP 0      -> outer return landing (pc=1 after outer RET)
+    #   [2] JMP 2      -> infinite loop sentinel
+    #   [3] NOP 0      -> padding
+    #   [4] CALL 7     -> push 5, jump to 7 (inner sub)
+    #   [5] RET        -> pop 1 from stack -> jump to 1 (outer return)
+    #   [6] NOP 0      -> padding (should NOT be reached)
+    #   [7] RET        -> pop 5 from stack -> jump to 5 (inner return)
+    CALL_4 = (0xC << 12) | 0x04
+    CALL_7 = (0xC << 12) | 0x07
+    NOP_0  = (0x0 << 12) | 0x000
+    JMP_2  = (0x8 << 12) | 0x002
+    RET    = (0xD << 12)
+
+    prog = [
+        CALL_4,  # [0] outer CALL
+        NOP_0,   # [1] outer return point
+        JMP_2,   # [2] final loop
+        NOP_0,   # [3] pad
+        CALL_7,  # [4] inner CALL
+        RET,     # [5] outer RET (-> 1)
+        NOP_0,   # [6] unreachable pad
+        RET,     # [7] inner RET (-> 5)
+    ]
+    await load_program_direct(dut, prog)
+
+    # Allow enough cycles for CALL->CALL->RET->RET->NOP->JMP 2 sequence
+    await ClockCycles(dut.i_clk, 20)
+
+    pc_val = int(dut.pc.value)
+    assert pc_val == 2, f"Expected pc=2 (final JMP 2 loop after 2-deep CALL/RET), got pc={pc_val}"
+    dut._log.info(f"Nested CALL/RET test PASSED: pc settled at {pc_val} (LIFO stack correct)")
