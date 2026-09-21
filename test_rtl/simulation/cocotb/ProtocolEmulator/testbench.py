@@ -620,3 +620,95 @@ async def test_baud_div_configurable(dut):
         f"Baud-div configurable test PASSED: 0x{TEST_BYTE:02X} echoed correctly at "
         f"BAUD_DIV={BAUD_DIV} ({50_000_000//(BAUD_DIV+1):,} baud) in {t_end - t_start:.0f} ns"
     )
+
+@cocotb.test()
+async def test_spi_loopback(dut):
+    """Test 07: SPI Mode 0 loopback using pin selector ISA extension.
+
+    Programs spi_loopback.asm (24 words) which transmits 0xA5 using:
+      - SET CS  (pin_id=2, instr[11:10]=10)
+      - SET SCK (pin_id=1, instr[11:10]=01)
+      - IN 1    (1-bit sample, instr[11:9]=001)
+    MISO is looped back from o_tx in the testbench (mirroring top.v loopback).
+    After one full 8-bit SPI transfer, o_data must equal 0xA5.
+    """
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    CLK_PERIOD_NS = 20
+    SPI_DIV = 9      # SCK half-period = 10 cycles = 200 ns
+    BIT_NS  = (SPI_DIV + 1) * CLK_PERIOD_NS
+    dut.i_baud_div.value = SPI_DIV
+    dut._log.info(f"Test 07: SPI loopback i_baud_div={SPI_DIV} half-period={BIT_NS} ns")
+
+    # spi_loopback.asm program encoding (verified by omnibus_asm.py)
+    prog = [
+        # Main loop [0..19]: 0xA5 = 10100101b MSB first
+        0x3800,  # [0]  SET CS,0,0        assert CS_n
+        0x3200,  # [1]  SET MOSI,1,0      B7=1
+        0xC014,  # [2]  CALL 20
+        0x3000,  # [3]  SET MOSI,0,0      B6=0
+        0xC014,  # [4]  CALL 20
+        0x3200,  # [5]  SET MOSI,1,0      B5=1
+        0xC014,  # [6]  CALL 20
+        0x3000,  # [7]  SET MOSI,0,0      B4=0
+        0xC014,  # [8]  CALL 20
+        0x3000,  # [9]  SET MOSI,0,0      B3=0
+        0xC014,  # [10] CALL 20
+        0x3200,  # [11] SET MOSI,1,0      B2=1
+        0xC014,  # [12] CALL 20
+        0x3000,  # [13] SET MOSI,0,0      B1=0
+        0xC014,  # [14] CALL 20
+        0x3200,  # [15] SET MOSI,1,0      B0=1
+        0xC014,  # [16] CALL 20
+        0x3A00,  # [17] SET CS,1,0        deassert CS_n
+        0xA000,  # [18] PUSH
+        0x8000,  # [19] JMP start
+        # do_bit subroutine [20..23]
+        0x37FE,  # [20] SET SCK,1,$HBAUD  rising edge
+        0x23FE,  # [21] IN  1,$HBAUD      1-bit sample
+        0x35FE,  # [22] SET SCK,0,$HBAUD  falling edge
+        0xD000,  # [23] RET
+    ]
+    await load_program_direct(dut, prog)
+
+    # MISO loopback: mirror o_tx -> i_rx every clock cycle (mirrors top.v)
+    async def loopback_task():
+        while True:
+            await RisingEdge(dut.i_clk)
+            dut.i_rx.value = int(dut.o_tx.value)
+
+    lb = cocotb.start_soon(loopback_task())
+
+    TIMEOUT = 3000  # cycles
+
+    # Wait for CS_n to assert (low)
+    for _ in range(TIMEOUT):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_spi_cs_n.value) == 0:
+            dut._log.info("CS_n asserted - transaction started")
+            break
+    else:
+        lb.cancel()
+        assert False, "Timeout: CS_n never asserted"
+
+    # Wait for CS_n to deassert (high) - transfer complete
+    for _ in range(TIMEOUT):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_spi_cs_n.value) == 1:
+            dut._log.info("CS_n deasserted - transfer complete")
+            break
+    else:
+        lb.cancel()
+        assert False, "Timeout: CS_n never deasserted after transaction"
+
+    # Allow PUSH + JMP to complete
+    await ClockCycles(dut.i_clk, 5)
+    lb.cancel()
+
+    received = int(dut.o_data.value)
+    assert received == 0xA5, f"SPI loopback mismatch: expected 0xA5, got 0x{received:02X}"
+    dut._log.info(
+        f"SPI loopback PASSED: o_data=0x{received:02X} (0xA5) "
+        f"SPI_DIV={SPI_DIV} half-period={BIT_NS} ns"
+    )
