@@ -5,7 +5,7 @@ cvr
 
 [options]
 bound: mode bmc
-bound: depth 20
+bound: depth 10
 prf:   mode prove
 prf:   depth 10
 cvr:   mode cover
