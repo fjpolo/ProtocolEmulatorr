@@ -4,6 +4,8 @@
 # Description : Dynamic Host Microcode Loader for OmniBus Architecture.
 #               Uploads assembled microcode into FPGA IMEM in ~20 milliseconds
 #               over UART @ 115200 baud without FPGA re-synthesis.
+#               Task 06: --set-baud/--set-div configure core baud rate ('B' cmd).
+#               Task 07B: --spi-data sets i_data byte for PULL-based SPI ('D' cmd).
 # License     : MIT License
 # =============================================================================
 
@@ -286,6 +288,23 @@ class OmnibusLoader:
             raise RuntimeError(f"SetBaud echo mismatch: sent {divisor}, got {echoed}")
         print(f"[OK] Baud divisor set to {divisor} ({50_000_000 // (divisor + 1):,} baud @ 50 MHz)")
 
+    def set_spi_data(self, byte_val):
+        """Send SetData command ('D') to OmniBootloader to update data_reg.
+        The byte is latched into spi_data_reg and drives ProtocolEmulator.i_data.
+        When the microcode executes PULL, OSR = this byte.
+        byte_val: int 0..255
+        """
+        byte_val = byte_val & 0xFF
+        self.ser.write(bytes([ord('D'), byte_val]))
+        self.ser.flush()
+        # Expect: ACK (0x06) + echo of the byte
+        resp = self.ser.read(2)
+        if len(resp) < 2 or resp[0] != 0x06:
+            raise RuntimeError(f"SetData failed: unexpected response {resp.hex() if resp else 'timeout'}")
+        if resp[1] != byte_val:
+            raise RuntimeError(f"SetData echo mismatch: sent 0x{byte_val:02X}, got 0x{resp[1]:02X}")
+        print(f"[OK] SPI data byte set to 0x{byte_val:02X} ({byte_val:08b}b)")
+
     def close(self):
         if self.ser and self.ser.is_open:
             self.ser.close()
@@ -318,6 +337,9 @@ Examples:
     parser.add_argument("--set-div", type=int, default=None, metavar="N",
                         help="Set baud divisor directly (cycles_per_bit - 1). "
                              "e.g. --set-div 867")
+    parser.add_argument("--spi-data", default=None, metavar="HEX",
+                        help="Set SPI data byte for PULL-based microcode ('D' command). "
+                             "e.g. --spi-data 0xA5 or --spi-data 165")
 
     args = parser.parse_args()
 
@@ -344,6 +366,11 @@ Examples:
         # Optional: configure core baud rate before uploading microcode
         if baud_divisor is not None:
             loader.set_baud_div(baud_divisor)
+
+        # Optional: set SPI data byte (for PULL-based SPI programs)
+        if args.spi_data is not None:
+            spi_byte = int(args.spi_data, 0) & 0xFF
+            loader.set_spi_data(spi_byte)
 
         if args.dump:
             print("[*] Dumping IMEM contents (32 words):")

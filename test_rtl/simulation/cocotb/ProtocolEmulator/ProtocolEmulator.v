@@ -1,10 +1,13 @@
 // =============================================================================
 // File        : ProtocolEmulator.v
 // Module      : ProtocolEmulator (OmniBus Deterministic Protocol Engine)
-// Description : Cycle-deterministic micro-engine with Output Shift Register (OSR),
-//               multi-cycle bit serializer (OUT), 4-deep hardware call stack
-//               supporting CALL/RET, and runtime-configurable baud rate via
-//               i_baud_div input port with magic delay sentinel tokens.
+// Description : Cycle-deterministic micro-engine with OSR/ISR, 4-deep CALL/RET
+//               stack, runtime i_baud_div ($BAUD/$HBAUD sentinels), and:
+//               Task 07: SET/WAIT instr[11:10] pin selector (MOSI/SCK/CS_n)
+//                        IN  instr[11:9]  variable bit count (1-8 bits)
+//               Task 07B: OUT SCK (pin_id=01): MSB-first serialization with
+//                        auto SCK toggle + simultaneous MISO sampling.
+//                        Normal OUT (pin_id=00) unchanged (LSB-first UART).
 // License     : MIT License
 // =============================================================================
 
@@ -14,17 +17,19 @@
 module ProtocolEmulator(
     input   wire            i_clk,
     input   wire            i_reset_n,
-    input   wire            i_rx,
+    input   wire            i_rx,           // UART RX / SPI MISO
     input   wire    [7:0]   i_data,
-    output  wire            o_tx,
+    output  wire            o_tx,           // UART TX / SPI MOSI
     output  reg     [7:0]   o_data,
 
-    // Runtime Baud Rate Divisor (cycles_per_bit - 1)
-    // Default 433 = 115200 baud @ 50 MHz.
-    // Magic delay sentinels in instructions:
-    //   9'h1FF = use i_baud_div[8:0]     (BIT_DELAY  token in assembler: $BAUD)
-    //   9'h1FE = use i_baud_div[8:0]>>1  (HALF_DELAY token in assembler: $HBAUD)
+    // Runtime Baud Rate Divisor (cycles_per_bit - 1). Default 433 = 115200@50MHz.
+    // $BAUD=9'h1FF -> i_baud_div[8:0], $HBAUD=9'h1FE -> i_baud_div[8:0]>>1
     input   wire    [15:0]  i_baud_div,
+
+    // SPI pin outputs (driven by SET instr[11:10]=01/10)
+    // instr[11:10]: 00=MOSI/TX (compat), 01=SCK, 10=CS_n, 11=MOSI alias
+    output  wire            o_spi_sck,      // SPI clock  (SET SCK, val, delay)
+    output  wire            o_spi_cs_n,     // SPI chip-select active-low (SET CS, val, delay)
 
     // Runtime Microcode Programming Interface
     input   wire            i_prog_en,
@@ -39,7 +44,10 @@ module ProtocolEmulator(
     // -------------------------------------------------------------------------
     reg [4:0]  pc;
     reg [8:0]  delay_cnt;
-    reg        tx_reg;
+    reg        tx_reg;          // MOSI / UART TX output register
+    reg        sck_reg;         // SPI SCK output register (resets 0)
+    reg        cs_reg;          // SPI CS_n output register (resets 1 = deasserted)
+    reg        out_sck_phase;   // OUT SCK phase: 0=SCK rising, 1=SCK falling
     reg [7:0]  osr;             // Output Shift Register (Serializer)
     reg [3:0]  bit_cnt;         // Serialization bit counter
     reg [7:0]  isr;             // Input Shift Register (Deserializer)
@@ -49,22 +57,32 @@ module ProtocolEmulator(
     reg [4:0]  call_stack [0:3]; // Return address stack
     reg [1:0]  sp;               // Stack pointer (0..4, wraps-safe)
 
-    assign o_tx = tx_reg;
+    assign o_tx       = tx_reg;
+    assign o_spi_sck  = sck_reg;
+    assign o_spi_cs_n = cs_reg;
 
     // -------------------------------------------------------------------------
     // Microcode RAM (32 words x 16 bits)
     // -------------------------------------------------------------------------
-    // Opcode [15:12]:
+    // Instruction word layout:
+    //   [15:12] opcode
+    //   [11:10] pin_id (SET/WAIT only): 00=MOSI/TX, 01=SCK, 10=CS_n, 11=MOSI alias
+    //   [11:9]  bit_count (IN only):    0->8 bits (compat), 1..7->N bits
+    //   [9]     pin_val  (SET/WAIT)
+    //   [8:0]   delay (9-bit; 0x1FF=$BAUD, 0x1FE=$HBAUD runtime sentinels)
+    //   [4:0]   target   (JMP/CALL)
+    //
+    // Opcodes:
     //   0x0 = NOP  [8:0 delay]
-    //   0x1 = OUT  [9 dir, 8:0 delay] (Serializes bits from OSR to TX)
-    //   0x2 = IN   [9 dir, 8:0 delay] (Deserializes bits from RX into ISR)
-    //   0x3 = SET  [9 pin_val, 8:0 delay]
-    //   0x4 = WAIT [9 pin_val, 8:0 delay] (Wait for RX == pin_val, then delay)
+    //   0x1 = OUT  [8:0 delay] — serialize OSR to MOSI/TX
+    //   0x2 = IN   [11:9 bit_count, 8:0 delay] — deserialize MISO into ISR
+    //   0x3 = SET  [11:10 pin_id, 9 pin_val, 8:0 delay]
+    //   0x4 = WAIT [11:10 pin_id, 9 pin_val, 8:0 delay]
     //   0x8 = JMP  [4:0 target]
     //   0x9 = PULL (Latches i_data[7:0] into OSR)
     //   0xA = PUSH (Transfers ISR into OSR and updates o_data)
-    //   0xC = CALL [4:0 target] (Push pc+1 to call stack, jump to target)
-    //   0xD = RET  (Pop return address from call stack, restore pc)
+    //   0xC = CALL [4:0 target]
+    //   0xD = RET
     reg [15:0] imem [0:31];
 
     assign o_prog_rdata = imem[i_prog_addr];
@@ -130,9 +148,15 @@ module ProtocolEmulator(
 
     wire [15:0] instr   = imem[pc];
     wire [3:0]  opcode  = instr[15:12];
+    wire [1:0]  pin_id  = instr[11:10]; // SET/WAIT pin selector: 00=MOSI, 01=SCK, 10=CS_n
     wire        pin_val = instr[9];
     wire [8:0]  delay   = instr[8:0];
     wire [4:0]  target  = instr[4:0];
+
+    // IN bit count: instr[11:9]=0 means 8 bits (backward compat), 1..7 means N bits.
+    // in_count_init is loaded into rx_bit_cnt on the first execution cycle of IN.
+    // rx_bit_cnt counts down: starts at (N-1), reaches 0 on the last bit.
+    wire [3:0] in_count_init = (instr[11:9] == 3'd0) ? 4'd7 : ({1'b0, instr[11:9]} - 4'd1);
 
     // Resolved delay: magic sentinels 9'h1FF/$BAUD and 9'h1FE/$HBAUD
     // substitute i_baud_div at runtime, all other values pass through unchanged.
@@ -157,7 +181,10 @@ module ProtocolEmulator(
         if (!i_reset_n || i_prog_en) begin
             pc             <= 5'd0;
             delay_cnt      <= 9'd0;
-            tx_reg         <= 1'b1; // UART idle state is high
+            tx_reg         <= 1'b1; // UART/MOSI idle state is high
+            sck_reg        <= 1'b0; // SPI SCK idles low (Mode 0)
+            cs_reg         <= 1'b1; // SPI CS_n idles deasserted (high)
+            out_sck_phase  <= 1'b0; // OUT SCK phase reset
             osr            <= 8'h00;
             bit_cnt        <= 4'd0;
             isr            <= 8'h00;
@@ -184,15 +211,17 @@ module ProtocolEmulator(
                             pc        <= pc;
                         end
                     end
-                    4'h2: begin // IN: Multi-cycle dynamic deserialization into ISR
+                    4'h2: begin // IN: Multi-cycle variable-bit deserialization into ISR
                         isr       <= {rx_in, isr[7:1]};
                         delay_cnt <= eff_delay;
                         if (rx_bit_cnt == 4'd0) begin
-                            // First bit sampled; 7 more bits follow
-                            rx_bit_cnt <= 4'd7;
-                            pc         <= pc;
+                            // First bit: load count from instr[11:9]
+                            // in_count_init = N-1 (N bits total; 0 means 8, compat)
+                            rx_bit_cnt <= in_count_init;
+                            // For 1-bit IN (in_count_init==0): advance pc now
+                            pc <= (in_count_init == 4'd0) ? pc + 5'd1 : pc;
                         end else if (rx_bit_cnt == 4'd1) begin
-                            // Last bit sampled; advance PC
+                            // Last bit; advance PC
                             rx_bit_cnt <= 4'd0;
                             pc         <= pc + 5'd1;
                         end else begin
@@ -211,26 +240,73 @@ module ProtocolEmulator(
                         delay_cnt <= 9'd0;
                         pc        <= pc + 5'd1;
                     end
-                    4'h1: begin // OUT: Multi-cycle dynamic serialization from OSR
-                        tx_reg    <= osr[0];
-                        osr       <= {1'b0, osr[7:1]};
-                        delay_cnt <= eff_delay;
-                        if (bit_cnt == 4'd0) begin
-                            // First bit being driven; 7 more bits follow
-                            bit_cnt <= 4'd7;
-                            pc      <= pc;
-                        end else if (bit_cnt == 4'd1) begin
-                            // Last bit (bit 7) being driven; advance PC for next instruction
-                            bit_cnt <= 4'd0;
-                            pc      <= pc + 5'd1;
+                    4'h1: begin // OUT: Multi-cycle serialization from OSR
+                        if (pin_id == 2'b01) begin
+                            // -------------------------------------------------------
+                            // OUT SCK mode (pin_id=01): MSB-first SPI serializer
+                            // Full-duplex: drives MOSI + auto-toggles SCK +
+                            // samples MISO into ISR, all in one instruction.
+                            //
+                            // out_sck_phase=0 (SCK rising):
+                            //   MOSI = osr[7], SCK=1, ISR shifts in rx_in
+                            // out_sck_phase=1 (SCK falling):
+                            //   SCK=0, OSR shifts left, advance bit_cnt
+                            // -------------------------------------------------------
+                            delay_cnt <= eff_delay;
+                            if (out_sck_phase == 1'b0) begin
+                                // SCK rising phase: drive MOSI (MSB), raise SCK.
+                                // MISO sampled in phase=1 after hold time (rx_in stable).
+                                tx_reg        <= osr[7];    // MSB first (SPI)
+                                sck_reg       <= 1'b1;
+                                out_sck_phase <= 1'b1;
+                                pc            <= pc;
+                            end else begin
+                                // SCK falling phase: sample MISO then lower SCK, shift OSR
+                                isr           <= {isr[6:0], rx_in};  // MISO stable after hold
+                                sck_reg       <= 1'b0;
+                                osr           <= {osr[6:0], 1'b0};   // shift OSR left
+                                out_sck_phase <= 1'b0;
+                                if (bit_cnt == 4'd0) begin
+                                    // First bit: 7 more to go
+                                    bit_cnt <= 4'd7;
+                                    pc      <= pc;
+                                end else if (bit_cnt == 4'd1) begin
+                                    // Last bit: advance pc, reset SCK
+                                    bit_cnt <= 4'd0;
+                                    pc      <= pc + 5'd1;
+                                end else begin
+                                    bit_cnt <= bit_cnt - 4'd1;
+                                    pc      <= pc;
+                                end
+                            end
                         end else begin
-                            // Middle bits (1 through 6)
-                            bit_cnt <= bit_cnt - 4'd1;
-                            pc      <= pc;
+                            // -------------------------------------------------------
+                            // Normal OUT mode (pin_id=00): LSB-first UART serializer
+                            // Backward compatible with all existing UART programs.
+                            // -------------------------------------------------------
+                            tx_reg    <= osr[0];              // LSB first (UART)
+                            osr       <= {1'b0, osr[7:1]};    // shift right
+                            delay_cnt <= eff_delay;
+                            if (bit_cnt == 4'd0) begin
+                                bit_cnt <= 4'd7;
+                                pc      <= pc;
+                            end else if (bit_cnt == 4'd1) begin
+                                bit_cnt <= 4'd0;
+                                pc      <= pc + 5'd1;
+                            end else begin
+                                bit_cnt <= bit_cnt - 4'd1;
+                                pc      <= pc;
+                            end
                         end
                     end
-                    4'h3: begin // SET: Drive immediate pin value
-                        tx_reg    <= pin_val;
+                    4'h3: begin // SET: Drive selected output pin to pin_val
+                        // pin_id [11:10]: 00=MOSI/TX, 01=SCK, 10=CS_n, 11=MOSI alias
+                        case (pin_id)
+                            2'b00:   tx_reg  <= pin_val;
+                            2'b01:   sck_reg <= pin_val;
+                            2'b10:   cs_reg  <= pin_val;
+                            default: tx_reg  <= pin_val; // 2'b11: alias for MOSI
+                        endcase
                         delay_cnt <= eff_delay;
                         pc        <= pc + 5'd1;
                     end

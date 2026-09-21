@@ -4,9 +4,10 @@
 # Description : OmniBus Microcode Assembler
 #               Assembles human-readable microcode into 16-bit binary/hex words
 #               for runtime execution on the OmniBus Protocol Emulator.
-#               Supports $BAUD / $HBAUD magic delay tokens that resolve to
-#               9'h1FF / 9'h1FE at assembly time, deferring actual timing to
-#               the i_baud_div runtime register in ProtocolEmulator.
+#               Task 06: $BAUD/9'h1FF, $HBAUD/9'h1FE runtime baud sentinels.
+#               Task 07: SET/WAIT 3-arg form with pin selector [11:10];
+#                        IN variable bit count [11:9] (0->8bits compat, 1-7->N);
+#                        pin aliases: MOSI=TX=0, SCK=1, CS=CS_N=2, MISO=RX=0.
 # License     : MIT License
 # =============================================================================
 
@@ -26,6 +27,14 @@ OPCODES = {
     "PUSH": 0xA,
     "CALL": 0xC,  # Push pc+1 to call stack, jump to target
     "RET":  0xD,  # Pop return address from call stack
+}
+
+# Task 07: SPI pin selector for SET/WAIT [11:10]
+# 0=MOSI/TX (backward compat), 1=SCK, 2=CS_n, 3=MOSI alias
+PIN_NAMES = {
+    "MOSI": 0, "TX": 0, "MISO": 0, "RX": 0,  # pin 0 — backward compat
+    "SCK":  1,                                   # pin 1 — SPI clock
+    "CS":   2, "CS_N": 2, "CSN": 2,             # pin 2 — chip-select (active-low)
 }
 
 class AssemblerError(Exception):
@@ -145,21 +154,67 @@ class OmnibusAssembler:
 
             elif op in ("OUT", "IN"):
                 # OUT/IN [bits,] delay (bits is 8 by default)
-                if len(tokens) == 2:
-                    delay = eval_arg(tokens[1])
-                elif len(tokens) >= 3:
-                    delay = eval_arg(tokens[2])
-                else:
-                    delay = 0
-                word = (opcode_val << 12) | (delay & 0x1FF)
+                # Task 07: IN bit count encoded in [11:9]
+                #   0 -> 8 bits (backward compat, old programs encode 0)
+                #   1..7 -> N bits (new variable-bit form)
+                if op == "IN":
+                    if len(tokens) == 2:
+                        # IN delay — 8-bit default (bit_count=0)
+                        bit_count = 0
+                        delay = eval_arg(tokens[1])
+                    elif len(tokens) >= 3:
+                        # IN N, delay
+                        n = eval_arg(tokens[1])
+                        bit_count = 0 if n == 8 else (n & 0x7)  # 8->0 (compat), 1-7->N
+                        delay = eval_arg(tokens[2])
+                    else:
+                        bit_count, delay = 0, 0
+                    word = (opcode_val << 12) | (bit_count << 9) | (delay & 0x1FF)
+                else:  # OUT
+                    # Forms:
+                    #   OUT delay           (pin=0, 8-bit LSB-first, backward compat)
+                    #   OUT 8, delay        (same)
+                    #   OUT SCK, delay      (pin=1, 8-bit MSB-first + auto-SCK toggle)
+                    # Detect pin name as first arg: if it is in PIN_NAMES -> SCK mode
+                    def _out_pin(s):
+                        s = s.strip().upper()
+                        return PIN_NAMES.get(s, None)
+
+                    if len(tokens) >= 3 and _out_pin(tokens[1]) is not None:
+                        pin_id = _out_pin(tokens[1])
+                        delay  = eval_arg(tokens[2]) & 0x1FF
+                    elif len(tokens) == 2:
+                        pin_id, delay = 0, eval_arg(tokens[1])
+                    elif len(tokens) >= 3:
+                        pin_id, delay = 0, eval_arg(tokens[2])
+                    else:
+                        pin_id, delay = 0, 0
+                    word = (opcode_val << 12) | (pin_id << 10) | (delay & 0x1FF)
 
             elif op in ("SET", "WAIT"):
-                # SET/WAIT pin_val, delay
-                if len(tokens) < 3:
-                    raise AssemblerError(f"Line {line_num}: {op} requires 'pin_val, delay' arguments")
-                pin_val = eval_arg(tokens[1]) & 0x1
-                delay = eval_arg(tokens[2]) & 0x1FF
-                word = (opcode_val << 12) | (pin_val << 9) | delay
+                # Two forms:
+                #   SET val, delay         (old 2-arg: pin=0=MOSI, backward compat)
+                #   SET pin, val, delay    (new 3-arg: explicit pin selector)
+                # pin can be a numeric ID (0-3) or a name: MOSI/TX/SCK/CS/MISO/RX
+                def resolve_pin(s):
+                    s = s.strip().upper()
+                    if s in PIN_NAMES:
+                        return PIN_NAMES[s]
+                    return int(s, 0) & 0x3
+
+                if len(tokens) >= 4:
+                    # 3-arg form: SET pin, val, delay
+                    pin_id  = resolve_pin(tokens[1])
+                    pin_val = eval_arg(tokens[2]) & 0x1
+                    delay   = eval_arg(tokens[3]) & 0x1FF
+                elif len(tokens) == 3:
+                    # 2-arg form: SET val, delay  (pin=0, backward compat)
+                    pin_id  = 0
+                    pin_val = eval_arg(tokens[1]) & 0x1
+                    delay   = eval_arg(tokens[2]) & 0x1FF
+                else:
+                    raise AssemblerError(f"Line {line_num}: {op} requires 'val, delay' or 'pin, val, delay'")
+                word = (opcode_val << 12) | (pin_id << 10) | (pin_val << 9) | delay
 
             elif op == "JMP":
                 # JMP target
