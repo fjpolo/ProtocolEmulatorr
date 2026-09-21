@@ -40,9 +40,9 @@ IO_PORT "o_led[7]"    IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 // -----------------------------------------------------------------------------
 // USB-UART to BL616 Microcontroller
 // -----------------------------------------------------------------------------
-IO_LOC  "uart_tx"     U15;  // FPGA TX -> BL616 RX (candidate 1)
+IO_LOC  "uart_tx"     U15;  // FPGA TX -> BL616 MCU RX
 IO_PORT "uart_tx"     IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 
-IO_LOC  "uart_tx_v14" V14;  // FPGA TX -> BL616 RX (candidate 2)
-IO_PORT "uart_tx_v14" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC  "uart_rx"     V14;  // FPGA RX <- BL616 MCU TX
+IO_PORT "uart_rx"     IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=OFF BANK_VCCIO=3.3;
 

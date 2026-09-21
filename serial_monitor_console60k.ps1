@@ -106,6 +106,8 @@ Write-Host "============================================================`n" -For
 
 $sp = [System.IO.Ports.SerialPort]::new($Port, $BaudRate, [System.IO.Ports.Parity]::None, 8, [System.IO.Ports.StopBits]::One)
 $sp.Handshake = [System.IO.Ports.Handshake]::None
+$sp.DtrEnable = $true
+$sp.RtsEnable = $true
 $sp.ReadTimeout = 500
 $sp.WriteTimeout = 500
 $sp.Encoding = [System.Text.Encoding]::ASCII
@@ -119,7 +121,10 @@ if ($LogFile) {
 try {
     $sp.Open()
     $sp.DiscardInBuffer()
-    Write-Host "Connected to $Port @ $BaudRate baud. Waiting for data...`n" -ForegroundColor Green
+    $sp.DiscardOutBuffer()
+    Write-Host "Connected to $Port @ $BaudRate baud." -ForegroundColor Green
+    Write-Host "[ECHO MODE] Type characters in this terminal to test live hardware echo on Tang Console 60K:" -ForegroundColor Cyan
+    Write-Host "------------------------------------------------------------`n" -ForegroundColor DarkGray
 
     [Console]::TreatControlCAsInput = $false
     $buffer = New-Object byte[] 4096
@@ -143,6 +148,10 @@ try {
                 $keyInfo = [Console]::ReadKey($true)
                 if ($keyInfo.Modifiers -band [ConsoleModifiers]::Control -and $keyInfo.Key -eq [ConsoleKey]::C) {
                     break
+                }
+                $charToSend = $keyInfo.KeyChar
+                if ($charToSend -and [int]$charToSend -ne 0) {
+                    $sp.Write($charToSend.ToString())
                 }
             } else {
                 Start-Sleep -Milliseconds 5
