@@ -5,6 +5,7 @@
 //               Enables runtime loading, verification, and execution of microcode
 //               at 115200 baud on a 50 MHz system clock without FPGA re-synthesis.
 //               Supports runtime baud rate divisor configuration via 'B' command.
+//               Task 07B: 'D' command sets i_data byte for PULL-based SPI programs.
 // License     : MIT License
 // =============================================================================
 
@@ -23,6 +24,10 @@ module OmniBootloader #(
 
     // Runtime baud divisor output → drives ProtocolEmulator.i_baud_div
     output  wire    [15:0]  o_baud_div,
+
+    // SPI data register output → drives ProtocolEmulator.i_data
+    // Updated by 'D' command: host sends 'D' <byte> to set the byte for PULL.
+    output  wire    [7:0]   o_data_reg,
 
     // Interface to ProtocolEmulator IMEM
     output  wire            o_prog_en,
@@ -220,7 +225,8 @@ module OmniBootloader #(
         CMD_SEND_RESP   = 4'd7,
         CMD_EXIT_MODE   = 4'd8,
         CMD_B_HI        = 4'd9,   // SetBaud: receive baud_div MSB
-        CMD_B_LO        = 4'd10;  // SetBaud: receive baud_div LSB
+        CMD_B_LO        = 4'd10,  // SetBaud: receive baud_div LSB
+        CMD_D_BYTE      = 4'd11;  // SetData: receive 1 data byte -> data_reg
 
     reg [3:0] cmd_state;
     reg [1:0] token_step;
@@ -230,6 +236,10 @@ module OmniBootloader #(
     // Runtime baud rate divisor register (default: 433 = 115200 baud @ 50 MHz)
     reg [15:0] baud_div;
     assign o_baud_div = baud_div;
+
+    // SPI data register: holds byte for ProtocolEmulator PULL instruction
+    reg [7:0] spi_data_reg;
+    assign o_data_reg = spi_data_reg;
 
     // Response buffer
     reg [7:0] resp_bytes [0:7];
@@ -255,6 +265,7 @@ module OmniBootloader #(
             resp_idx        <= 3'd0;
             next_cmd_state  <= CMD_IDLE;
             baud_div        <= 16'd433; // Default: 115200 baud @ 50 MHz
+            spi_data_reg    <= 8'd0;    // Default data byte = 0x00
         end else begin
             o_prog_we    <= 1'b0; // 1-cycle default pulse
             tx_start_req <= 1'b0;
@@ -303,6 +314,7 @@ module OmniBootloader #(
                             8'h57: cmd_state <= CMD_W_ADDR;    // 'W' = Write IMEM
                             8'h52: cmd_state <= CMD_R_ADDR;    // 'R' = Read IMEM
                             8'h42: cmd_state <= CMD_B_HI;      // 'B' = SetBaud divisor
+                            8'h44: cmd_state <= CMD_D_BYTE;    // 'D' = SetData byte
                             8'h58: begin                      // 'X' = Exit / Run
                                 // Load response: ACK + "RUN\r\n"
                                 resp_bytes[0]  <= 8'h06; // ACK
@@ -402,6 +414,20 @@ module OmniBootloader #(
                         resp_bytes[1]  <= data_hi_reg;     // div[15:8]
                         resp_bytes[2]  <= rx_byte;         // div[7:0]
                         resp_len       <= 3'd3;
+                        resp_idx       <= 3'd0;
+                        next_cmd_state <= CMD_WAIT_OP;
+                        cmd_state      <= CMD_SEND_RESP;
+                    end
+                end
+
+                CMD_D_BYTE: begin
+                    // SetData: receive 1 byte, store in spi_data_reg for PULL access
+                    // Reply ACK + echo the byte back
+                    if (rx_valid) begin
+                        spi_data_reg   <= rx_byte;
+                        resp_bytes[0]  <= 8'h06;   // ACK
+                        resp_bytes[1]  <= rx_byte;  // echo
+                        resp_len       <= 3'd2;
                         resp_idx       <= 3'd0;
                         next_cmd_state <= CMD_WAIT_OP;
                         cmd_state      <= CMD_SEND_RESP;

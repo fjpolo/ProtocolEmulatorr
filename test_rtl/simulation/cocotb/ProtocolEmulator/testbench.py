@@ -712,3 +712,81 @@ async def test_spi_loopback(dut):
         f"SPI loopback PASSED: o_data=0x{received:02X} (0xA5) "
         f"SPI_DIV={SPI_DIV} half-period={BIT_NS} ns"
     )
+
+
+@cocotb.test()
+async def test_out_sck_generic(dut):
+    """Test 07B: OUT SCK mode - PULL + OUT SCK + PUSH generic SPI transceiver.
+
+    Programs spi_generic.asm (6 words):
+      PULL -> SET CS,0 -> OUT SCK,$HBAUD -> SET CS,1 -> PUSH -> JMP
+    Drives i_data = 0xC3, connects MISO loopback, verifies o_data == 0xC3.
+    OUT SCK encoding: [15:12]=1, [11:10]=01, [8:0]=$HBAUD
+    MSB-first (osr[7] first), full-duplex MISO sampling into ISR.
+    """
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    CLK_PERIOD_NS = 20
+    SPI_DIV = 9    # SCK half-period = 10 cycles = 200 ns
+    BIT_NS  = (SPI_DIV + 1) * CLK_PERIOD_NS
+    dut.i_baud_div.value = SPI_DIV
+    TEST_BYTE = 0xC3
+    dut._log.info(f"Test 07B: OUT SCK generic i_baud_div={SPI_DIV} byte=0x{TEST_BYTE:02X}")
+
+    # spi_generic.asm encoding (6 words)
+    prog = [
+        0x9000,  # [0] PULL
+        0x3800,  # [1] SET CS,0,0
+        0x15FE,  # [2] OUT SCK,$HBAUD  (pin_id=01, delay=0x1FE)
+        0x3A00,  # [3] SET CS,1,0
+        0xA000,  # [4] PUSH
+        0x8000,  # [5] JMP spi_loop
+    ]
+    # Drive i_data BEFORE loading so PULL captures it on first execution
+    dut.i_data.value = TEST_BYTE
+
+    # MISO loopback: start before loading so no bits are missed
+    async def loopback_task():
+        while True:
+            await RisingEdge(dut.i_clk)
+            dut.i_rx.value = int(dut.o_tx.value)
+
+    lb = cocotb.start_soon(loopback_task())
+
+    await load_program_direct(dut, prog)
+
+    TIMEOUT = 3000
+
+    # Wait for CS_n to assert (transaction start)
+    for _ in range(TIMEOUT):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_spi_cs_n.value) == 0:
+            dut._log.info("CS_n asserted - OUT SCK transaction started")
+            break
+    else:
+        lb.cancel()
+        assert False, "Timeout: CS_n never asserted"
+
+    # Wait for CS_n to deassert (transaction complete)
+    for _ in range(TIMEOUT):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_spi_cs_n.value) == 1:
+            dut._log.info("CS_n deasserted - transfer complete")
+            break
+    else:
+        lb.cancel()
+        assert False, "Timeout: CS_n never deasserted"
+
+    # Allow PUSH to complete
+    await ClockCycles(dut.i_clk, 5)
+    lb.cancel()
+
+    received = int(dut.o_data.value)
+    assert received == TEST_BYTE, (
+        f"OUT SCK mismatch: expected 0x{TEST_BYTE:02X}, got 0x{received:02X}"
+    )
+    dut._log.info(
+        f"OUT SCK generic PASSED: i_data=0x{TEST_BYTE:02X} -> o_data=0x{received:02X} "
+        f"(SPI_DIV={SPI_DIV}, half-period={BIT_NS} ns)"
+    )

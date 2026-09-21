@@ -171,13 +171,25 @@ class OmnibusAssembler:
                         bit_count, delay = 0, 0
                     word = (opcode_val << 12) | (bit_count << 9) | (delay & 0x1FF)
                 else:  # OUT
-                    if len(tokens) == 2:
-                        delay = eval_arg(tokens[1])
+                    # Forms:
+                    #   OUT delay           (pin=0, 8-bit LSB-first, backward compat)
+                    #   OUT 8, delay        (same)
+                    #   OUT SCK, delay      (pin=1, 8-bit MSB-first + auto-SCK toggle)
+                    # Detect pin name as first arg: if it is in PIN_NAMES -> SCK mode
+                    def _out_pin(s):
+                        s = s.strip().upper()
+                        return PIN_NAMES.get(s, None)
+
+                    if len(tokens) >= 3 and _out_pin(tokens[1]) is not None:
+                        pin_id = _out_pin(tokens[1])
+                        delay  = eval_arg(tokens[2]) & 0x1FF
+                    elif len(tokens) == 2:
+                        pin_id, delay = 0, eval_arg(tokens[1])
                     elif len(tokens) >= 3:
-                        delay = eval_arg(tokens[2])
+                        pin_id, delay = 0, eval_arg(tokens[2])
                     else:
-                        delay = 0
-                    word = (opcode_val << 12) | (delay & 0x1FF)
+                        pin_id, delay = 0, 0
+                    word = (opcode_val << 12) | (pin_id << 10) | (delay & 0x1FF)
 
             elif op in ("SET", "WAIT"):
                 # Two forms:

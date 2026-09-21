@@ -33,6 +33,7 @@ module top (
     wire        bootloader_tx;
     wire        prog_active;
     wire [15:0] baud_div;     // Runtime baud divisor from bootloader
+    wire [7:0]  spi_data;     // SPI data byte from bootloader 'D' command -> PULL
 
     // SPI wires
     wire        core_sck;         // o_spi_sck from ProtocolEmulator
@@ -50,7 +51,7 @@ module top (
         .i_clk        (i_sys_clk),
         .i_reset_n    (sys_rst_n),
         .i_rx         (spi_miso_in),   // MISO input: internal loopback from MOSI
-        .i_data       (8'h00),
+        .i_data       (spi_data),      // SPI TX byte from bootloader 'D' command
         .o_tx         (core_tx),
         .o_data       (core_data),
         .i_baud_div   (baud_div),
@@ -73,6 +74,7 @@ module top (
         .o_tx         (bootloader_tx),
         .o_prog_active(prog_active),
         .o_baud_div   (baud_div),
+        .o_data_reg   (spi_data),
         .o_prog_en    (prog_en),
         .o_prog_we    (prog_we),
         .o_prog_addr  (prog_addr),
