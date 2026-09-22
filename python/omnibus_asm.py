@@ -171,19 +171,30 @@ class OmnibusAssembler:
                 #   1..7 -> N bits (new variable-bit form)
                 if op == "IN":
                     # Forms:
-                    #   IN delay            (mode=0, 8-bit default LSB-first UART)
+                    #   IN delay            (mode=0, 8-bit default LSB-first UART, backward compat)
                     #   IN N, delay         (mode=0, variable N-bit LSB-first UART, N=8 -> 0)
                     #   IN SCK, delay       (mode=1, 8-bit MSB-first SPI Master Read + auto-SCK toggle)
+                    #   IN 1W, delay        (mode=2, 8-bit LSB-first 1-Wire Master Read)
+                    #   IN 1W, 1, delay     (mode=2, 1-bit 1-Wire Master Read for Search ROM)
+                    #   IN 1W, 8, delay     (mode=2, 8-bit 1-Wire Master Read)
                     #   IN SDA, delay       (mode=3, 8-bit MSB-first I2C Master Read + auto-SCL toggle)
                     def _in_mode(s):
                         s = s.strip().upper()
                         if s in ("SCK", "SCLK", "CLK", "SPI"):
                             return 1
+                        elif s in ("1W", "OW", "DQ", "ONEWIRE"):
+                            return 2
                         elif s in ("SDA", "SCL", "I2C"):
                             return 3
                         return 0
 
-                    if len(tokens) >= 3 and _in_mode(tokens[1]) != 0:
+                    if len(tokens) >= 4 and _in_mode(tokens[1]) == 2:
+                        # IN 1W, bit_count, delay
+                        mode = 2
+                        bit_flag = 1 if eval_arg(tokens[2]) == 1 else 0
+                        delay = eval_arg(tokens[3]) & 0x1FF
+                        word = (opcode_val << 12) | (mode << 10) | (bit_flag << 9) | delay
+                    elif len(tokens) >= 3 and _in_mode(tokens[1]) != 0:
                         mode = _in_mode(tokens[1])
                         delay = eval_arg(tokens[2]) & 0x1FF
                         word = (opcode_val << 12) | (mode << 10) | delay
@@ -205,25 +216,38 @@ class OmnibusAssembler:
                     #   OUT delay           (mode=0, 8-bit LSB-first UART, backward compat)
                     #   OUT 8, delay        (same)
                     #   OUT SCK, delay      (mode=1, 8-bit MSB-first SPI + auto-SCK toggle)
+                    #   OUT 1W, delay       (mode=2, 8-bit LSB-first 1-Wire Write)
+                    #   OUT 1W, 1, delay    (mode=2, 1-bit 1-Wire Write for Search ROM)
+                    #   OUT 1W, 8, delay    (mode=2, 8-bit 1-Wire Write)
                     #   OUT SDA, delay      (mode=3, 8-bit MSB-first I2C + auto-SCL toggle)
                     def _out_mode(s):
                         s = s.strip().upper()
                         if s in ("SCK", "SCLK", "CLK"):
                             return 1
+                        elif s in ("1W", "OW", "DQ", "ONEWIRE"):
+                            return 2
                         elif s in ("SDA", "SCL", "I2C"):
                             return 3
                         return 0
 
-                    if len(tokens) >= 3 and _out_mode(tokens[1]) != 0:
+                    if len(tokens) >= 4 and _out_mode(tokens[1]) == 2:
+                        # OUT 1W, bit_count, delay
+                        mode = 2
+                        bit_flag = 1 if eval_arg(tokens[2]) == 1 else 0
+                        delay = eval_arg(tokens[3]) & 0x1FF
+                        word = (opcode_val << 12) | (mode << 10) | (bit_flag << 9) | delay
+                    elif len(tokens) >= 3 and _out_mode(tokens[1]) != 0:
                         mode  = _out_mode(tokens[1])
                         delay = eval_arg(tokens[2]) & 0x1FF
+                        word  = (opcode_val << 12) | (mode << 10) | (delay & 0x1FF)
                     elif len(tokens) == 2:
                         mode, delay = 0, eval_arg(tokens[1]) & 0x1FF
+                        word = (opcode_val << 12) | (mode << 10) | (delay & 0x1FF)
                     elif len(tokens) >= 3:
                         mode, delay = 0, eval_arg(tokens[2]) & 0x1FF
+                        word = (opcode_val << 12) | (mode << 10) | (delay & 0x1FF)
                     else:
-                        mode, delay = 0, 0
-                    word = (opcode_val << 12) | (mode << 10) | (delay & 0x1FF)
+                        word = (opcode_val << 12)
 
             elif op in ("SET", "WAIT"):
                 # Forms:

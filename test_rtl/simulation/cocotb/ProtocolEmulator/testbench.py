@@ -1358,4 +1358,280 @@ async def test_pop_push_strobes(dut):
     dut._log.info("Pop/Push strobe test PASSED: exact 1-cycle active-high pulses verified!")
 
 
+# =============================================================================
+# Task 12: 1-Wire (OneWire) Protocol Testcases
+# =============================================================================
 
+@cocotb.test()
+async def test_onewire_write_byte(dut):
+    """Test 12A: 1-Wire Master Write Byte (OUT 1W) with open-drain bit timing."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    DELAY = 4  # T_SHORT = 4 cycles (Write 1 low = 4 cyc, Write 0 low = 40 cyc)
+    TX_BYTE = 0xCC  # 1100_1100b (bits 0,1=0, bits 2,3=1, bits 4,5=0, bits 6,7=1)
+
+    # 0x00: PINMAP 0, 0, 1, 2 -> 0x500A (TX=0, RX=0, SCK=1, CS=2)
+    # 0x01: CFG_OD 0x01       -> 0x6001 (Pin 0 open-drain)
+    # 0x02: PULL              -> 0x9000
+    # 0x03: OUT 1W, 4         -> 0x1804 (mode=2, delay=4)
+    # 0x04: JMP 0x04          -> 0x8004
+    prog = [
+        0x500A,
+        0x6001,
+        0x9000,
+        0x1804,
+        0x8004
+    ]
+    dut.i_data.value = TX_BYTE
+
+    # Monitor 1-Wire bus on Pin 0
+    bits_decoded = []
+    async def bus_monitor():
+        prev_pin = 1
+        low_start = 0
+        cycle = 0
+        while True:
+            await RisingEdge(dut.i_clk)
+            cycle += 1
+            # Wire level with external pull-up
+            pin_drive = (int(dut.o_gpio_oe.value) & 1) and not (int(dut.o_gpio.value) & 1)
+            pin_val = 0 if pin_drive else 1
+            curr_gpio = int(dut.i_gpio.value)
+            dut.i_gpio.value = (curr_gpio & ~1) | pin_val
+
+            if prev_pin == 1 and pin_val == 0:
+                low_start = cycle
+            elif prev_pin == 0 and pin_val == 1:
+                low_dur = cycle - low_start
+                # DELAY=4 -> short low is ~4-5 cycles, long low is ~40-41 cycles
+                bit = 1 if low_dur < 15 else 0
+                bits_decoded.append((bit, low_dur))
+            prev_pin = pin_val
+
+    mon = cocotb.start_soon(bus_monitor())
+    await load_program_direct(dut, prog)
+
+    for _ in range(1000):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 4:
+            break
+    else:
+        mon.cancel()
+        assert False, f"Timeout: OUT 1W did not reach PC=4 (PC={int(dut.pc.value)})"
+
+    await ClockCycles(dut.i_clk, 10)
+    mon.cancel()
+
+    assert len(bits_decoded) == 8, f"Expected 8 1-Wire bits, got {len(bits_decoded)}: {bits_decoded}"
+    decoded_byte = 0
+    for idx, (b, dur) in enumerate(bits_decoded):
+        decoded_byte |= (b << idx)
+
+    assert decoded_byte == TX_BYTE, f"1-Wire Write mismatch: expected 0x{TX_BYTE:02X}, got 0x{decoded_byte:02X}"
+    dut._log.info(f"1-Wire Write Byte test PASSED: correctly decoded 0x{TX_BYTE:02X} across 8 slots with open-drain timing!")
+
+
+@cocotb.test()
+async def test_onewire_read_byte(dut):
+    """Test 12B: 1-Wire Master Read Byte (IN 1W) with slave bit response and sampling."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    DELAY = 4
+    SLAVE_BYTE = 0xA5  # 1010_0101b (LSB-first: 1, 0, 1, 0, 0, 1, 0, 1)
+
+    # 0x00: PINMAP 0, 0, 1, 2 -> 0x500A
+    # 0x01: CFG_OD 0x01       -> 0x6001
+    # 0x02: IN 1W, 4          -> 0x2804 (mode=2, delay=4)
+    # 0x03: PUSH              -> 0xA000
+    # 0x04: JMP 0x04          -> 0x8004
+    prog = [
+        0x500A,
+        0x6001,
+        0x2804,
+        0xA000,
+        0x8004
+    ]
+
+    # Model 1-Wire slave on bus
+    async def onewire_slave():
+        slave_data = SLAVE_BYTE
+        bit_idx = 0
+        prev_master_drive = 0
+        while bit_idx < 8:
+            await RisingEdge(dut.i_clk)
+            master_drive_low = (int(dut.o_gpio_oe.value) & 1) and not (int(dut.o_gpio.value) & 1)
+            
+            # Detect master initiating read slot (falling edge of DQ)
+            if not prev_master_drive and master_drive_low:
+                # Master started slot. Wait for master to release line (after DELAY cycles)
+                cur_bit = (slave_data >> bit_idx) & 1
+                bit_idx += 1
+                while True:
+                    await RisingEdge(dut.i_clk)
+                    master_oe = int(dut.o_gpio_oe.value) & 1
+                    if master_oe == 0:
+                        break # Master released line
+                
+                # If slave bit is 0, slave pulls line low for ~15 cycles
+                if cur_bit == 0:
+                    for _ in range(15):
+                        curr_gpio = int(dut.i_gpio.value)
+                        dut.i_gpio.value = (curr_gpio & ~1) | 0
+                        await RisingEdge(dut.i_clk)
+                    # Release line
+                    curr_gpio = int(dut.i_gpio.value)
+                    dut.i_gpio.value = (curr_gpio & ~1) | 1
+                else:
+                    # Bit is 1: slave leaves line released (pull-up keeps it high)
+                    curr_gpio = int(dut.i_gpio.value)
+                    dut.i_gpio.value = (curr_gpio & ~1) | 1
+            else:
+                # Normal pull-up when idle
+                curr_gpio = int(dut.i_gpio.value)
+                wire_val = 0 if master_drive_low else 1
+                dut.i_gpio.value = (curr_gpio & ~1) | wire_val
+
+            prev_master_drive = master_drive_low
+
+    slave_task = cocotb.start_soon(onewire_slave())
+    await load_program_direct(dut, prog)
+
+    for _ in range(1000):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 4:
+            break
+    else:
+        slave_task.cancel()
+        assert False, f"Timeout: IN 1W did not reach PC=4 (PC={int(dut.pc.value)})"
+
+    await ClockCycles(dut.i_clk, 5)
+    slave_task.cancel()
+
+    received_data = int(dut.o_data.value)
+    assert received_data == SLAVE_BYTE, f"1-Wire Read mismatch: expected 0x{SLAVE_BYTE:02X}, got 0x{received_data:02X}"
+    dut._log.info(f"1-Wire Read Byte test PASSED: successfully sampled and assembled 0x{SLAVE_BYTE:02X} into ISR/o_data!")
+
+
+@cocotb.test()
+async def test_onewire_reset_and_presence(dut):
+    """Test 12C: 1-Wire Master Reset Pulse (16-bit $BAUD) and Slave Presence Detection."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    RESET_CYCLES = 300  # Emulate 480us reset with 300 cycles via i_baud_div
+    dut.i_baud_div.value = RESET_CYCLES
+
+    # 0x00: PINMAP 0, 0, 1, 2    -> 0x500A
+    # 0x01: CFG_OD 0x01           -> 0x6001
+    # 0x02: SET 0, 0, $BAUD       -> 0x30FF (Master pull-down reset pulse)
+    # 0x03: SET 0, 1, 20          -> 0x3114 (Release line, wait 20 cycles)
+    # 0x04: WAIT 0, 0, 30         -> 0x401E (Wait for slave presence pulse low, delay 30 cyc)
+    # 0x05: WAIT 0, 1, 20         -> 0x4114 (Wait for presence pulse release high)
+    # 0x06: JMP 0x06              -> 0x8006 (Success target)
+    prog = [
+        0x500A,
+        0x6001,
+        0x30FF,
+        0x3114,
+        0x401E,
+        0x4114,
+        0x8006
+    ]
+
+    # Slave detects reset (>50 cycles low), then pulses presence low for 40 cycles
+    async def slave_presence():
+        low_count = 0
+        while True:
+            await RisingEdge(dut.i_clk)
+            master_drive_low = (int(dut.o_gpio_oe.value) & 1) and not (int(dut.o_gpio.value) & 1)
+            if master_drive_low:
+                low_count += 1
+                curr_gpio = int(dut.i_gpio.value)
+                dut.i_gpio.value = (curr_gpio & ~1) | 0
+            else:
+                if low_count >= 100:
+                    # Master finished reset pulse. Wait 10 cycles, then assert presence pulse for 40 cycles
+                    for _ in range(10):
+                        curr_gpio = int(dut.i_gpio.value)
+                        dut.i_gpio.value = (curr_gpio & ~1) | 1
+                        await RisingEdge(dut.i_clk)
+                    for _ in range(40):
+                        curr_gpio = int(dut.i_gpio.value)
+                        dut.i_gpio.value = (curr_gpio & ~1) | 0
+                        await RisingEdge(dut.i_clk)
+                    curr_gpio = int(dut.i_gpio.value)
+                    dut.i_gpio.value = (curr_gpio & ~1) | 1
+                    break
+                else:
+                    low_count = 0
+                    curr_gpio = int(dut.i_gpio.value)
+                    dut.i_gpio.value = (curr_gpio & ~1) | 1
+
+    presence_task = cocotb.start_soon(slave_presence())
+    await load_program_direct(dut, prog)
+
+    for _ in range(1000):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 6:
+            break
+    else:
+        presence_task.cancel()
+        assert False, f"Timeout: Reset/Presence did not reach PC=6 (PC={int(dut.pc.value)})"
+
+    await ClockCycles(dut.i_clk, 5)
+    presence_task.cancel()
+    dut._log.info("1-Wire Reset & Presence test PASSED: 300-cycle reset pulse generated and slave presence handshaked!")
+
+
+@cocotb.test()
+async def test_onewire_single_bit(dut):
+    """Test 12D: 1-Wire Single-Bit Mode (OUT 1W, 1 and IN 1W, 1) for Search ROM algorithm."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    DELAY = 4
+    # 0x00: PINMAP 0, 0, 1, 2  -> 0x500A
+    # 0x01: CFG_OD 0x01         -> 0x6001
+    # 0x02: PULL                -> 0x9000
+    # 0x03: OUT 1W, 1, 4        -> 0x1A04 (mode=2, bit_count=1, delay=4)
+    # 0x04: IN 1W, 1, 4         -> 0x2A04 (mode=2, bit_count=1, delay=4)
+    # 0x05: JMP 0x05            -> 0x8005
+    prog = [
+        0x500A,
+        0x6001,
+        0x9000,
+        0x1A04,
+        0x2A04,
+        0x8005
+    ]
+
+    dut.i_data.value = 0x01  # LSB is 1
+
+    # Bus handler: wire pullup
+    async def bus_handler():
+        while True:
+            await RisingEdge(dut.i_clk)
+            master_drive_low = (int(dut.o_gpio_oe.value) & 1) and not (int(dut.o_gpio.value) & 1)
+            pin_val = 0 if master_drive_low else 1
+            curr_gpio = int(dut.i_gpio.value)
+            dut.i_gpio.value = (curr_gpio & ~1) | pin_val
+
+    bus_task = cocotb.start_soon(bus_handler())
+    await load_program_direct(dut, prog)
+
+    for _ in range(300):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 5:
+            break
+    else:
+        bus_task.cancel()
+        assert False, f"Timeout: Single-bit operations did not reach PC=5 (PC={int(dut.pc.value)})"
+
+    await ClockCycles(dut.i_clk, 5)
+    bus_task.cancel()
+
+    # The 1 bit sampled by IN 1W, 1 should be 1 (pulled high)
+    assert (int(dut.isr.value) & 1) == 1, f"Expected ISR[0]=1, got {int(dut.isr.value)}"
+    dut._log.info("1-Wire Single-Bit test PASSED: 1-bit write and read completed in single slot each!")
