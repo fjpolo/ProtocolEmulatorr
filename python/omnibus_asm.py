@@ -35,6 +35,14 @@ OPCODES = {
     "PUSH":   0xA,
     "CALL":   0xC,  # Push pc+1 to call stack, jump to target
     "RET":    0xD,  # Pop return address from call stack
+    "CRC":           0xE,  # Hardware CRC Generator & Checksum Accelerator
+    "CRC_INIT":      0xE,
+    "CRC_BYTE":      0xE,
+    "CRC_READ_LOW":  0xE,
+    "CRC_READ_L":    0xE,
+    "CRC_READ_HIGH": 0xE,
+    "CRC_READ_H":    0xE,
+    "CRC_RESET":     0xE,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -419,6 +427,9 @@ class OmnibusAssembler:
                     "PIN_LO": 6,
                     "PIN_LOW": 6,
                     "PIN_0": 6,
+                    "CRC_OK": 7,
+                    "CRC_VALID": 7,
+                    "CRC_ZERO": 7,
                 }
                 if len(tokens) >= 3:
                     cond_name = tokens[1].strip().upper()
@@ -457,6 +468,90 @@ class OmnibusAssembler:
             elif op == "RET":
                 # RET — no operands
                 word = opcode_val << 12
+
+            elif op in ("CRC", "CRC_INIT", "CRC_BYTE", "CRC_READ_LOW", "CRC_READ_L", "CRC_READ_HIGH", "CRC_READ_H", "CRC_RESET"):
+                # Sub-operations:
+                # 3'b000: CRC_INIT poly, [seed]
+                # 3'b001: CRC_BYTE OSR
+                # 3'b010: CRC_BYTE ISR
+                # 3'b011: CRC_BYTE DATA
+                # 3'b100: CRC_READ_LOW
+                # 3'b101: CRC_READ_HIGH
+                # 3'b110: CRC_RESET
+                POLY_MAP = {
+                    "DALLAS": 0, "1WIRE": 0, "ONEWIRE": 0, "CRC8_DALLAS": 0, "0": 0,
+                    "SMBUS": 1, "I2C": 1, "PEC": 1, "CRC8_SMBUS": 1, "1": 1,
+                    "CCITT": 2, "XMODEM": 2, "CRC16_CCITT": 2, "2": 2,
+                    "MODBUS": 3, "IBM": 3, "USB": 3, "CRC16_MODBUS": 3, "3": 3,
+                }
+                SEED_MAP = {
+                    "DEFAULT": 0, "AUTO": 0,
+                    "0": 1, "0X0000": 1, "0X0": 1, "0X00": 1, "ZERO": 1,
+                    "0xFFFF": 2, "65535": 2, "ONES": 2, "-1": 2,
+                }
+                SRC_MAP = {
+                    "OSR": 1,
+                    "ISR": 2,
+                    "DATA": 3, "I_DATA": 3, "DIN": 3,
+                }
+
+                if op == "CRC":
+                    if len(tokens) < 2:
+                        raise AssemblerError(f"Line {line_num}: CRC requires sub-operation (e.g. CRC INIT, CRC BYTE, CRC READ_LOW)")
+                    sub_cmd = tokens[1].strip().upper()
+                    arg_tokens = tokens[2:]
+                else:
+                    sub_cmd = op[4:]  # Strip 'CRC_'
+                    arg_tokens = tokens[1:]
+
+                if sub_cmd == "INIT":
+                    if len(arg_tokens) < 1:
+                        raise AssemblerError(f"Line {line_num}: CRC_INIT requires polynomial argument (DALLAS, SMBUS, CCITT, MODBUS)")
+                    poly_str = arg_tokens[0].strip().upper()
+                    if poly_str not in POLY_MAP:
+                        raise AssemblerError(f"Line {line_num}: Unknown CRC polynomial '{arg_tokens[0]}'")
+                    poly = POLY_MAP[poly_str]
+                    seed = 0
+                    if len(arg_tokens) >= 2:
+                        seed_str = arg_tokens[1].strip().upper()
+                        if seed_str in SEED_MAP:
+                            seed = SEED_MAP[seed_str]
+                        else:
+                            seed_val = eval_arg(seed_str)
+                            seed = 1 if seed_val == 0 else 2
+                    word = (0xE << 12) | (0 << 9) | (poly << 7) | (seed << 5)
+
+                elif sub_cmd == "BYTE":
+                    if len(arg_tokens) < 1:
+                        raise AssemblerError(f"Line {line_num}: CRC_BYTE requires source operand (OSR, ISR, or DATA)")
+                    src_str = arg_tokens[0].strip().upper()
+                    if src_str not in SRC_MAP:
+                        raise AssemblerError(f"Line {line_num}: Unknown CRC source register '{arg_tokens[0]}' (expected OSR, ISR, DATA)")
+                    src = SRC_MAP[src_str]
+                    word = (0xE << 12) | (src << 9)
+
+                elif sub_cmd in ("READ_LOW", "READ_L", "READLOW"):
+                    word = (0xE << 12) | (4 << 9)
+
+                elif sub_cmd in ("READ_HIGH", "READ_H", "READHIGH"):
+                    word = (0xE << 12) | (5 << 9)
+
+                elif sub_cmd == "RESET":
+                    word = (0xE << 12) | (6 << 9)
+
+                elif sub_cmd == "READ":
+                    if len(arg_tokens) < 1:
+                        raise AssemblerError(f"Line {line_num}: CRC READ requires LOW or HIGH")
+                    target_part = arg_tokens[0].strip().upper()
+                    if target_part in ("LOW", "L"):
+                        word = (0xE << 12) | (4 << 9)
+                    elif target_part in ("HIGH", "H"):
+                        word = (0xE << 12) | (5 << 9)
+                    else:
+                        raise AssemblerError(f"Line {line_num}: CRC READ requires LOW or HIGH, got '{arg_tokens[0]}'")
+
+                else:
+                    raise AssemblerError(f"Line {line_num}: Unknown CRC command '{sub_cmd}'")
 
             assembled.append((addr, word, line))
 
