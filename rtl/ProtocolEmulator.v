@@ -82,26 +82,138 @@ module ProtocolEmulator(
     assign o_spi_sck  = gpio_out_reg[sck_pin];
     assign o_spi_cs_n = gpio_out_reg[cs_pin];
 
-    // -------------------------------------------------------------------------
-    // Microcode RAM (32 words x 16 bits)
-    // -------------------------------------------------------------------------
-    // Instruction word layout:
-    //   [15:12] opcode
+    // =========================================================================
+    // OMNIBUS 16-BIT INSTRUCTION SET ARCHITECTURE (ISA) SPECIFICATION
+    // =========================================================================
     //
-    // Opcodes:
-    //   0x0 = NOP    [8:0 delay]
-    //   0x1 = OUT    [11:10 mode, 8:0 delay] (00=UART LSB, 01=SPI MSB+SCK, 11=I2C MSB+SCL)
-    //   0x2 = IN     [11:10 mode, 8:0 delay] (00=UART LSB, 01=SPI MSB+SCK, 11=I2C MSB+SCL)
-    //   0x3 = SET    [11:9 pin_sel, 8 pin_val, 7:0 delay] (drives gpio_out_reg[pin_sel])
-    //   0x4 = WAIT   [11:9 pin_sel, 8 pin_val, 7:0 delay] (waits on gpio_in[pin_sel])
-    //   0x5 = PINMAP [11:9 tx, 8:6 rx, 5:3 sck, 2:0 cs]
-    //   0x6 = CFG_OD [7:0 open-drain mask]
-    //   0x7 = DJNZ / SET_LC / PULL_LC / PUSH_LC [11 lc_sel, 10 op, 9:8 subop, 7:0 data/target]
-    //   0x8 = JMP    [4:0 target]
-    //   0x9 = PULL   (Latches i_data[7:0] into OSR)
-    //   0xA = PUSH   (Transfers ISR into OSR and updates o_data)
-    //   0xC = CALL   [4:0 target]
-    //   0xD = RET
+    // All instructions are 16 bits wide and execute in a single clock cycle
+    // plus an optional sidecar hardware delay counter (Zero-Jitter timing).
+    //
+    // -------------------------------------------------------------------------
+    // General Instruction Encoding:
+    // -------------------------------------------------------------------------
+    //
+    // [15:12] (4b) : Opcode (0x0 .. 0xF)
+    // [11:0]  (12b): Instruction-specific operands, mode, and sidecar delay
+    //
+    // -------------------------------------------------------------------------
+    // Timing & Delay Sentinels:
+    // -------------------------------------------------------------------------
+    // Most instructions support sidecar delay counters in clock cycles:
+    //   - Standard 9-bit delay (instr[8:0]):
+    //       0x000 .. 0x1FD : Fixed delay in clock cycles (0 to 509 cycles)
+    //       0x1FE ($HBAUD) : Dynamic half-bit baud delay = (i_baud_div >> 1)
+    //       0x1FF ($BAUD)  : Dynamic full-bit baud delay = i_baud_div
+    //   - Standard 8-bit delay (instr[7:0]):
+    //       0x00 .. 0xFD   : Fixed delay in clock cycles (0 to 253 cycles)
+    //       0xFE ($HBAUD)  : Dynamic half-bit baud delay = (i_baud_div >> 1)
+    //       0xFF ($BAUD)   : Dynamic full-bit baud delay = i_baud_div
+    //
+    // =========================================================================
+    // COMPLETE INSTRUCTION SET REFERENCE:
+    // =========================================================================
+    //
+    // 0x0 | NOP [delay]
+    //       [15:12] = 0x0
+    //       [8:0]   = delay (9b: cycles / $HBAUD / $BAUD)
+    //       Exact cycle-accurate delay without modifying registers or I/O.
+    //
+    // 0x1 | OUT mode, delay
+    //       [15:12] = 0x1
+    //       [11:10] = mode:
+    //                 2'b00: UART LSB-first serializer (drives tx_pin from OSR[0])
+    //                 2'b01: SPI MSB-first serializer (drives tx_pin, auto-toggles
+    //                        sck_pin, simultaneously samples rx_pin into ISR)
+    //                 2'b11: I2C MSB-first serializer (drives tx_pin/SDA open-drain,
+    //                        auto-toggles sck_pin/SCL, samples rx_pin into ISR)
+    //       [8:0]   = delay (9b: half-period or bit-period delay)
+    //
+    // 0x2 | IN mode, delay
+    //       [15:12] = 0x2
+    //       [11:10] = mode:
+    //                 2'b00: UART LSB-first deserializer (samples rx_pin into ISR[7],
+    //                        supports variable bit count via instr[11:9])
+    //                 2'b01: SPI Master Read (IN SCK): auto-toggles sck_pin 8 times,
+    //                        deserializes rx_pin (MISO) MSB-first into ISR
+    //                 2'b11: I2C Master Read (IN SDA): releases tx_pin (SDA Hi-Z OD),
+    //                        auto-toggles sck_pin (SCL) 8 times, deserializes rx_pin
+    //       [8:0]   = delay (9b: half-period or bit-period delay)
+    //
+    // 0x3 | SET pin_sel, pin_val, delay
+    //       [15:12] = 0x3
+    //       [11:9]  = pin_sel (3b: physical GPIO pin 0..7)
+    //       [8]     = pin_val (1b: 0 or 1)
+    //       [7:0]   = delay   (8b: cycles / $HBAUD / $BAUD)
+    //       Push-pull mode: actively drives pin_val (0 or 1).
+    //       Open-drain mode (gpio_od[pin_sel]=1):
+    //         pin_val=0 -> drives LOW (out=0, oe=1)
+    //         pin_val=1 -> releases to Hi-Z (out=1, oe=0, external pull-up)
+    //
+    // 0x4 | WAIT pin_sel, pin_val, delay
+    //       [15:12] = 4'h4
+    //       [11:9]  = pin_sel (3b: physical GPIO pin 0..7)
+    //       [8]     = pin_val (1b: 0 or 1)
+    //       [7:0]   = delay   (8b: post-match settling delay / $HBAUD / $BAUD)
+    //       Blocks PC execution until gpio_in[pin_sel] == pin_val, then executes
+    //       the specified sidecar delay before advancing to next instruction.
+    //
+    // 0x5 | PINMAP tx, rx, sck, cs
+    //       [15:12] = 4'h5
+    //       [11:9]  = tx_pin  (3b: GPIO pin for UART TX / SPI MOSI / I2C SDA)
+    //       [8:6]   = rx_pin  (3b: GPIO pin for UART RX / SPI MISO / I2C SDA)
+    //       [5:3]   = sck_pin (3b: GPIO pin for SPI SCK / I2C SCL)
+    //       [2:0]   = cs_pin  (3b: GPIO pin for SPI CS_n)
+    //       Dynamically remaps protocol engine signals across physical GPIO 0..7.
+    //       Automatically configures default pin directions (TX, SCK, CS -> OUT; RX -> IN).
+    //
+    // 0x6 | CFG_OD mask
+    //       [15:12] = 4'h6
+    //       [7:0]   = od_mask (8b: bitmask for GPIO pins 7..0)
+    //       Configures individual GPIO pin drive behavior:
+    //         0 = Push-pull (active high / active low drive)
+    //         1 = Open-drain (active low drive / Hi-Z release for I2C, 1-Wire, etc.)
+    //
+    // 0x7 | HARDWARE LOOP COUNTERS (Zero-overhead branching & packet counting)
+    //       [15:12] = 4'h7
+    //       [11]    = lc_sel (1b: 0 = LC0, 1 = LC1)
+    //       [10]    = op_mode:
+    //                 0 : DJNZ LCx, target (Decrement and Jump if Not Zero)
+    //                     [4:0] = target destination address (0..31)
+    //                     Decrements LCx. If LCx != 1, jumps to target in 1 cycle.
+    //                     When LCx == 1, decrements to 0 and falls through (pc+1).
+    //                     If LCx == 0 on entry, wraps to 255 (256 loop iterations).
+    //                 1 : Load / Store operations:
+    //                     [9:8] = 2'b00 : SET_LC LCx, count (count = instr[7:0])
+    //                     [9:8] = 2'b01 : PULL_LC LCx       (loads LCx from i_data)
+    //                     [9:8] = 2'b10 : PUSH_LC LCx       (outputs LCx to o_data & OSR)
+    //                     [9:8] = 2'b11 : MOV_LC  LCx, OSR  (loads LCx from OSR)
+    //
+    // 0x8 | JMP target
+    //       [15:12] = 4'h8
+    //       [4:0]   = target address (0..31)
+    //       Unconditional single-cycle jump to target address in IMEM.
+    //
+    // 0x9 | PULL
+    //       [15:12] = 4'h9
+    //       Refills Output Shift Register (OSR <= i_data) from host/TX FIFO.
+    //
+    // 0xA | PUSH
+    //       [15:12] = 4'hA
+    //       Flushes Input Shift Register to output port and OSR (OSR <= ISR, o_data <= ISR).
+    //
+    // 0xC | CALL target
+    //       [15:12] = 4'hC
+    //       [4:0]   = target address (0..31)
+    //       Pushes (pc + 1) to 4-deep hardware return address call stack (LIFO)
+    //       and jumps to target address.
+    //
+    // 0xD | RET
+    //       [15:12] = 4'hD
+    //       Pops return address from hardware call stack and jumps to it.
+    //
+    // =========================================================================
+    // Microcode RAM (32 words x 16 bits)
+    // =========================================================================
     reg [15:0] imem [0:31];
 
     assign o_prog_rdata = imem[i_prog_addr];
