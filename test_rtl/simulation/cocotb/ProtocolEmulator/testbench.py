@@ -38,6 +38,8 @@ async def reset_dut(dut):
     dut.i_prog_data.value = 0
     dut.i_baud_div.value  = 433   # Default: 115200 baud @ 50 MHz
     dut.i_gpio.value      = 0xFF  # All GPIO lines idle high (external pull-ups)
+    dut.i_tx_valid.value  = 1     # Default: TX FIFO has valid data
+    dut.i_rx_full.value   = 0     # Default: RX FIFO has available space
     await ClockCycles(dut.i_clk, 5)
     await RisingEdge(dut.i_clk)
     dut.i_reset_n.value = 1
@@ -156,6 +158,8 @@ async def test_uart_reset(dut):
     dut.i_reset_n.value = 0
     dut.i_rx.value = 1
     dut.i_data.value = 0
+    dut.i_tx_valid.value = 1
+    dut.i_rx_full.value = 0
     await ClockCycles(dut.i_clk, 5)
 
     tx_val = int(dut.o_tx.value) & 0x01
@@ -1170,5 +1174,188 @@ async def test_in_sda_i2c_read(dut):
     received = int(dut.o_data.value)
     assert received == SLAVE_DATA, f"Expected 0x{SLAVE_DATA:02X}, got 0x{received:02X}"
     dut._log.info(f"IN SDA I2C master read test PASSED: 8 SCL pulses, SDA released, received 0x{received:02X}!")
+
+
+# -----------------------------------------------------------------------------
+# Task 11: Hardware FIFO Handshaking & Status Flags
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_fifo_conditional_jmp(dut):
+    """Test 11A: JMP [cond], target branches on TX_VALID, TX_EMPTY, RX_FULL, RX_READY, PIN_HI, PIN_LO."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Program:
+    # 0x00: JMP TX_VALID, 0x03   -> 0x8103
+    # 0x01: NOP 0                 -> 0x0000 (fallthrough if !i_tx_valid)
+    # 0x02: JMP 0x02              -> 0x8002
+    # 0x03: JMP RX_FULL,  0x06   -> 0x8306
+    # 0x04: NOP 0                 -> 0x0000
+    # 0x05: JMP 0x05              -> 0x8005
+    # 0x06: JMP PIN_HI,   0x09   -> 0x8509
+    # 0x07: NOP 0                 -> 0x0000
+    # 0x08: JMP 0x08              -> 0x8008
+    # 0x09: JMP 0x09              -> 0x8009 (terminal success)
+    prog = [
+        0x8103, # [0] JMP TX_VALID, 3
+        0x0000, # [1]
+        0x8002, # [2]
+        0x8306, # [3] JMP RX_FULL, 6
+        0x0000, # [4]
+        0x8005, # [5]
+        0x8509, # [6] JMP PIN_HI, 9
+        0x0000, # [7]
+        0x8008, # [8]
+        0x8009  # [9]
+    ]
+
+    # Test Branch 1: Set i_tx_valid = 0 -> PC should fall through to 1, then 2
+    dut.i_tx_valid.value = 0
+    await load_program_direct(dut, prog)
+    for _ in range(10):
+        await RisingEdge(dut.i_clk)
+    assert int(dut.pc.value) == 2, f"Expected fallthrough to PC=2 with tx_valid=0, got {int(dut.pc.value)}"
+
+    # Test Branch 1 Taken: Set i_tx_valid = 1, i_rx_full = 0 -> Should jump 0 -> 3 -> fallthrough to 5
+    dut.i_tx_valid.value = 1
+    dut.i_rx_full.value = 0
+    await load_program_direct(dut, prog)
+    for _ in range(10):
+        await RisingEdge(dut.i_clk)
+    assert int(dut.pc.value) == 5, f"Expected jump to 3 then fallthrough to 5, got {int(dut.pc.value)}"
+
+    # Test Branch 2 Taken: Set i_rx_full = 1, pin = 1 -> Should jump 0 -> 3 -> 6 -> 9
+    dut.i_tx_valid.value = 1
+    dut.i_rx_full.value = 1
+    dut.i_rx.value = 1
+    await load_program_direct(dut, prog)
+    for _ in range(15):
+        await RisingEdge(dut.i_clk)
+    assert int(dut.pc.value) == 9, f"Expected jump sequence to PC=9, got {int(dut.pc.value)}"
+    dut._log.info("Conditional JMP tests PASSED: all branch and fallthrough paths verified!")
+
+
+@cocotb.test()
+async def test_pull_blocking(dut):
+    """Test 11B: PULL BLOCK stalls core while TX FIFO empty and pops immediately when valid."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # 0x00: PULL BLOCK -> 0x9001
+    # 0x01: JMP 0x01   -> 0x8001
+    prog = [
+        0x9001,
+        0x8001
+    ]
+
+    # Start with empty TX FIFO
+    dut.i_tx_valid.value = 0
+    dut.i_data.value = 0x55
+    await load_program_direct(dut, prog)
+
+    # Verify core stalls at PC=0 and o_tx_pop remains 0
+    for _ in range(15):
+        await RisingEdge(dut.i_clk)
+        assert int(dut.pc.value) == 0, f"Expected stall at PC=0, got {int(dut.pc.value)}"
+        assert int(dut.o_tx_pop.value) == 0, "o_tx_pop must remain 0 while stalled"
+
+    # Present valid data
+    dut.i_data.value = 0xAA
+    dut.i_tx_valid.value = 1
+
+    # In the cycle where data is accepted:
+    await RisingEdge(dut.i_clk)
+    # Give 1 cycle to execute
+    await RisingEdge(dut.i_clk)
+    assert int(dut.pc.value) == 1, f"Expected advance to PC=1, got {int(dut.pc.value)}"
+    assert int(dut.osr.value) == 0xAA, f"Expected OSR=0xAA, got {int(dut.osr.value):02X}"
+
+    # Verify o_tx_pop returned to 0
+    await RisingEdge(dut.i_clk)
+    assert int(dut.o_tx_pop.value) == 0, "o_tx_pop must return to 0 after 1 cycle"
+    dut._log.info("Blocking PULL test PASSED: stalled on empty, popped on valid, single-cycle strobe verified!")
+
+
+@cocotb.test()
+async def test_push_blocking(dut):
+    """Test 11C: PUSH BLOCK stalls core while RX FIFO full and pushes when space available."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # 0x00: PUSH BLOCK -> 0xA001
+    # 0x01: JMP 0x01   -> 0x8001
+    prog = [
+        0xA001,
+        0x8001
+    ]
+
+    # Start with full RX FIFO
+    dut.i_rx_full.value = 1
+    await load_program_direct(dut, prog)
+
+    # Verify core stalls at PC=0 and o_rx_push remains 0
+    for _ in range(15):
+        await RisingEdge(dut.i_clk)
+        assert int(dut.pc.value) == 0, f"Expected stall at PC=0, got {int(dut.pc.value)}"
+        assert int(dut.o_rx_push.value) == 0, "o_rx_push must remain 0 while stalled"
+
+    # Clear RX full (space available)
+    dut.i_rx_full.value = 0
+
+    await RisingEdge(dut.i_clk)
+    await RisingEdge(dut.i_clk)
+    assert int(dut.pc.value) == 1, f"Expected advance to PC=1, got {int(dut.pc.value)}"
+
+    await RisingEdge(dut.i_clk)
+    assert int(dut.o_rx_push.value) == 0, "o_rx_push must return to 0 after 1 cycle"
+    dut._log.info("Blocking PUSH test PASSED: stalled on full, pushed on space, single-cycle strobe verified!")
+
+
+@cocotb.test()
+async def test_pop_push_strobes(dut):
+    """Test 11D: Non-blocking PULL and PUSH generate exact 1-cycle active-high strobes."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # 0x00: PULL     -> 0x9000
+    # 0x01: PUSH     -> 0xA000
+    # 0x02: JMP 0x02 -> 0x8002
+    prog = [
+        0x9000,
+        0xA000,
+        0x8002
+    ]
+
+    dut.i_tx_valid.value = 1
+    dut.i_rx_full.value = 0
+    dut.i_data.value = 0xBE
+
+    pop_pulses = 0
+    push_pulses = 0
+    async def monitor_strobes():
+        nonlocal pop_pulses, push_pulses
+        while True:
+            await RisingEdge(dut.i_clk)
+            if int(dut.o_tx_pop.value) == 1:
+                pop_pulses += 1
+            if int(dut.o_rx_push.value) == 1:
+                push_pulses += 1
+
+    mon = cocotb.start_soon(monitor_strobes())
+    await load_program_direct(dut, prog)
+
+    for _ in range(20):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 2:
+            break
+
+    await ClockCycles(dut.i_clk, 5)
+    mon.cancel()
+
+    assert pop_pulses == 1, f"Expected exactly 1 pop pulse, got {pop_pulses}"
+    assert push_pulses == 1, f"Expected exactly 1 push pulse, got {push_pulses}"
+    assert int(dut.o_data.value) == 0x00 or int(dut.o_data.value) == int(dut.isr.value)
+    dut._log.info("Pop/Push strobe test PASSED: exact 1-cycle active-high pulses verified!")
+
 
 

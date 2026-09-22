@@ -85,6 +85,8 @@
             `ASSERT(lc0 == 8'h00);
             `ASSERT(lc1 == 8'h00);
             `ASSERT(in_sck_phase == 1'b0);
+            `ASSERT(o_tx_pop == 1'b0);
+            `ASSERT(o_rx_push == 1'b0);
             // Call stack cleared on reset
             `ASSERT(sp == 2'd0);
             `ASSERT(call_stack[0] == 5'd0);
@@ -212,16 +214,28 @@
                             end
                         end
                     end
-                    4'hA: begin // PUSH: transfer ISR to OSR and o_data
-                        `ASSERT(osr == $past(isr));
-                        `ASSERT(o_data == $past(isr));
+                    4'hA: begin // PUSH [BLOCK]: transfer ISR to OSR and o_data
                         `ASSERT(delay_cnt == 9'd0);
-                        `ASSERT(pc == $past(pc) + 5'd1);
+                        if ($past(instr[0]) && $past(i_rx_full)) begin
+                            `ASSERT(pc == $past(pc));
+                            `ASSERT(o_rx_push == 1'b0);
+                        end else begin
+                            `ASSERT(osr == $past(isr));
+                            `ASSERT(o_data == $past(isr));
+                            `ASSERT(o_rx_push == 1'b1);
+                            `ASSERT(pc == $past(pc) + 5'd1);
+                        end
                     end
-                    4'h9: begin // PULL: latches i_data into OSR
-                        `ASSERT(osr == $past(i_data));
+                    4'h9: begin // PULL [BLOCK]: latches i_data into OSR
                         `ASSERT(delay_cnt == 9'd0);
-                        `ASSERT(pc == $past(pc) + 5'd1);
+                        if ($past(instr[0]) && !$past(i_tx_valid)) begin
+                            `ASSERT(pc == $past(pc));
+                            `ASSERT(o_tx_pop == 1'b0);
+                        end else begin
+                            `ASSERT(osr == $past(i_data));
+                            `ASSERT(o_tx_pop == $past(i_tx_valid));
+                            `ASSERT(pc == $past(pc) + 5'd1);
+                        end
                     end
                     4'h1: begin // OUT: dynamic serialization from OSR
                         `ASSERT(delay_cnt == $past(eff_delay));
@@ -296,9 +310,18 @@
                         `ASSERT(delay_cnt == $past(eff_delay));
                         `ASSERT(pc == $past(pc) + 5'd1);
                     end
-                    4'h8: begin // JMP: loop
+                    4'h8: begin // JMP [cond], target: conditional or unconditional
                         `ASSERT(delay_cnt == 9'd0);
-                        `ASSERT(pc == $past(target));
+                        case ($past(instr[10:8]))
+                            3'b000: `ASSERT(pc == $past(target));
+                            3'b001: `ASSERT(pc == ($past(i_tx_valid) ? $past(target) : $past(pc) + 5'd1));
+                            3'b010: `ASSERT(pc == (!$past(i_tx_valid) ? $past(target) : $past(pc) + 5'd1));
+                            3'b011: `ASSERT(pc == ($past(i_rx_full) ? $past(target) : $past(pc) + 5'd1));
+                            3'b100: `ASSERT(pc == (!$past(i_rx_full) ? $past(target) : $past(pc) + 5'd1));
+                            3'b101: `ASSERT(pc == ($past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 5'd1));
+                            3'b110: `ASSERT(pc == (!$past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 5'd1));
+                            default: `ASSERT(pc == $past(target));
+                        endcase
                     end
                     4'hC: begin // CALL: push pc+1 onto stack, jump to target
                         if ($past(sp) < 2'd3) begin
@@ -377,6 +400,16 @@
             // Cover 12 (Task 10): IN SDA executed (I2C master read)
             cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && $past(opcode) == 4'h2 &&
                   $past(instr[11:10]) == 2'b11);
+
+            // Cover 13 (Task 11): o_tx_pop asserted on PULL
+            cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && o_tx_pop == 1'b1);
+
+            // Cover 14 (Task 11): o_rx_push asserted on PUSH
+            cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && o_rx_push == 1'b1);
+
+            // Cover 15 (Task 11): Conditional JMP TX_VALID taken
+            cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && $past(opcode) == 4'h8 &&
+                  $past(instr[10:8]) == 3'b001 && $past(i_tx_valid) && pc == $past(target));
         end
     end
 
