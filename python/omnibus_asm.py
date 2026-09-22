@@ -17,24 +17,30 @@ import re
 import argparse
 
 OPCODES = {
-    "NOP":  0x0,
-    "OUT":  0x1,
-    "IN":   0x2,
-    "SET":  0x3,
-    "WAIT": 0x4,
-    "JMP":  0x8,
-    "PULL": 0x9,
-    "PUSH": 0xA,
-    "CALL": 0xC,  # Push pc+1 to call stack, jump to target
-    "RET":  0xD,  # Pop return address from call stack
+    "NOP":    0x0,
+    "OUT":    0x1,
+    "IN":     0x2,
+    "SET":    0x3,
+    "WAIT":   0x4,
+    "PINMAP": 0x5,  # Dynamic role mapping: tx, rx, sck, cs (3 bits each)
+    "CFG_OD": 0x6,  # Open-drain mask: mask[7:0]
+    "JMP":    0x8,
+    "PULL":   0x9,
+    "PUSH":   0xA,
+    "CALL":   0xC,  # Push pc+1 to call stack, jump to target
+    "RET":    0xD,  # Pop return address from call stack
 }
 
-# Task 07: SPI pin selector for SET/WAIT [11:10]
-# 0=MOSI/TX (backward compat), 1=SCK, 2=CS_n, 3=MOSI alias
+# 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
 PIN_NAMES = {
-    "MOSI": 0, "TX": 0, "MISO": 0, "RX": 0,  # pin 0 — backward compat
-    "SCK":  1,                                   # pin 1 — SPI clock
-    "CS":   2, "CS_N": 2, "CSN": 2,             # pin 2 — chip-select (active-low)
+    "MOSI": 0, "TX": 0, "PIN0": 0, "P0": 0,
+    "SCK":  1, "SCL": 1, "PIN1": 1, "P1": 1,
+    "CS":   2, "CS_N": 2, "CSN": 2, "PIN2": 2, "P2": 2,
+    "MISO": 3, "RX": 3, "PIN3": 3, "P3": 3,
+    "SDA":  4, "PIN4": 4, "P4": 4,
+    "PIN5": 5, "P5": 5,
+    "PIN6": 6, "P6": 6,
+    "PIN7": 7, "P7": 7,
 }
 
 class AssemblerError(Exception):
@@ -172,49 +178,102 @@ class OmnibusAssembler:
                     word = (opcode_val << 12) | (bit_count << 9) | (delay & 0x1FF)
                 else:  # OUT
                     # Forms:
-                    #   OUT delay           (pin=0, 8-bit LSB-first, backward compat)
+                    #   OUT delay           (mode=0, 8-bit LSB-first UART, backward compat)
                     #   OUT 8, delay        (same)
-                    #   OUT SCK, delay      (pin=1, 8-bit MSB-first + auto-SCK toggle)
-                    # Detect pin name as first arg: if it is in PIN_NAMES -> SCK mode
-                    def _out_pin(s):
+                    #   OUT SCK, delay      (mode=1, 8-bit MSB-first SPI + auto-SCK toggle)
+                    #   OUT SDA, delay      (mode=3, 8-bit MSB-first I2C + auto-SCL toggle)
+                    def _out_mode(s):
                         s = s.strip().upper()
-                        return PIN_NAMES.get(s, None)
+                        if s in ("SCK", "SCLK", "CLK"):
+                            return 1
+                        elif s in ("SDA", "SCL", "I2C"):
+                            return 3
+                        return 0
 
-                    if len(tokens) >= 3 and _out_pin(tokens[1]) is not None:
-                        pin_id = _out_pin(tokens[1])
-                        delay  = eval_arg(tokens[2]) & 0x1FF
+                    if len(tokens) >= 3 and _out_mode(tokens[1]) != 0:
+                        mode  = _out_mode(tokens[1])
+                        delay = eval_arg(tokens[2]) & 0x1FF
                     elif len(tokens) == 2:
-                        pin_id, delay = 0, eval_arg(tokens[1])
+                        mode, delay = 0, eval_arg(tokens[1]) & 0x1FF
                     elif len(tokens) >= 3:
-                        pin_id, delay = 0, eval_arg(tokens[2])
+                        mode, delay = 0, eval_arg(tokens[2]) & 0x1FF
                     else:
-                        pin_id, delay = 0, 0
-                    word = (opcode_val << 12) | (pin_id << 10) | (delay & 0x1FF)
+                        mode, delay = 0, 0
+                    word = (opcode_val << 12) | (mode << 10) | (delay & 0x1FF)
 
             elif op in ("SET", "WAIT"):
-                # Two forms:
-                #   SET val, delay         (old 2-arg: pin=0=MOSI, backward compat)
-                #   SET pin, val, delay    (new 3-arg: explicit pin selector)
-                # pin can be a numeric ID (0-3) or a name: MOSI/TX/SCK/CS/MISO/RX
+                # Forms:
+                #   SET pin, val, delay    (3-arg explicit pin 0..7)
+                #   SET pin, val           (2-arg explicit pin 0..7, delay=0)
+                #   SET val, delay         (legacy 2-arg: pin=0, delay)
                 def resolve_pin(s):
                     s = s.strip().upper()
                     if s in PIN_NAMES:
                         return PIN_NAMES[s]
-                    return int(s, 0) & 0x3
+                    try:
+                        return int(s, 0) & 0x7
+                    except ValueError:
+                        raise AssemblerError(f"Line {line_num}: Unknown pin identifier '{s}'")
+
+                def eval_delay_8(arg_str):
+                    s = arg_str.strip()
+                    if s in ("$BAUD", "BIT_DELAY"):
+                        return 0xFF
+                    if s in ("$HBAUD", "HALF_DELAY"):
+                        return 0xFE
+                    val = eval_arg(s)
+                    if val == 0x1FF:
+                        return 0xFF
+                    if val == 0x1FE:
+                        return 0xFE
+                    return val & 0xFF
 
                 if len(tokens) >= 4:
                     # 3-arg form: SET pin, val, delay
                     pin_id  = resolve_pin(tokens[1])
                     pin_val = eval_arg(tokens[2]) & 0x1
-                    delay   = eval_arg(tokens[3]) & 0x1FF
+                    delay   = eval_delay_8(tokens[3])
                 elif len(tokens) == 3:
-                    # 2-arg form: SET val, delay  (pin=0, backward compat)
-                    pin_id  = 0
-                    pin_val = eval_arg(tokens[1]) & 0x1
-                    delay   = eval_arg(tokens[2]) & 0x1FF
+                    tok1 = tokens[1].strip().upper()
+                    if tok1 in PIN_NAMES or tok1.startswith("PIN") or tok1.startswith("P"):
+                        # SET pin, val (delay=0)
+                        pin_id  = resolve_pin(tok1)
+                        pin_val = eval_arg(tokens[2]) & 0x1
+                        delay   = 0
+                    else:
+                        # SET val, delay (legacy pin=0)
+                        pin_id  = 0
+                        pin_val = eval_arg(tokens[1]) & 0x1
+                        delay   = eval_delay_8(tokens[2])
                 else:
-                    raise AssemblerError(f"Line {line_num}: {op} requires 'val, delay' or 'pin, val, delay'")
-                word = (opcode_val << 12) | (pin_id << 10) | (pin_val << 9) | delay
+                    raise AssemblerError(f"Line {line_num}: {op} requires 'pin, val, delay', 'pin, val', or 'val, delay'")
+                word = (opcode_val << 12) | ((pin_id & 0x7) << 9) | ((pin_val & 0x1) << 8) | (delay & 0xFF)
+
+            elif op == "PINMAP":
+                # PINMAP tx, rx, sck, cs
+                # Form: PINMAP 0, 3, 1, 2  or  PINMAP TX=0, RX=3, SCK=1, CS=2
+                if len(tokens) < 5:
+                    raise AssemblerError(f"Line {line_num}: PINMAP requires 4 arguments: tx, rx, sck, cs")
+                def parse_role_pin(arg_str):
+                    clean = arg_str.strip()
+                    if "=" in clean:
+                        clean = clean.split("=")[1].strip()
+                    if clean.upper() in PIN_NAMES:
+                        return PIN_NAMES[clean.upper()]
+                    return int(clean, 0) & 0x7
+
+                tx  = parse_role_pin(tokens[1])
+                rx  = parse_role_pin(tokens[2])
+                sck = parse_role_pin(tokens[3])
+                cs  = parse_role_pin(tokens[4])
+                word = (opcode_val << 12) | (tx << 9) | (rx << 6) | (sck << 3) | cs
+
+            elif op == "CFG_OD":
+                # CFG_OD mask (8-bit open drain mask)
+                if len(tokens) < 2:
+                    raise AssemblerError(f"Line {line_num}: CFG_OD requires mask argument (e.g. CFG_OD 0x10)")
+                mask = eval_arg(tokens[1]) & 0xFF
+                word = (opcode_val << 12) | mask
 
             elif op == "JMP":
                 # JMP target

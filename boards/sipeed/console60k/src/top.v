@@ -8,7 +8,6 @@ module top (
     output  wire            spi_sck,            // SPI Clock  (drives o_spi_sck)
     output  wire            spi_mosi,           // SPI MOSI   (same as core TX)
     output  wire            spi_cs_n            // SPI CS_n   (drives o_spi_cs_n)
-    // spi_miso is looped back internally from spi_mosi for loopback test
 );
 
     wire [7:0]  core_data;
@@ -38,23 +37,41 @@ module top (
     // SPI wires
     wire        core_sck;         // o_spi_sck from ProtocolEmulator
     wire        core_cs_n;        // o_spi_cs_n from ProtocolEmulator
-    // Internal SPI loopback: MISO = MOSI (no physical jumper needed for loopback test)
-    // core_tx (MOSI) is looped back as the MISO input to the PE core.
-    // For external SPI slaves: replace spi_miso_in with a real MISO input pin.
     wire        spi_miso_in = core_tx;  // loopback: MOSI -> MISO
 
     assign spi_sck  = core_sck;
     assign spi_mosi = core_tx;
     assign spi_cs_n = core_cs_n;
 
+    // 8-bit GPIO bus from ProtocolEmulator
+    wire [7:0]  core_gpio_out;
+    wire [7:0]  core_gpio_oe;
+    wire [7:0]  core_gpio_in;
+
+    // Internal loopback routing:
+    // When core drives an output (core_gpio_oe[k]=1), that output is reflected on core_gpio_in[k].
+    // Pin 0 (TX/MOSI) also loops back to Pin 3 (RX/MISO) for SPI loopback.
+    // Floating/undriven pins pull high (1'b1).
+    assign core_gpio_in[0] = core_gpio_oe[0] ? core_gpio_out[0] : 1'b1;
+    assign core_gpio_in[1] = core_gpio_oe[1] ? core_gpio_out[1] : 1'b1;
+    assign core_gpio_in[2] = core_gpio_oe[2] ? core_gpio_out[2] : 1'b1;
+    assign core_gpio_in[3] = core_gpio_oe[0] ? core_gpio_out[0] : (core_gpio_oe[3] ? core_gpio_out[3] : 1'b1);
+    assign core_gpio_in[4] = core_gpio_oe[4] ? core_gpio_out[4] : 1'b1;
+    assign core_gpio_in[5] = core_gpio_oe[5] ? core_gpio_out[5] : 1'b1;
+    assign core_gpio_in[6] = core_gpio_oe[6] ? core_gpio_out[6] : 1'b1;
+    assign core_gpio_in[7] = core_gpio_oe[7] ? core_gpio_out[7] : 1'b1;
+
     ProtocolEmulator DUT (
         .i_clk        (i_sys_clk),
         .i_reset_n    (sys_rst_n),
-        .i_rx         (spi_miso_in),   // MISO input: internal loopback from MOSI
-        .i_data       (spi_data),      // SPI TX byte from bootloader 'D' command
-        .o_tx         (core_tx),
+        .i_data       (spi_data),
         .o_data       (core_data),
         .i_baud_div   (baud_div),
+        .i_gpio       (core_gpio_in),
+        .o_gpio       (core_gpio_out),
+        .o_gpio_oe    (core_gpio_oe),
+        .i_rx         (spi_miso_in),
+        .o_tx         (core_tx),
         .o_spi_sck    (core_sck),
         .o_spi_cs_n   (core_cs_n),
         .i_prog_en    (prog_en),
@@ -94,4 +111,3 @@ module top (
                                  {!core_cs_n, core_sck, 1'b0, core_data[4:0]};
 
 endmodule
-
