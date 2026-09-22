@@ -57,9 +57,9 @@ module ProtocolEmulator(
     // Execution State Registers
     // -------------------------------------------------------------------------
     reg [4:0]  pc;
-    reg [8:0]  delay_cnt;
-    reg        out_sck_phase;   // OUT SCK phase: 0=SCK rising, 1=SCK falling
-    reg        in_sck_phase;    // IN SCK/SDA phase: 0=clock active/high, 1=clock idle/low
+    reg [15:0] delay_cnt;       // 16-bit hardware sidecar delay counter (0 to 65535 cycles)
+    reg        out_sck_phase;   // OUT SCK/1W phase: 0=drive phase, 1=release phase
+    reg [1:0]  in_sck_phase;    // IN phase: SPI/I2C: 0=high/active, 1=low/idle; 1W: 0=drive, 1=wait/sample, 2=recovery
     reg [7:0]  osr;             // Output Shift Register (Serializer)
     reg [3:0]  bit_cnt;         // Serialization bit counter
     reg [7:0]  isr;             // Input Shift Register (Deserializer)
@@ -124,26 +124,32 @@ module ProtocolEmulator(
     //       [8:0]   = delay (9b: cycles / $HBAUD / $BAUD)
     //       Exact cycle-accurate delay without modifying registers or I/O.
     //
-    // 0x1 | OUT mode, delay
+    // 0x1 | OUT mode, [bit_cnt,] delay
     //       [15:12] = 0x1
     //       [11:10] = mode:
     //                 2'b00: UART LSB-first serializer (drives tx_pin from OSR[0])
     //                 2'b01: SPI MSB-first serializer (drives tx_pin, auto-toggles
     //                        sck_pin, simultaneously samples rx_pin into ISR)
+    //                 2'b10: 1-Wire LSB-first serializer (OUT 1W): drives tx_pin open-drain
+    //                        with precise 1W bit slots (short low for 1, long low for 0).
+    //                        [9] = 0: 8-bit byte transfer, 1: 1-bit slot (Search ROM)
     //                 2'b11: I2C MSB-first serializer (drives tx_pin/SDA open-drain,
     //                        auto-toggles sck_pin/SCL, samples rx_pin into ISR)
-    //       [8:0]   = delay (9b: half-period or bit-period delay)
+    //       [8:0]   = delay (9b: half-period, bit-period, or 1W short pulse delay)
     //
-    // 0x2 | IN mode, delay
+    // 0x2 | IN mode, [bit_cnt,] delay
     //       [15:12] = 0x2
     //       [11:10] = mode:
     //                 2'b00: UART LSB-first deserializer (samples rx_pin into ISR[7],
     //                        supports variable bit count via instr[11:9])
     //                 2'b01: SPI Master Read (IN SCK): auto-toggles sck_pin 8 times,
     //                        deserializes rx_pin (MISO) MSB-first into ISR
+    //                 2'b10: 1-Wire Master Read (IN 1W): generates master read pulse on tx_pin,
+    //                        releases line, samples rx_pin into ISR LSB-first at ~12us window.
+    //                        [9] = 0: 8-bit byte transfer, 1: 1-bit slot (Search ROM)
     //                 2'b11: I2C Master Read (IN SDA): releases tx_pin (SDA Hi-Z OD),
     //                        auto-toggles sck_pin (SCL) 8 times, deserializes rx_pin
-    //       [8:0]   = delay (9b: half-period or bit-period delay)
+    //       [8:0]   = delay (9b: half-period, bit-period, or 1W short pulse delay)
     //
     // 0x3 | SET pin_sel, pin_val, delay
     //       [15:12] = 0x3
@@ -312,15 +318,19 @@ module ProtocolEmulator(
     wire [4:0]  target  = instr[4:0];
 
     // Resolved delays:
-    // Full 9-bit eff_delay (NOP, OUT, IN):
-    wire [8:0] eff_delay = (delay == 9'h1FF) ? i_baud_div[8:0] :
-                           (delay == 9'h1FE) ? (i_baud_div[8:0] >> 1) :
-                           delay;
+    // Full 16-bit eff_delay (NOP, OUT, IN):
+    wire [15:0] eff_delay = (delay == 9'h1FF) ? i_baud_div :
+                            (delay == 9'h1FE) ? (i_baud_div >> 1) :
+                            {7'd0, delay};
 
-    // 8-bit eff_sw_delay (SET, WAIT):
-    wire [8:0] eff_sw_delay = (sw_delay == 8'hFF) ? i_baud_div[8:0] :
-                              (sw_delay == 8'hFE) ? (i_baud_div[8:0] >> 1) :
-                              {1'b0, sw_delay};
+    // 16-bit eff_sw_delay (SET, WAIT):
+    wire [15:0] eff_sw_delay = (sw_delay == 8'hFF) ? i_baud_div :
+                               (sw_delay == 8'hFE) ? (i_baud_div >> 1) :
+                               {8'd0, sw_delay};
+
+    // 1-Wire multi-pulse derived delays (10x and 9x short pulse duration)
+    wire [15:0] eff_delay_10x = (eff_delay << 3) + (eff_delay << 1);
+    wire [15:0] eff_delay_9x  = (eff_delay << 3) + eff_delay;
 
     // -------------------------------------------------------------------------
     // 2-stage input synchronizer for all 8 GPIO pins
@@ -352,7 +362,7 @@ module ProtocolEmulator(
     always @(posedge i_clk) begin
         if (!i_reset_n || i_prog_en) begin
             pc            <= 5'd0;
-            delay_cnt     <= 9'd0;
+            delay_cnt     <= 16'd0;
             tx_pin        <= 3'd0; // Default: Pin 0 = TX / MOSI
             rx_pin        <= 3'd0; // Default: Pin 0 = RX (legacy compat)
             sck_pin       <= 3'd1; // Default: Pin 1 = SCK
@@ -361,7 +371,7 @@ module ProtocolEmulator(
             gpio_out_reg  <= 8'b1111_1101; // Pin 0=1 (TX idle), Pin 1=0 (SCK idle low), Pin 2=1 (CS idle high)
             gpio_oe_reg   <= 8'b0000_0111; // Pins 0, 1, 2 driven outputs, others high-Z
             out_sck_phase <= 1'b0;
-            in_sck_phase  <= 1'b0;
+            in_sck_phase  <= 2'd0;
             osr           <= 8'h00;
             bit_cnt       <= 4'd0;
             isr           <= 8'h00;
@@ -381,8 +391,8 @@ module ProtocolEmulator(
             o_tx_pop  <= 1'b0;
             o_rx_push <= 1'b0;
 
-            if (delay_cnt > 9'd0) begin
-                delay_cnt <= delay_cnt - 9'd1;
+            if (delay_cnt > 16'd0) begin
+                delay_cnt <= delay_cnt - 16'd1;
             end else begin
                 case (opcode)
                     4'h4: begin // WAIT: Wait until gpio_in[pin_sel] == pin_val, then delay
@@ -390,7 +400,7 @@ module ProtocolEmulator(
                             delay_cnt <= eff_sw_delay;
                             pc        <= pc + 5'd1;
                         end else begin
-                            delay_cnt <= 9'd0;
+                            delay_cnt <= 16'd0;
                             pc        <= pc;
                         end
                     end
@@ -403,7 +413,7 @@ module ProtocolEmulator(
                             // samples rx_pin (MISO) MSB-first into ISR.
                             // -------------------------------------------------------
                             delay_cnt <= eff_delay;
-                            if (in_sck_phase == 1'b0) begin
+                            if (in_sck_phase == 2'd0) begin
                                 // Rising clock phase: drive SCK high
                                 if (gpio_od[sck_pin]) begin
                                     gpio_out_reg[sck_pin] <= 1'b1;
@@ -412,7 +422,7 @@ module ProtocolEmulator(
                                     gpio_out_reg[sck_pin] <= 1'b1;
                                     gpio_oe_reg[sck_pin]  <= 1'b1; // drive high
                                 end
-                                in_sck_phase <= 1'b1;
+                                in_sck_phase <= 2'd1;
                                 pc           <= pc;
                             end else begin
                                 // Falling clock phase: sample rx_pin into ISR, drive SCK low
@@ -424,7 +434,7 @@ module ProtocolEmulator(
                                     gpio_out_reg[sck_pin] <= 1'b0;
                                     gpio_oe_reg[sck_pin]  <= 1'b1; // drive low
                                 end
-                                in_sck_phase <= 1'b0;
+                                in_sck_phase <= 2'd0;
                                 if (rx_bit_cnt == 4'd0) begin
                                     rx_bit_cnt <= 4'd7;
                                     pc         <= pc;
@@ -448,7 +458,7 @@ module ProtocolEmulator(
                             gpio_out_reg[tx_pin] <= 1'b1;
                             gpio_oe_reg[tx_pin]  <= 1'b0;
 
-                            if (in_sck_phase == 1'b0) begin
+                            if (in_sck_phase == 2'd0) begin
                                 // High clock phase: release SCL high and sample SDA
                                 if (gpio_od[sck_pin]) begin
                                     gpio_out_reg[sck_pin] <= 1'b1;
@@ -458,7 +468,7 @@ module ProtocolEmulator(
                                     gpio_oe_reg[sck_pin]  <= 1'b1; // drive high
                                 end
                                 isr          <= {isr[6:0], gpio_in[rx_pin]};
-                                in_sck_phase <= 1'b1;
+                                in_sck_phase <= 2'd1;
                                 pc           <= pc;
                             end else begin
                                 // Low clock phase: drive SCL low
@@ -469,13 +479,55 @@ module ProtocolEmulator(
                                     gpio_out_reg[sck_pin] <= 1'b0;
                                     gpio_oe_reg[sck_pin]  <= 1'b1; // drive low
                                 end
-                                in_sck_phase <= 1'b0;
+                                in_sck_phase <= 2'd0;
                                 if (rx_bit_cnt == 4'd0) begin
                                     rx_bit_cnt <= 4'd7;
                                     pc         <= pc;
                                 end else if (rx_bit_cnt == 4'd1) begin
                                     rx_bit_cnt <= 4'd0;
                                     pc         <= pc + 5'd1;
+                                end else begin
+                                    rx_bit_cnt <= rx_bit_cnt - 4'd1;
+                                    pc         <= pc;
+                                end
+                            end
+                        end else if (instr[11:10] == 2'b10) begin
+                            // -------------------------------------------------------
+                            // 1-Wire Master Read (IN 1W):
+                            //   instr[9] = 0: 8-bit byte read, 1: 1-bit single-slot read
+                            // Phase 0: Master pulls tx_pin low for 1x eff_delay (~6us)
+                            // Phase 1: Master releases tx_pin high for 1x eff_delay (~6us)
+                            // Phase 2: Master samples rx_pin at ~12us window, then waits
+                            //          9x eff_delay recovery time to complete 60us slot.
+                            // Deserializes LSB-first into ISR.
+                            // -------------------------------------------------------
+                            if (in_sck_phase == 2'd0) begin
+                                // Phase 0: Master pull-down pulse
+                                gpio_out_reg[tx_pin] <= 1'b0;
+                                gpio_oe_reg[tx_pin]  <= 1'b1; // drive low
+                                delay_cnt            <= eff_delay;
+                                in_sck_phase         <= 2'd1;
+                                pc                   <= pc;
+                            end else if (in_sck_phase == 2'd1) begin
+                                // Phase 1: Release line, wait 1x delay for slave pull-down/line rise
+                                gpio_out_reg[tx_pin] <= 1'b1;
+                                gpio_oe_reg[tx_pin]  <= 1'b0; // release Hi-Z
+                                delay_cnt            <= eff_delay;
+                                in_sck_phase         <= 2'd2;
+                                pc                   <= pc;
+                            end else begin
+                                // Phase 2: Sample rx_pin into ISR, wait 9x delay recovery
+                                gpio_out_reg[tx_pin] <= 1'b1;
+                                gpio_oe_reg[tx_pin]  <= 1'b0; // stay released
+                                isr                  <= instr[9] ? {7'd0, gpio_in[rx_pin]} : {gpio_in[rx_pin], isr[7:1]};
+                                delay_cnt            <= eff_delay_9x;
+                                in_sck_phase         <= 2'd0;
+                                if (instr[9] || rx_bit_cnt == 4'd1) begin
+                                    rx_bit_cnt <= 4'd0;
+                                    pc         <= pc + 5'd1;
+                                end else if (rx_bit_cnt == 4'd0) begin
+                                    rx_bit_cnt <= 4'd7;
+                                    pc         <= pc;
                                 end else begin
                                     rx_bit_cnt <= rx_bit_cnt - 4'd1;
                                     pc         <= pc;
@@ -501,7 +553,7 @@ module ProtocolEmulator(
                     end
 
                     4'hA: begin // PUSH [BLOCK]: Transfer ISR to OSR and latch to o_data
-                        delay_cnt <= 9'd0;
+                        delay_cnt <= 16'd0;
                         if (instr[0] && i_rx_full) begin
                             // Blocking PUSH: stall until space is available in RX FIFO
                             pc        <= pc;
@@ -515,7 +567,7 @@ module ProtocolEmulator(
                     end
 
                     4'h9: begin // PULL [BLOCK]: Latch input data into OSR
-                        delay_cnt <= 9'd0;
+                        delay_cnt <= 16'd0;
                         if (instr[0] && !i_tx_valid) begin
                             // Blocking PULL: stall until valid data is available in TX FIFO
                             pc       <= pc;
@@ -581,6 +633,39 @@ module ProtocolEmulator(
                                     pc      <= pc;
                                 end
                             end
+                        end else if (instr[11:10] == 2'b10) begin
+                            // -------------------------------------------------------
+                            // 1-Wire Serializer (OUT 1W):
+                            //   instr[9] = 0: 8-bit byte transfer, 1: 1-bit slot (Search ROM)
+                            // Phase 0: Pull tx_pin low (short for '1', long for '0')
+                            // Phase 1: Release tx_pin high (long for '1', short for '0')
+                            // Both Write 1 and Write 0 total 11x delay per bit slot.
+                            // -------------------------------------------------------
+                            if (out_sck_phase == 1'b0) begin
+                                // Phase 0: Drive low
+                                gpio_out_reg[tx_pin] <= 1'b0;
+                                gpio_oe_reg[tx_pin]  <= 1'b1; // drive low
+                                delay_cnt            <= osr[0] ? eff_delay : eff_delay_10x;
+                                out_sck_phase        <= 1'b1;
+                                pc                   <= pc;
+                            end else begin
+                                // Phase 1: Release high & shift OSR LSB-first
+                                gpio_out_reg[tx_pin] <= 1'b1;
+                                gpio_oe_reg[tx_pin]  <= 1'b0; // release Hi-Z
+                                delay_cnt            <= osr[0] ? eff_delay_10x : eff_delay;
+                                osr                  <= {1'b0, osr[7:1]};
+                                out_sck_phase        <= 1'b0;
+                                if (instr[9] || bit_cnt == 4'd1) begin
+                                    bit_cnt <= 4'd0;
+                                    pc      <= pc + 5'd1;
+                                end else if (bit_cnt == 4'd0) begin
+                                    bit_cnt <= 4'd7;
+                                    pc      <= pc;
+                                end else begin
+                                    bit_cnt <= bit_cnt - 4'd1;
+                                    pc      <= pc;
+                                end
+                            end
                         end else begin
                             // -------------------------------------------------------
                             // Normal OUT mode (instr[11:10]=00): LSB-first UART serializer
@@ -634,13 +719,13 @@ module ProtocolEmulator(
                         gpio_oe_reg[instr[5:3]]  <= 1'b1;
                         gpio_oe_reg[instr[2:0]]  <= 1'b1;
                         gpio_oe_reg[instr[8:6]]  <= 1'b0;
-                        delay_cnt                <= 9'd0;
+                        delay_cnt                <= 16'd0;
                         pc                       <= pc + 5'd1;
                     end
 
                     4'h6: begin // CFG_OD: Configure open-drain mask for GPIO[7:0]
                         gpio_od   <= instr[7:0];
-                        delay_cnt <= 9'd0;
+                        delay_cnt <= 16'd0;
                         pc        <= pc + 5'd1;
                     end
 
@@ -676,7 +761,7 @@ module ProtocolEmulator(
                                     pc  <= pc + 5'd1;
                                 end
                             end
-                            delay_cnt <= 9'd0;
+                            delay_cnt <= 16'd0;
                         end else begin
                             // -------------------------------------------------
                             // Loop Counter Load/Store Operations:
@@ -710,13 +795,13 @@ module ProtocolEmulator(
                                     else                   lc1 <= osr;
                                 end
                             endcase
-                            delay_cnt <= 9'd0;
+                            delay_cnt <= 16'd0;
                             pc        <= pc + 5'd1;
                         end
                     end
 
                     4'h8: begin // JMP [cond], target: Conditional or Unconditional Jump
-                        delay_cnt <= 9'd0;
+                        delay_cnt <= 16'd0;
                         case (instr[10:8])
                             3'b000: pc <= target;                              // Unconditional JMP target
                             3'b001: pc <= i_tx_valid ? target : pc + 5'd1;     // JMP TX_VALID, target
@@ -732,14 +817,14 @@ module ProtocolEmulator(
                     4'hC: begin // CALL: Push return address, jump to target
                         call_stack[sp] <= pc + 5'd1;
                         sp             <= (sp == 2'd3) ? 2'd3 : sp + 2'd1;
-                        delay_cnt      <= 9'd0;
+                        delay_cnt      <= 16'd0;
                         pc             <= target;
                     end
 
                     4'hD: begin // RET: Pop return address from call stack
                         sp        <= (sp == 2'd0) ? 2'd0 : sp - 2'd1;
                         pc        <= (sp == 2'd0) ? 5'd0 : call_stack[sp - 2'd1];
-                        delay_cnt <= 9'd0;
+                        delay_cnt <= 16'd0;
                     end
 
                     default: begin
