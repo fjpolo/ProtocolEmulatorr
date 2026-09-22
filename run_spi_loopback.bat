@@ -30,12 +30,13 @@ echo ============================================================
 
 set ASM_FILE=%~dp0examples\spi_loopback.asm
 
-if "%~1"=="" (
-    echo [*] Using default timing (i_baud_div=433, SCK half-period = 8.68 us)
-    python "%~dp0python\omnibus_loader.py" --file "%ASM_FILE%"
-) else (
-    echo [*] Setting SPI clock to approximately %~1 Hz...
-    python "%~dp0python\omnibus_loader.py" --set-baud %~1 --file "%ASM_FILE%"
-)
+if "%~1"=="" goto :default_baud
 
+echo [*] Setting SPI clock to approximately %~1 Hz...
+python "%~dp0python\omnibus_loader.py" --set-baud %~1 --file "%ASM_FILE%"
+exit /b %ERRORLEVEL%
+
+:default_baud
+echo [*] Using default timing: i_baud_div=433, SCK half-period = 8.68 us
+python "%~dp0python\omnibus_loader.py" --file "%ASM_FILE%"
 exit /b %ERRORLEVEL%

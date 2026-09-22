@@ -26,18 +26,18 @@ echo   Task 06 - Configurable-Baud Echo Transceiver
 echo ============================================================
 
 set ASM_FILE=%~dp0examples\echo_configurable.asm
-set BAUD_ARG=
 
-if "%~1"=="" (
-    echo [*] No baud rate specified — using default 115200 baud
-    python "%~dp0python\omnibus_loader.py" --file "%ASM_FILE%" --terminal
-) else (
-    echo [*] Setting core to %~1 baud, then loading echo_configurable.asm...
-    echo.
-    echo NOTE: After the core is programmed, reconnect your terminal at %~1 baud.
-    echo       The OmniBootloader control link remains at 115200 baud.
-    echo.
-    python "%~dp0python\omnibus_loader.py" --set-baud %~1 --file "%ASM_FILE%" --terminal
-)
+if "%~1"=="" goto :default_baud
 
+echo [*] Setting core to %~1 baud, then loading echo_configurable.asm...
+echo.
+echo NOTE: After the core is programmed, reconnect your terminal at %~1 baud.
+echo       The OmniBootloader control link remains at 115200 baud.
+echo.
+python "%~dp0python\omnibus_loader.py" --set-baud %~1 --file "%ASM_FILE%" --terminal
+exit /b %ERRORLEVEL%
+
+:default_baud
+echo [*] No baud rate specified — using default 115200 baud
+python "%~dp0python\omnibus_loader.py" --file "%ASM_FILE%" --terminal
 exit /b %ERRORLEVEL%
