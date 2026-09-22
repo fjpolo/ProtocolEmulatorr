@@ -31,7 +31,7 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 * [Task 06 — Runtime-Configurable Baud Divisor](task06.md)
 * [Task 07 — SPI Master & Auto-SCK Serialization](task07.md)
 * [Task 07C — Unified 8-Bit GPIO Bus & Dynamic Pin Mapping](task07c.md)
-* [Task 08 — I2C Master in Microcode (Plan)](task08.md)
+* [Task 08 — I2C Master in Microcode (Loopback Mode)](task08.md)
 
 ## Usage
 
