@@ -62,6 +62,10 @@ module ProtocolEmulator(
     reg [4:0]  call_stack [0:3]; // Return address stack
     reg [1:0]  sp;               // Stack pointer (0..3, wraps-safe)
 
+    // 2x 8-bit Hardware Loop Counters for zero-overhead loops (LC0, LC1)
+    reg [7:0]  lc0;              // Loop counter 0
+    reg [7:0]  lc1;              // Loop counter 1
+
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
     reg [2:0]  rx_pin;          // Pin index for IN deserializer / default WAIT (default 0)
@@ -91,6 +95,7 @@ module ProtocolEmulator(
     //   0x4 = WAIT   [11:9 pin_sel, 8 pin_val, 7:0 delay] (waits on gpio_in[pin_sel])
     //   0x5 = PINMAP [11:9 tx, 8:6 rx, 5:3 sck, 2:0 cs]
     //   0x6 = CFG_OD [7:0 open-drain mask]
+    //   0x7 = DJNZ / SET_LC / PULL_LC / PUSH_LC [11 lc_sel, 10 op, 9:8 subop, 7:0 data/target]
     //   0x8 = JMP    [4:0 target]
     //   0x9 = PULL   (Latches i_data[7:0] into OSR)
     //   0xA = PUSH   (Transfers ISR into OSR and updates o_data)
@@ -235,6 +240,8 @@ module ProtocolEmulator(
             call_stack[1] <= 5'd0;
             call_stack[2] <= 5'd0;
             call_stack[3] <= 5'd0;
+            lc0           <= 8'd0;
+            lc1           <= 8'd0;
         end else begin
             if (delay_cnt > 9'd0) begin
                 delay_cnt <= delay_cnt - 9'd1;
@@ -398,6 +405,72 @@ module ProtocolEmulator(
                     4'h0: begin // NOP: Pure delay
                         delay_cnt <= eff_delay;
                         pc        <= pc + 5'd1;
+                    end
+
+                    4'h7: begin // Hardware Loop Counters (DJNZ / SET_LC / PULL_LC / PUSH_LC / MOV_LC)
+                        if (instr[10] == 1'b0) begin
+                            // -------------------------------------------------
+                            // DJNZ LCx, target: Decrement and Jump if Not Zero
+                            //   instr[11]: 0=LC0, 1=LC1
+                            //   instr[4:0]: target jump address
+                            // Decrements selected LC. If LC != 1, jumps to target.
+                            // When LC == 1, decrements to 0 and falls through (pc+1).
+                            // If LC was 0 on entry, it wraps to 255 (256 iterations).
+                            // -------------------------------------------------
+                            if (instr[11] == 1'b0) begin
+                                if (lc0 != 8'd1) begin
+                                    lc0 <= lc0 - 8'd1;
+                                    pc  <= target;
+                                end else begin
+                                    lc0 <= 8'd0;
+                                    pc  <= pc + 5'd1;
+                                end
+                            end else begin
+                                if (lc1 != 8'd1) begin
+                                    lc1 <= lc1 - 8'd1;
+                                    pc  <= target;
+                                end else begin
+                                    lc1 <= 8'd0;
+                                    pc  <= pc + 5'd1;
+                                end
+                            end
+                            delay_cnt <= 9'd0;
+                        end else begin
+                            // -------------------------------------------------
+                            // Loop Counter Load/Store Operations:
+                            //   instr[11]: 0=LC0, 1=LC1
+                            //   instr[9:8]:
+                            //     2'b00: SET_LC LCx, imm8  (load immediate count)
+                            //     2'b01: PULL_LC LCx       (load count from i_data)
+                            //     2'b10: PUSH_LC LCx       (latch LCx to o_data & osr)
+                            //     2'b11: MOV_LC LCx, OSR   (load count from osr)
+                            // -------------------------------------------------
+                            case (instr[9:8])
+                                2'b00: begin // SET_LC imm8
+                                    if (instr[11] == 1'b0) lc0 <= instr[7:0];
+                                    else                   lc1 <= instr[7:0];
+                                end
+                                2'b01: begin // PULL_LC (from i_data)
+                                    if (instr[11] == 1'b0) lc0 <= i_data;
+                                    else                   lc1 <= i_data;
+                                end
+                                2'b10: begin // PUSH_LC (to o_data & osr)
+                                    if (instr[11] == 1'b0) begin
+                                        o_data <= lc0;
+                                        osr    <= lc0;
+                                    end else begin
+                                        o_data <= lc1;
+                                        osr    <= lc1;
+                                    end
+                                end
+                                2'b11: begin // MOV_LC (from osr)
+                                    if (instr[11] == 1'b0) lc0 <= osr;
+                                    else                   lc1 <= osr;
+                                end
+                            endcase
+                            delay_cnt <= 9'd0;
+                            pc        <= pc + 5'd1;
+                        end
                     end
 
                     4'h8: begin // JMP: Jump to target address
