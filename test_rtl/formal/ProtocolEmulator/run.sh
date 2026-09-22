@@ -41,11 +41,10 @@ else
 fi
 
 
-# Verify the original master.v with formal properties
-# Run SymbiYosys (sby) on the temporary file
-echo "        [SBY] Verifying $ORIGINAL_FILE with formal properties..."
+# Run SymbiYosys (sby) tasks sequentially on the temporary file
+echo "        [SBY] Verifying $ORIGINAL_FILE with formal properties (bound, prf, cvr)..."
 CONFIG_FILE="ProtocolEmulator.sby"
-sby -f $CONFIG_FILE
+sby -f $CONFIG_FILE bound && sby -f $CONFIG_FILE prf && sby -f $CONFIG_FILE cvr
 
 # Check if sby succeeded
 if [ $? -ne 0 ]; then

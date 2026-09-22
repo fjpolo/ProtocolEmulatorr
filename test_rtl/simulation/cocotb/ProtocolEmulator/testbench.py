@@ -37,6 +37,7 @@ async def reset_dut(dut):
     dut.i_prog_addr.value = 0
     dut.i_prog_data.value = 0
     dut.i_baud_div.value  = 433   # Default: 115200 baud @ 50 MHz
+    dut.i_gpio.value      = 0xFF  # All GPIO lines idle high (external pull-ups)
     await ClockCycles(dut.i_clk, 5)
     await RisingEdge(dut.i_clk)
     dut.i_reset_n.value = 1
@@ -343,11 +344,11 @@ async def test_imem_programming_interface(dut):
 
     # 1. Verify power-on default readback (Echo microcode at addresses 0..8)
     expected_defaults = [
-        0x40D8, 0x01B1, 0x21B1, 0x4200, 0xA000, 0x31B1, 0x11B1, 0x33B1, 0x8000
+        0x40FE, 0x01FF, 0x21FF, 0x4100, 0xA000, 0x30FF, 0x11FF, 0x31FF, 0x8000
     ]
     for addr, expected_val in enumerate(expected_defaults):
         dut.i_prog_addr.value = addr
-        await Timer(1, units="ns") # Combinational settling
+        await Timer(1, unit="ns") # Combinational settling
         readback = int(dut.o_prog_rdata.value)
         assert readback == expected_val, (
             f"Default IMEM mismatch at 0x{addr:02X}: Expected 0x{expected_val:04X}, got 0x{readback:04X}"
@@ -373,7 +374,7 @@ async def test_imem_programming_interface(dut):
     # 3. Verify readback across all 32 words
     for addr, expected_val in test_program.items():
         dut.i_prog_addr.value = addr
-        await Timer(1, units="ns")
+        await Timer(1, unit="ns")
         readback = int(dut.o_prog_rdata.value)
         assert readback == expected_val, (
             f"Written IMEM mismatch at 0x{addr:02X}: Expected 0x{expected_val:04X}, got 0x{readback:04X}"
@@ -418,14 +419,14 @@ async def test_runtime_dynamic_reprogram(dut):
     rx_host = UARTReceiver(dut, dut.i_clk, dut.o_tx)
 
     echo_prog = [
-        0x40D8, # WAIT rx=0 [216]
-        0x01B1, # NOP       [433]
-        0x21B1, # IN  rx, 8 [433]
-        0x4200, # WAIT rx=1 [0]
+        0x40FE, # WAIT rx=0 [$HBAUD]
+        0x01FF, # NOP       [$BAUD]
+        0x21FF, # IN  rx, 8 [$BAUD]
+        0x4100, # WAIT rx=1 [0]
         0xA000, # PUSH
-        0x31B1, # SET tx=0  [433]
-        0x11B1, # OUT tx, 8 [433]
-        0x33B1, # SET tx=1  [433]
+        0x30FF, # SET tx=0  [$BAUD]
+        0x11FF, # OUT tx, 8 [$BAUD]
+        0x31FF, # SET tx=1  [$BAUD]
         0x8000, # JMP 0x0
     ]
 
@@ -443,17 +444,17 @@ async def test_runtime_dynamic_reprogram(dut):
     # Bit pattern LSB-first: 1, 0, 0, 0, 0, 1, 0, 0
     # Include an initial idle delay so receiver can arm before start bit falls!
     custom_prog = [
-        0x01B1, # NOP 433 (Inter-frame idle delay)
-        0x31B1, # SET 0, 433 (Start bit)
-        0x33B1, # SET 1, 433 (Bit 0: 1)
-        0x31B1, # SET 0, 433 (Bit 1: 0)
-        0x31B1, # SET 0, 433 (Bit 2: 0)
-        0x31B1, # SET 0, 433 (Bit 3: 0)
-        0x31B1, # SET 0, 433 (Bit 4: 0)
-        0x33B1, # SET 1, 433 (Bit 5: 1)
-        0x31B1, # SET 0, 433 (Bit 6: 0)
-        0x31B1, # SET 0, 433 (Bit 7: 0)
-        0x33B1, # SET 1, 433 (Stop bit)
+        0x01FF, # NOP $BAUD (Inter-frame idle delay)
+        0x30FF, # SET 0, $BAUD (Start bit: 0)
+        0x31FF, # SET 1, $BAUD (Bit 0: 1)
+        0x30FF, # SET 0, $BAUD (Bit 1: 0)
+        0x30FF, # SET 0, $BAUD (Bit 2: 0)
+        0x30FF, # SET 0, $BAUD (Bit 3: 0)
+        0x30FF, # SET 0, $BAUD (Bit 4: 0)
+        0x31FF, # SET 1, $BAUD (Bit 5: 1)
+        0x30FF, # SET 0, $BAUD (Bit 6: 0)
+        0x30FF, # SET 0, $BAUD (Bit 7: 0)
+        0x31FF, # SET 1, $BAUD (Stop bit: 1)
         0x8000, # JMP 0     (Repeat)
     ]
 
@@ -571,16 +572,7 @@ async def test_baud_div_configurable(dut):
     dut._log.info(f"Test 06: Set i_baud_div={BAUD_DIV} ({50_000_000//(BAUD_DIV+1):,} baud)")
 
     # Load echo_configurable program ($BAUD tokens = 0x1FF)
-    #   [0] WAIT 0, $HBAUD  0x41FE
-    #   [1] NOP  $BAUD       0x01FF
-    #   [2] IN   8, $BAUD    0x21FF
-    #   [3] WAIT 1, 0        0x4200
-    #   [4] PUSH             0xA000
-    #   [5] SET  0, $BAUD    0x31FF
-    #   [6] OUT  8, $BAUD    0x11FF
-    #   [7] SET  1, $BAUD    0x33FF
-    #   [8] JMP  start       0x8000
-    prog = [0x41FE, 0x01FF, 0x21FF, 0x4200, 0xA000, 0x31FF, 0x11FF, 0x33FF, 0x8000]
+    prog = [0x40FE, 0x01FF, 0x21FF, 0x4100, 0xA000, 0x30FF, 0x11FF, 0x31FF, 0x8000]
     await load_program_direct(dut, prog)
 
     # Send byte 0xA5 at 230400 baud
@@ -590,7 +582,7 @@ async def test_baud_div_configurable(dut):
     t_start = get_sim_time('ns')
     for bit in bits:
         dut.i_rx.value = bit
-        await Timer(BIT_NS, units='ns')
+        await Timer(BIT_NS, unit='ns')
     dut.i_rx.value = 1  # idle
 
     # Wait for echo to appear on o_tx (at 230400 baud, full frame ≈ 10 * 4340 = 43400 ns)
@@ -605,10 +597,10 @@ async def test_baud_div_configurable(dut):
         assert False, "Timeout: no echo start bit detected at 230400 baud"
 
     # Sample echo bits at bit-center of each bit period
-    await Timer(BIT_NS // 2, units='ns')   # skip start bit, land at center
+    await Timer(BIT_NS // 2, unit='ns')   # skip start bit, land at center
     received = 0
     for i in range(8):
-        await Timer(BIT_NS, units='ns')
+        await Timer(BIT_NS, unit='ns')
         b = int(dut.o_tx.value)
         received |= (b << i)
 
@@ -626,8 +618,8 @@ async def test_spi_loopback(dut):
     """Test 07: SPI Mode 0 loopback using pin selector ISA extension.
 
     Programs spi_loopback.asm (24 words) which transmits 0xA5 using:
-      - SET CS  (pin_id=2, instr[11:10]=10)
-      - SET SCK (pin_id=1, instr[11:10]=01)
+      - SET CS  (pin_id=2, instr[11:9]=010)
+      - SET MOSI(pin_id=0, instr[11:9]=000)
       - IN 1    (1-bit sample, instr[11:9]=001)
     MISO is looped back from o_tx in the testbench (mirroring top.v loopback).
     After one full 8-bit SPI transfer, o_data must equal 0xA5.
@@ -641,33 +633,33 @@ async def test_spi_loopback(dut):
     dut.i_baud_div.value = SPI_DIV
     dut._log.info(f"Test 07: SPI loopback i_baud_div={SPI_DIV} half-period={BIT_NS} ns")
 
-    # spi_loopback.asm program encoding (verified by omnibus_asm.py)
+    # spi_loopback.asm program encoding (verified by omnibus_asm.py Task 07C)
     prog = [
         # Main loop [0..19]: 0xA5 = 10100101b MSB first
-        0x3800,  # [0]  SET CS,0,0        assert CS_n
-        0x3200,  # [1]  SET MOSI,1,0      B7=1
+        0x3400,  # [0]  SET CS,0,0        assert CS_n
+        0x3100,  # [1]  SET MOSI,1,0      B7=1
         0xC014,  # [2]  CALL 20
         0x3000,  # [3]  SET MOSI,0,0      B6=0
         0xC014,  # [4]  CALL 20
-        0x3200,  # [5]  SET MOSI,1,0      B5=1
+        0x3100,  # [5]  SET MOSI,1,0      B5=1
         0xC014,  # [6]  CALL 20
         0x3000,  # [7]  SET MOSI,0,0      B4=0
         0xC014,  # [8]  CALL 20
         0x3000,  # [9]  SET MOSI,0,0      B3=0
         0xC014,  # [10] CALL 20
-        0x3200,  # [11] SET MOSI,1,0      B2=1
+        0x3100,  # [11] SET MOSI,1,0      B2=1
         0xC014,  # [12] CALL 20
         0x3000,  # [13] SET MOSI,0,0      B1=0
         0xC014,  # [14] CALL 20
-        0x3200,  # [15] SET MOSI,1,0      B0=1
+        0x3100,  # [15] SET MOSI,1,0      B0=1
         0xC014,  # [16] CALL 20
-        0x3A00,  # [17] SET CS,1,0        deassert CS_n
+        0x3500,  # [17] SET CS,1,0        deassert CS_n
         0xA000,  # [18] PUSH
         0x8000,  # [19] JMP start
         # do_bit subroutine [20..23]
-        0x37FE,  # [20] SET SCK,1,$HBAUD  rising edge
+        0x33FE,  # [20] SET SCK,1,$HBAUD  rising edge
         0x23FE,  # [21] IN  1,$HBAUD      1-bit sample
-        0x35FE,  # [22] SET SCK,0,$HBAUD  falling edge
+        0x32FE,  # [22] SET SCK,0,$HBAUD  falling edge
         0xD000,  # [23] RET
     ]
     await load_program_direct(dut, prog)
@@ -737,9 +729,9 @@ async def test_out_sck_generic(dut):
     # spi_generic.asm encoding (6 words)
     prog = [
         0x9000,  # [0] PULL
-        0x3800,  # [1] SET CS,0,0
+        0x3400,  # [1] SET CS,0,0 (Pin 2, val 0)
         0x15FE,  # [2] OUT SCK,$HBAUD  (pin_id=01, delay=0x1FE)
-        0x3A00,  # [3] SET CS,1,0
+        0x3500,  # [3] SET CS,1,0 (Pin 2, val 1)
         0xA000,  # [4] PUSH
         0x8000,  # [5] JMP spi_loop
     ]
@@ -790,3 +782,174 @@ async def test_out_sck_generic(dut):
         f"OUT SCK generic PASSED: i_data=0x{TEST_BYTE:02X} -> o_data=0x{received:02X} "
         f"(SPI_DIV={SPI_DIV}, half-period={BIT_NS} ns)"
     )
+
+
+@cocotb.test()
+async def test_gpio_pinmap(dut):
+    """Test 07C: PINMAP dynamically remaps protocol roles across GPIO 0..7."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Program:
+    # 0x00: PINMAP 4, 5, 1, 2 -> 0x590A with TX=4, RX=5, SCK=1, CS=2: 0x594A
+    # 0x01: SET Pin 4, 0, delay=6 -> 0x3806 (Drive GPIO 4 low)
+    # 0x02: SET Pin 4, 1, delay=6 -> 0x3906 (Drive GPIO 4 high)
+    # 0x03: JMP 0x03              -> 0x8003
+    prog = [
+        0x594A, # PINMAP TX=4, RX=5, SCK=1, CS=2
+        0x3806, # SET Pin 4, 0, delay=6
+        0x3906, # SET Pin 4, 1, delay=6
+        0x8003  # JMP 0x03
+    ]
+    await load_program_direct(dut, prog)
+
+    # Wait for execution of SET Pin 4, 0
+    await ClockCycles(dut.i_clk, 3)
+    assert ((int(dut.o_gpio.value) >> 4) & 1) == 0, "GPIO 4 was not driven LOW by SET"
+    assert int(dut.o_tx.value) == 0, "o_tx did not reflect remapped TX pin (Pin 4)"
+
+    # Wait for execution of SET Pin 4, 1
+    await ClockCycles(dut.i_clk, 7)
+    assert ((int(dut.o_gpio.value) >> 4) & 1) == 1, "GPIO 4 was not driven HIGH by SET"
+    assert int(dut.o_tx.value) == 1, "o_tx did not reflect remapped TX pin (Pin 4)"
+    dut._log.info("PINMAP test PASSED: role remap and GPIO drive verified!")
+
+
+@cocotb.test()
+async def test_gpio_open_drain(dut):
+    """Test 07C: CFG_OD configures open-drain drive/release behavior."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Program:
+    # 0x00: CFG_OD 0x10           -> 0x6010 (Pin 4 open-drain)
+    # 0x01: SET Pin 4, 0, delay=6 -> 0x3806 (Drive low: oe=1, out=0)
+    # 0x02: SET Pin 4, 1, delay=6 -> 0x3906 (Release: oe=0, out=1)
+    # 0x03: JMP 0x03              -> 0x8003
+    prog = [
+        0x6010, # CFG_OD 0x10
+        0x3806, # SET Pin 4, 0, delay=6
+        0x3906, # SET Pin 4, 1, delay=6
+        0x8003  # JMP 0x03
+    ]
+    await load_program_direct(dut, prog)
+
+    # After SET 0: Pin 4 driven low -> oe[4] must be 1, out[4] must be 0
+    await ClockCycles(dut.i_clk, 3)
+    oe_bit = (int(dut.o_gpio_oe.value) >> 4) & 1
+    out_bit = (int(dut.o_gpio.value) >> 4) & 1
+    assert oe_bit == 1 and out_bit == 0, f"Open-drain drive LOW failed: oe={oe_bit}, out={out_bit}"
+
+    # After SET 1: Pin 4 released -> oe[4] must be 0 (Hi-Z), out[4] must be 1
+    await ClockCycles(dut.i_clk, 7)
+    oe_bit = (int(dut.o_gpio_oe.value) >> 4) & 1
+    out_bit = (int(dut.o_gpio.value) >> 4) & 1
+    assert oe_bit == 0 and out_bit == 1, f"Open-drain release HIGH failed: oe={oe_bit}, out={out_bit}"
+    dut._log.info("CFG_OD open-drain test PASSED: oe asserted on 0, deasserted on 1!")
+
+
+@cocotb.test()
+async def test_i2c_out_sda(dut):
+    """Test 08: OUT SDA serializes 8 bits MSB-first with auto-SCL clocking."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    TEST_BYTE = 0xA5  # 10100101b
+    dut.i_data.value = TEST_BYTE
+    dut.i_baud_div.value = 4  # Short delay for fast simulation
+
+    # Program:
+    # 0x00: PINMAP 4, 4, 1, 2 -> 0x590A
+    # 0x01: CFG_OD 0x12       -> 0x6012 (Pins 4 and 1 open-drain)
+    # 0x02: PULL              -> 0x9000
+    # 0x03: OUT SDA, 2        -> 0x1C02 (mode=3, delay=2)
+    # 0x04: PUSH              -> 0xA000
+    # 0x05: JMP 0x05          -> 0x8005
+    prog = [
+        0x590A,
+        0x6012,
+        0x9000,
+        0x1C02,
+        0xA000,
+        0x8005
+    ]
+
+    # SCL open-drain wire equation: low when oe=1 and out=0, otherwise 1 (pull-up)
+    scl_toggles = 0
+    async def monitor_scl():
+        nonlocal scl_toggles
+        prev_scl = 1
+        while True:
+            await RisingEdge(dut.i_clk)
+            oe_1 = (int(dut.o_gpio_oe.value) >> 1) & 1
+            out_1 = (int(dut.o_gpio.value) >> 1) & 1
+            curr_scl = 0 if (oe_1 and not out_1) else 1
+            if prev_scl == 0 and curr_scl == 1:
+                scl_toggles += 1
+            prev_scl = curr_scl
+
+    mon = cocotb.start_soon(monitor_scl())
+    await load_program_direct(dut, prog)
+
+    # Wait for OUT SDA to complete 8 clock pulses
+    await ClockCycles(dut.i_clk, 120)
+    mon.cancel()
+
+    assert scl_toggles >= 8, f"Expected at least 8 SCL clock pulses, got {scl_toggles}"
+    dut._log.info(f"I2C OUT SDA test PASSED: {scl_toggles} SCL pulses verified!")
+
+
+@cocotb.test()
+async def test_hardware_loop_counter(dut):
+    """Test 09: Dual hardware loop counters (LC0, LC1) and DJNZ nested loops."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Nested loop program:
+    # Outer loop repeats 2 times (LC1)
+    # Inner loop repeats 3 times (LC0)
+    # Total body executions = 2 * 3 = 6
+    #
+    # 0x00: SET_LC LC1, 2  -> 0x7C02
+    # 0x01: SET_LC LC0, 3  -> 0x7403
+    # 0x02: PUSH_LC LC0    -> 0x7600
+    # 0x03: DJNZ LC0, 0x02 -> 0x7002
+    # 0x04: DJNZ LC1, 0x01 -> 0x7801
+    # 0x05: JMP 0x05       -> 0x8005
+    prog = [
+        0x7C02, # SET_LC LC1, 2
+        0x7403, # SET_LC LC0, 3
+        0x7600, # PUSH_LC LC0
+        0x7002, # DJNZ LC0, 0x02
+        0x7801, # DJNZ LC1, 0x01
+        0x8005  # JMP 0x05
+    ]
+
+    push_events = []
+    async def monitor_push():
+        prev_pc = None
+        while True:
+            await RisingEdge(dut.i_clk)
+            pc_val = int(dut.pc.value)
+            # Sample at PC==3 (immediately after PUSH_LC at PC==2 has clocked into o_data)
+            if pc_val == 3 and prev_pc != 3:
+                push_events.append(int(dut.o_data.value))
+            prev_pc = pc_val
+
+    mon = cocotb.start_soon(monitor_push())
+    await load_program_direct(dut, prog)
+
+    # Wait for loops to terminate at PC=5
+    for _ in range(100):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 5:
+            break
+    else:
+        mon.cancel()
+        assert False, f"Timeout: loop did not finish at PC=5 (current PC={int(dut.pc.value)})"
+
+    mon.cancel()
+    assert len(push_events) == 6, f"Expected exactly 6 body executions, got {len(push_events)}: {push_events}"
+    assert push_events == [3, 2, 1, 3, 2, 1], f"Loop counter sequence mismatch: {push_events}"
+    dut._log.info(f"Hardware Loop Counter test PASSED: nested loop executed 6 times with sequence {push_events}!")
+
