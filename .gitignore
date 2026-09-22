@@ -22,5 +22,4 @@
 template_formal.v
 *.json
 *.dot
-
-
+*.sqlite

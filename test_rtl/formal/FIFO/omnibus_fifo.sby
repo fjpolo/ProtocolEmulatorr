@@ -1,0 +1,25 @@
+[tasks]
+bound
+prf
+cvr
+
+[options]
+bound: mode bmc
+bound: depth 15
+prf:   mode prove
+prf:   depth 15
+cvr:   mode cover
+cvr:   depth 20
+cvr:   append 5
+
+[engines]
+bound: smtbmc
+prf:   smtbmc yices
+cvr:   smtbmc
+
+[script]
+read_verilog -sv -DFORMAL template_formal.v
+prep -top omnibus_fifo
+
+[files]
+template_formal.v
