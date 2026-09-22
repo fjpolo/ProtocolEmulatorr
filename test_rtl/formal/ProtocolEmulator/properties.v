@@ -50,8 +50,9 @@
                     imem[0][15:12] == 4'h4 || imem[0][15:12] == 4'h5 ||
                     imem[0][15:12] == 4'h6 || imem[0][15:12] == 4'h7 ||
                     imem[0][15:12] == 4'h8 || imem[0][15:12] == 4'h9 ||
-                    imem[0][15:12] == 4'hA || imem[0][15:12] == 4'hC ||
-                    imem[0][15:12] == 4'hD || imem[0][15:12] == 4'hE);
+                    imem[0][15:12] == 4'hA || imem[0][15:12] == 4'hB ||
+                    imem[0][15:12] == 4'hC || imem[0][15:12] == 4'hD ||
+                    imem[0][15:12] == 4'hE);
             // Bound target address to valid IMEM range (0..31)
             `ASSUME(imem[0][4:0] <= 5'd31);
         end
@@ -86,6 +87,9 @@
             `ASSERT(lc1 == 8'h00);
             `ASSERT(crc_reg == 16'd0);
             `ASSERT(crc_poly == 2'd0);
+            `ASSERT(acc == 8'h00);
+            `ASSERT(zero_flag == 1'b0);
+            `ASSERT(carry_flag == 1'b0);
             `ASSERT(in_sck_phase == 2'd0);
             `ASSERT(o_tx_pop == 1'b0);
             `ASSERT(o_rx_push == 1'b0);
@@ -361,17 +365,28 @@
                     end
                     4'h8: begin // JMP [cond], target: conditional or unconditional
                         `ASSERT(delay_cnt == 16'd0);
-                        case ($past(instr[10:8]))
-                            3'b000: `ASSERT(pc == $past(target));
-                            3'b001: `ASSERT(pc == ($past(i_tx_valid) ? $past(target) : $past(pc) + 5'd1));
-                            3'b010: `ASSERT(pc == (!$past(i_tx_valid) ? $past(target) : $past(pc) + 5'd1));
-                            3'b011: `ASSERT(pc == ($past(i_rx_full) ? $past(target) : $past(pc) + 5'd1));
-                            3'b100: `ASSERT(pc == (!$past(i_rx_full) ? $past(target) : $past(pc) + 5'd1));
-                            3'b101: `ASSERT(pc == ($past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 5'd1));
-                            3'b110: `ASSERT(pc == (!$past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 5'd1));
-                            3'b111: `ASSERT(pc == (($past(crc_reg) == 16'h0000) ? $past(target) : $past(pc) + 5'd1));
+                        case ($past(instr[11:8]))
+                            4'h0: `ASSERT(pc == $past(target));
+                            4'h1: `ASSERT(pc == ($past(i_tx_valid) ? $past(target) : $past(pc) + 5'd1));
+                            4'h2: `ASSERT(pc == (!$past(i_tx_valid) ? $past(target) : $past(pc) + 5'd1));
+                            4'h3: `ASSERT(pc == ($past(i_rx_full) ? $past(target) : $past(pc) + 5'd1));
+                            4'h4: `ASSERT(pc == (!$past(i_rx_full) ? $past(target) : $past(pc) + 5'd1));
+                            4'h5: `ASSERT(pc == ($past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 5'd1));
+                            4'h6: `ASSERT(pc == (!$past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 5'd1));
+                            4'h7: `ASSERT(pc == (($past(crc_reg) == 16'h0000) ? $past(target) : $past(pc) + 5'd1));
+                            4'h8: `ASSERT(pc == ($past(zero_flag) ? $past(target) : $past(pc) + 5'd1));
+                            4'h9: `ASSERT(pc == (!$past(zero_flag) ? $past(target) : $past(pc) + 5'd1));
+                            4'hA: `ASSERT(pc == ($past(carry_flag) ? $past(target) : $past(pc) + 5'd1));
+                            4'hB: `ASSERT(pc == (!$past(carry_flag) ? $past(target) : $past(pc) + 5'd1));
+                            4'hC: `ASSERT(pc == ($past(acc[7]) ? $past(target) : $past(pc) + 5'd1));
+                            4'hD: `ASSERT(pc == (!$past(acc[7]) ? $past(target) : $past(pc) + 5'd1));
+                            4'hE: `ASSERT(pc == (($past(crc_reg) != 16'h0000) ? $past(target) : $past(pc) + 5'd1));
                             default: `ASSERT(pc == $past(target));
                         endcase
+                    end
+                    4'hB: begin // ALU: 8-bit Micro-ALU & Arithmetic Engine
+                        `ASSERT(delay_cnt == 16'd0);
+                        `ASSERT(pc == $past(pc) + 5'd1);
                     end
                     4'hE: begin // CRC: Hardware CRC Generator & Checksum Accelerator
                         `ASSERT(delay_cnt == 16'd0);
@@ -483,7 +498,14 @@
 
             // Cover 20 (Task 13): JMP CRC_OK taken when crc_reg == 0
             cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && $past(opcode) == 4'h8 &&
-                  $past(instr[10:8]) == 3'b111 && $past(crc_reg) == 16'h0000 && pc == $past(target));
+                  $past(instr[11:8]) == 4'h7 && $past(crc_reg) == 16'h0000 && pc == $past(target));
+
+            // Cover 21 (Task 15): Opcode 0xB (Micro-ALU) executed
+            cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && $past(opcode) == 4'hB);
+
+            // Cover 22 (Task 15): JMP ZERO / EQ taken when zero_flag == 1
+            cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && $past(opcode) == 4'h8 &&
+                  $past(instr[11:8]) == 4'h8 && $past(zero_flag) && pc == $past(target));
         end
     end
 

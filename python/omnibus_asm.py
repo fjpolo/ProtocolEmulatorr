@@ -33,6 +33,23 @@ OPCODES = {
     "JMP":     0x8,
     "PULL":   0x9,
     "PUSH":   0xA,
+    "ALU":    0xB,  # 8-bit Micro-ALU & Arithmetic Engine
+    "ADD":    0xB,
+    "SUB":    0xB,
+    "CMP":    0xB,
+    "AND":    0xB,
+    "OR":     0xB,
+    "XOR":    0xB,
+    "MOV":    0xB,
+    "NOT":    0xB,
+    "INV":    0xB,
+    "INC":    0xB,
+    "DEC":    0xB,
+    "CLR":    0xB,
+    "SHL":    0xB,
+    "SHR":    0xB,
+    "ROL":    0xB,
+    "ROR":    0xB,
     "CALL":   0xC,  # Push pc+1 to call stack, jump to target
     "RET":    0xD,  # Pop return address from call stack
     "CRC":           0xE,  # Hardware CRC Generator & Checksum Accelerator
@@ -430,6 +447,14 @@ class OmnibusAssembler:
                     "CRC_OK": 7,
                     "CRC_VALID": 7,
                     "CRC_ZERO": 7,
+                    # ALU Condition Codes (0x8 .. 0xE)
+                    "ZERO": 8, "EQ": 8, "Z": 8,
+                    "NOT_ZERO": 9, "NE": 9, "NZ": 9,
+                    "CARRY": 10, "ULT": 10, "C": 10, "CY": 10,
+                    "NOT_CARRY": 11, "UGE": 11, "NC": 11,
+                    "NEG": 12, "NEGATIVE": 12, "SIGN": 12, "MINUS": 12,
+                    "POS": 13, "POSITIVE": 13, "PLUS": 13,
+                    "CRC_ERR": 14, "CRC_BAD": 14, "CRC_ERROR": 14,
                 }
                 if len(tokens) >= 3:
                     cond_name = tokens[1].strip().upper()
@@ -552,6 +577,123 @@ class OmnibusAssembler:
 
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown CRC command '{sub_cmd}'")
+
+            elif op in ("ALU", "ADD", "SUB", "CMP", "AND", "OR", "XOR", "MOV", "NOT", "INV", "INC", "DEC", "CLR", "SHL", "SHR", "ROL", "ROR"):
+                SRC_REG_MAP = {
+                    "OSR": 0,
+                    "ISR": 1,
+                    "LC0": 2, "LC_0": 2,
+                    "LC1": 3, "LC_1": 3,
+                    "DATA": 4, "I_DATA": 4, "DIN": 4,
+                    "ACC": 5, "A": 5,
+                    "CRC_L": 6, "CRC_LOW": 6, "CRC_REG_L": 6,
+                    "CRC_H": 7, "CRC_HIGH": 7, "CRC_REG_H": 7,
+                }
+                DST_REG_MAP = {
+                    "OSR": 0,
+                    "ISR": 1,
+                    "LC0": 2, "LC_0": 2,
+                    "LC1": 3, "LC_1": 3,
+                    "O_DATA": 4, "DATA_OUT": 4, "DOUT": 4, "DATA": 4,
+                    "ACC": 5, "A": 5,
+                    "CRC_SEED_L": 6, "CRC_SEED_LOW": 6,
+                    "CRC_SEED_H": 7, "CRC_SEED_HIGH": 7,
+                }
+
+                alu_cmd = op
+                alu_tokens = tokens[1:]
+                if op == "ALU":
+                    if len(tokens) < 2:
+                        raise AssemblerError(f"Line {line_num}: ALU requires sub-operation (e.g. ALU ADD, acc, 5)")
+                    alu_cmd = tokens[1].strip().upper()
+                    alu_tokens = tokens[2:]
+
+                # 1. Unary operations on acc: NOT, INV, INC, DEC, CLR
+                if alu_cmd in ("NOT", "INV"):
+                    word = (0xB << 12) | (0 << 11) | (7 << 8)
+                elif alu_cmd == "INC":
+                    word = (0xB << 12) | (1 << 11) | (6 << 8) | (0 << 3)
+                elif alu_cmd == "DEC":
+                    word = (0xB << 12) | (1 << 11) | (6 << 8) | (1 << 3)
+                elif alu_cmd == "CLR":
+                    word = (0xB << 12) | (1 << 11) | (6 << 8) | (2 << 3)
+
+                # 2. Shift operations on acc: SHL, SHR, ROL, ROR
+                elif alu_cmd == "SHL":
+                    word = (0xB << 12) | (1 << 11) | (7 << 8) | (0 << 3)
+                elif alu_cmd == "SHR":
+                    word = (0xB << 12) | (1 << 11) | (7 << 8) | (1 << 3)
+                elif alu_cmd == "ROL":
+                    word = (0xB << 12) | (1 << 11) | (7 << 8) | (2 << 3)
+                elif alu_cmd == "ROR":
+                    word = (0xB << 12) | (1 << 11) | (7 << 8) | (3 << 3)
+
+                # 3. MOV operations: MOV acc, imm | MOV acc, reg | MOV reg, acc
+                elif alu_cmd == "MOV":
+                    if len(alu_tokens) < 2:
+                        raise AssemblerError(f"Line {line_num}: MOV requires destination and source operands (e.g. MOV acc, 0x10 or MOV lc0, acc)")
+                    dst_name = alu_tokens[0].strip().upper()
+                    src_name = alu_tokens[1].strip().upper()
+
+                    if dst_name in ("ACC", "A"):
+                        if src_name in SRC_REG_MAP:
+                            src_id = SRC_REG_MAP[src_name]
+                            word = (0xB << 12) | (1 << 11) | (0 << 8) | src_id
+                        else:
+                            imm8 = eval_arg(alu_tokens[1]) & 0xFF
+                            word = (0xB << 12) | (0 << 11) | (6 << 8) | imm8
+                    elif src_name in ("ACC", "A"):
+                        if dst_name not in DST_REG_MAP:
+                            raise AssemblerError(f"Line {line_num}: Invalid destination register '{alu_tokens[0]}' for MOV from ACC")
+                        dst_id = DST_REG_MAP[dst_name]
+                        word = (0xB << 12) | (1 << 11) | (1 << 8) | (dst_id << 3)
+                    else:
+                        raise AssemblerError(f"Line {line_num}: MOV must have ACC as either source or destination (got '{dst_name}', '{src_name}')")
+
+                # 4. Binary operations: ADD, SUB, CMP, AND, OR, XOR
+                elif alu_cmd in ("ADD", "SUB", "CMP", "AND", "OR", "XOR"):
+                    if len(alu_tokens) >= 2:
+                        first_arg = alu_tokens[0].strip().upper()
+                        if first_arg in ("ACC", "A"):
+                            operand_str = alu_tokens[1].strip()
+                        else:
+                            raise AssemblerError(f"Line {line_num}: First operand of {alu_cmd} must be ACC (e.g. {alu_cmd} acc, operand)")
+                    elif len(alu_tokens) == 1:
+                        operand_str = alu_tokens[0].strip()
+                    else:
+                        raise AssemblerError(f"Line {line_num}: {alu_cmd} requires operand (e.g. {alu_cmd} acc, 5 or {alu_cmd} 5)")
+
+                    op_clean = operand_str.upper()
+                    if op_clean in SRC_REG_MAP:
+                        reg_id = SRC_REG_MAP[op_clean]
+                        if alu_cmd == "ADD":
+                            word = (0xB << 12) | (1 << 11) | (2 << 8) | reg_id
+                        elif alu_cmd == "SUB":
+                            word = (0xB << 12) | (1 << 11) | (3 << 8) | reg_id
+                        elif alu_cmd == "CMP":
+                            word = (0xB << 12) | (1 << 11) | (4 << 8) | reg_id
+                        elif alu_cmd == "AND":
+                            word = (0xB << 12) | (1 << 11) | (5 << 8) | (0 << 3) | reg_id
+                        elif alu_cmd == "OR":
+                            word = (0xB << 12) | (1 << 11) | (5 << 8) | (1 << 3) | reg_id
+                        elif alu_cmd == "XOR":
+                            word = (0xB << 12) | (1 << 11) | (5 << 8) | (2 << 3) | reg_id
+                    else:
+                        imm8 = eval_arg(operand_str) & 0xFF
+                        if alu_cmd == "ADD":
+                            word = (0xB << 12) | (0 << 11) | (0 << 8) | imm8
+                        elif alu_cmd == "SUB":
+                            word = (0xB << 12) | (0 << 11) | (1 << 8) | imm8
+                        elif alu_cmd == "CMP":
+                            word = (0xB << 12) | (0 << 11) | (2 << 8) | imm8
+                        elif alu_cmd == "AND":
+                            word = (0xB << 12) | (0 << 11) | (3 << 8) | imm8
+                        elif alu_cmd == "OR":
+                            word = (0xB << 12) | (0 << 11) | (4 << 8) | imm8
+                        elif alu_cmd == "XOR":
+                            word = (0xB << 12) | (0 << 11) | (5 << 8) | imm8
+                else:
+                    raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
             assembled.append((addr, word, line))
 

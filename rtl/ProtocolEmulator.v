@@ -78,6 +78,11 @@ module ProtocolEmulator(
     reg [15:0] crc_seed;         // Initial/reload seed value
     reg [1:0]  crc_poly;         // Active polynomial: 0=Dallas CRC-8, 1=SMBus CRC-8, 2=CCITT CRC-16, 3=Modbus CRC-16
 
+    // 8-bit Micro-ALU State & Condition Flags
+    reg [7:0]  acc;              // 8-bit Accumulator register
+    reg        zero_flag;        // Zero flag: set if last ALU result == 8'h00
+    reg        carry_flag;       // Carry/Borrow flag: set on arithmetic overflow/borrow or bit shift
+
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
     reg [2:0]  rx_pin;          // Pin index for IN deserializer / default WAIT (default 0)
@@ -207,15 +212,22 @@ module ProtocolEmulator(
     //
     // 0x8 | JMP [cond], target
     //       [15:12] = 4'h8
-    //       [10:8]  = condition:
-    //                 3'b000: Unconditional JMP target (default)
-    //                 3'b001: JMP TX_VALID, target (jump if i_tx_valid == 1)
-    //                 3'b010: JMP TX_EMPTY, target (jump if i_tx_valid == 0)
-    //                 3'b011: JMP RX_FULL,  target (jump if i_rx_full  == 1)
-    //                 3'b100: JMP RX_READY, target (jump if i_rx_full  == 0)
-    //                 3'b101: JMP PIN_HI,   target (jump if gpio_in[rx_pin] == 1)
-    //                 3'b110: JMP PIN_LO,   target (jump if gpio_in[rx_pin] == 0)
-    //                 3'b111: JMP CRC_OK,   target (jump if crc_reg == 16'h0000)
+    //       [11:8]  = condition:
+    //                 4'h0: Unconditional JMP target (default)
+    //                 4'h1: JMP TX_VALID, target (jump if i_tx_valid == 1)
+    //                 4'h2: JMP TX_EMPTY, target (jump if i_tx_valid == 0)
+    //                 4'h3: JMP RX_FULL,  target (jump if i_rx_full  == 1)
+    //                 4'h4: JMP RX_READY, target (jump if i_rx_full  == 0)
+    //                 4'h5: JMP PIN_HI,   target (jump if gpio_in[rx_pin] == 1)
+    //                 4'h6: JMP PIN_LO,   target (jump if gpio_in[rx_pin] == 0)
+    //                 4'h7: JMP CRC_OK,   target (jump if crc_reg == 16'h0000)
+    //                 4'h8: JMP ZERO / EQ,target (jump if zero_flag == 1)
+    //                 4'h9: JMP NOT_ZERO, target (jump if zero_flag == 0)
+    //                 4'hA: JMP CARRY,    target (jump if carry_flag == 1)
+    //                 4'hB: JMP NOT_CARRY,target (jump if carry_flag == 0)
+    //                 4'hC: JMP NEG,      target (jump if acc[7] == 1)
+    //                 4'hD: JMP POS,      target (jump if acc[7] == 0)
+    //                 4'hE: JMP CRC_ERR,  target (jump if crc_reg != 16'h0000)
     //       [4:0]   = target address (0..31)
     //       Single-cycle branch. If condition met, branches to target; else pc+1.
     //
@@ -230,6 +242,33 @@ module ProtocolEmulator(
     //       [0]     = block_mode (0 = non-blocking, 1 = blocking wait for !i_rx_full)
     //       Flushes Input Shift Register to output port and OSR (OSR <= ISR, o_data <= ISR).
     //       Pulses o_rx_push for 1 cycle.
+    //
+    // 0xB | ALU sub_op, [operands]
+    //       [15:12] = 4'hB
+    //       [11]    = mode: 0 = Immediate mode, 1 = Register mode
+    //       Immediate mode ([11] == 0):
+    //         [10:8] = sub_op:
+    //                  3'b000: ADD acc, imm8   ({carry, acc} <= acc + imm8)
+    //                  3'b001: SUB acc, imm8   ({carry, acc} <= acc - imm8)
+    //                  3'b010: CMP acc, imm8   (computes acc - imm8, sets zero/carry)
+    //                  3'b011: AND acc, imm8   (acc <= acc & imm8)
+    //                  3'b100: OR  acc, imm8   (acc <= acc | imm8)
+    //                  3'b101: XOR acc, imm8   (acc <= acc ^ imm8)
+    //                  3'b110: MOV acc, imm8   (acc <= imm8)
+    //                  3'b111: NOT acc         (acc <= ~acc)
+    //         [7:0]  = imm8 (8-bit immediate value)
+    //       Register mode ([11] == 1):
+    //         [10:8] = sub_op:
+    //                  3'b000: MOV acc, reg    (acc <= reg[src])
+    //                  3'b001: MOV reg, acc    (reg[dst] <= acc)
+    //                  3'b010: ADD acc, reg    ({carry, acc} <= acc + reg[src])
+    //                  3'b011: SUB acc, reg    ({carry, acc} <= acc - reg[src])
+    //                  3'b100: CMP acc, reg    (computes acc - reg[src], sets flags)
+    //                  3'b101: LOGIC acc, reg  (AND/OR/XOR via [5:3])
+    //                  3'b110: UNARY acc       (INC/DEC/CLR via [5:3])
+    //                  3'b111: SHIFT acc       (SHL/SHR/ROL/ROR via [5:3])
+    //         [5:3]  = dst_reg / sub-operation selector
+    //         [2:0]  = src_reg (000:OSR, 001:ISR, 010:LC0, 011:LC1, 100:i_data, 101:acc, 110:CRC_L, 111:CRC_H)
     //
     // 0xC | CALL target
     //       [15:12] = 4'hC
@@ -461,6 +500,24 @@ module ProtocolEmulator(
                                                  next_crc_modbus;
 
     // -------------------------------------------------------------------------
+    // 8-bit Micro-ALU Combinatorial Logic
+    // -------------------------------------------------------------------------
+    wire [7:0] alu_reg_val = (instr[2:0] == 3'b000) ? osr :
+                             (instr[2:0] == 3'b001) ? isr :
+                             (instr[2:0] == 3'b010) ? lc0 :
+                             (instr[2:0] == 3'b011) ? lc1 :
+                             (instr[2:0] == 3'b100) ? i_data :
+                             (instr[2:0] == 3'b101) ? acc :
+                             (instr[2:0] == 3'b110) ? crc_reg[7:0] :
+                                                      crc_reg[15:8];
+
+    wire [8:0] alu_imm_add = {1'b0, acc} + {1'b0, instr[7:0]};
+    wire [8:0] alu_imm_sub = {1'b0, acc} - {1'b0, instr[7:0]};
+
+    wire [8:0] alu_reg_add = {1'b0, acc} + {1'b0, alu_reg_val};
+    wire [8:0] alu_reg_sub = {1'b0, acc} - {1'b0, alu_reg_val};
+
+    // -------------------------------------------------------------------------
     // Execution Engine
     // -------------------------------------------------------------------------
     always @(posedge i_clk) begin
@@ -491,6 +548,9 @@ module ProtocolEmulator(
             crc_reg       <= 16'd0;
             crc_seed      <= 16'd0;
             crc_poly      <= 2'd0;
+            acc           <= 8'h00;
+            zero_flag     <= 1'b0;
+            carry_flag    <= 1'b0;
             o_tx_pop      <= 1'b0;
             o_rx_push     <= 1'b0;
         end else begin
@@ -909,15 +969,22 @@ module ProtocolEmulator(
 
                     4'h8: begin // JMP [cond], target: Conditional or Unconditional Jump
                         delay_cnt <= 16'd0;
-                        case (instr[10:8])
-                            3'b000: pc <= target;                              // Unconditional JMP target
-                            3'b001: pc <= i_tx_valid ? target : pc + 5'd1;     // JMP TX_VALID, target
-                            3'b010: pc <= !i_tx_valid ? target : pc + 5'd1;    // JMP TX_EMPTY, target
-                            3'b011: pc <= i_rx_full ? target : pc + 5'd1;      // JMP RX_FULL,  target
-                            3'b100: pc <= !i_rx_full ? target : pc + 5'd1;     // JMP RX_READY, target
-                            3'b101: pc <= gpio_in[rx_pin] ? target : pc + 5'd1;// JMP PIN_HI,   target
-                            3'b110: pc <= !gpio_in[rx_pin] ? target : pc + 5'd1;// JMP PIN_LO,  target
-                            3'b111: pc <= (crc_reg == 16'h0000) ? target : pc + 5'd1;// JMP CRC_OK, target
+                        case (instr[11:8])
+                            4'h0: pc <= target;                              // Unconditional JMP target
+                            4'h1: pc <= i_tx_valid ? target : pc + 5'd1;     // JMP TX_VALID, target
+                            4'h2: pc <= !i_tx_valid ? target : pc + 5'd1;    // JMP TX_EMPTY, target
+                            4'h3: pc <= i_rx_full ? target : pc + 5'd1;      // JMP RX_FULL,  target
+                            4'h4: pc <= !i_rx_full ? target : pc + 5'd1;     // JMP RX_READY, target
+                            4'h5: pc <= gpio_in[rx_pin] ? target : pc + 5'd1;// JMP PIN_HI,   target
+                            4'h6: pc <= !gpio_in[rx_pin] ? target : pc + 5'd1;// JMP PIN_LO,  target
+                            4'h7: pc <= (crc_reg == 16'h0000) ? target : pc + 5'd1;// JMP CRC_OK, target
+                            4'h8: pc <= zero_flag ? target : pc + 5'd1;      // JMP ZERO / EQ
+                            4'h9: pc <= !zero_flag ? target : pc + 5'd1;     // JMP NOT_ZERO / NE
+                            4'hA: pc <= carry_flag ? target : pc + 5'd1;     // JMP CARRY / ULT
+                            4'hB: pc <= !carry_flag ? target : pc + 5'd1;    // JMP NOT_CARRY / UGE
+                            4'hC: pc <= acc[7] ? target : pc + 5'd1;         // JMP NEG / SIGN
+                            4'hD: pc <= !acc[7] ? target : pc + 5'd1;        // JMP POS
+                            4'hE: pc <= (crc_reg != 16'h0000) ? target : pc + 5'd1;// JMP CRC_ERR
                             default: pc <= target;
                         endcase
                     end
@@ -976,6 +1043,156 @@ module ProtocolEmulator(
                                 pc <= pc + 5'd1;
                             end
                         endcase
+                    end
+
+                    4'hB: begin // ALU: 8-bit Micro-ALU & Arithmetic Engine
+                        delay_cnt <= 16'd0;
+                        pc        <= pc + 5'd1;
+                        if (instr[11] == 1'b0) begin
+                            // -------------------------------------------------
+                            // Immediate ALU Operations (instr[11] == 0)
+                            // -------------------------------------------------
+                            case (instr[10:8])
+                                3'b000: begin // ADD acc, imm8
+                                    acc        <= alu_imm_add[7:0];
+                                    carry_flag <= alu_imm_add[8];
+                                    zero_flag  <= (alu_imm_add[7:0] == 8'h00);
+                                end
+                                3'b001: begin // SUB acc, imm8
+                                    acc        <= alu_imm_sub[7:0];
+                                    carry_flag <= alu_imm_sub[8]; // borrow
+                                    zero_flag  <= (alu_imm_sub[7:0] == 8'h00);
+                                end
+                                3'b010: begin // CMP acc, imm8 (acc unchanged)
+                                    carry_flag <= alu_imm_sub[8]; // borrow: 1 if acc < imm8
+                                    zero_flag  <= (alu_imm_sub[7:0] == 8'h00);
+                                end
+                                3'b011: begin // AND acc, imm8
+                                    acc        <= acc & instr[7:0];
+                                    zero_flag  <= ((acc & instr[7:0]) == 8'h00);
+                                    carry_flag <= 1'b0;
+                                end
+                                3'b100: begin // OR acc, imm8
+                                    acc        <= acc | instr[7:0];
+                                    zero_flag  <= ((acc | instr[7:0]) == 8'h00);
+                                    carry_flag <= 1'b0;
+                                end
+                                3'b101: begin // XOR acc, imm8
+                                    acc        <= acc ^ instr[7:0];
+                                    zero_flag  <= ((acc ^ instr[7:0]) == 8'h00);
+                                    carry_flag <= 1'b0;
+                                end
+                                3'b110: begin // MOV acc, imm8
+                                    acc        <= instr[7:0];
+                                    zero_flag  <= (instr[7:0] == 8'h00);
+                                    carry_flag <= 1'b0;
+                                end
+                                3'b111: begin // NOT acc (bitwise inversion)
+                                    acc        <= ~acc;
+                                    zero_flag  <= ((~acc) == 8'h00);
+                                    carry_flag <= 1'b0;
+                                end
+                            endcase
+                        end else begin
+                            // -------------------------------------------------
+                            // Register Transfer & Register-ALU Operations (instr[11] == 1)
+                            // -------------------------------------------------
+                            case (instr[10:8])
+                                3'b000: begin // MOV acc, reg[src]
+                                    acc        <= alu_reg_val;
+                                    zero_flag  <= (alu_reg_val == 8'h00);
+                                    carry_flag <= 1'b0;
+                                end
+                                3'b001: begin // MOV reg[dst], acc
+                                    case (instr[5:3])
+                                        3'b000: osr    <= acc;
+                                        3'b001: isr    <= acc;
+                                        3'b010: lc0    <= acc;
+                                        3'b011: lc1    <= acc;
+                                        3'b100: o_data <= acc;
+                                        3'b101: acc    <= acc;
+                                        3'b110: crc_seed[7:0]  <= acc;
+                                        3'b111: crc_seed[15:8] <= acc;
+                                    endcase
+                                end
+                                3'b010: begin // ADD acc, reg[src]
+                                    acc        <= alu_reg_add[7:0];
+                                    carry_flag <= alu_reg_add[8];
+                                    zero_flag  <= (alu_reg_add[7:0] == 8'h00);
+                                end
+                                3'b011: begin // SUB acc, reg[src]
+                                    acc        <= alu_reg_sub[7:0];
+                                    carry_flag <= alu_reg_sub[8]; // borrow
+                                    zero_flag  <= (alu_reg_sub[7:0] == 8'h00);
+                                end
+                                3'b100: begin // CMP acc, reg[src] (acc unchanged)
+                                    carry_flag <= alu_reg_sub[8];
+                                    zero_flag  <= (alu_reg_sub[7:0] == 8'h00);
+                                end
+                                3'b101: begin // Bitwise logic with reg[src]
+                                    case (instr[5:3])
+                                        3'b000: begin // AND acc, reg
+                                            acc        <= acc & alu_reg_val;
+                                            zero_flag  <= ((acc & alu_reg_val) == 8'h00);
+                                            carry_flag <= 1'b0;
+                                        end
+                                        3'b001: begin // OR acc, reg
+                                            acc        <= acc | alu_reg_val;
+                                            zero_flag  <= ((acc | alu_reg_val) == 8'h00);
+                                            carry_flag <= 1'b0;
+                                        end
+                                        default: begin // XOR acc, reg
+                                            acc        <= acc ^ alu_reg_val;
+                                            zero_flag  <= ((acc ^ alu_reg_val) == 8'h00);
+                                            carry_flag <= 1'b0;
+                                        end
+                                    endcase
+                                end
+                                3'b110: begin // Unary operations on acc
+                                    case (instr[5:3])
+                                        3'b000: begin // INC acc
+                                            acc        <= acc + 8'd1;
+                                            carry_flag <= (acc == 8'hFF);
+                                            zero_flag  <= (acc + 8'd1 == 8'h00);
+                                        end
+                                        3'b001: begin // DEC acc
+                                            acc        <= acc - 8'd1;
+                                            carry_flag <= (acc == 8'h00); // borrow
+                                            zero_flag  <= (acc - 8'd1 == 8'h00);
+                                        end
+                                        default: begin // CLR acc
+                                            acc        <= 8'h00;
+                                            zero_flag  <= 1'b1;
+                                            carry_flag <= 1'b0;
+                                        end
+                                    endcase
+                                end
+                                3'b111: begin // Shifts and Rotates on acc
+                                    case (instr[5:3])
+                                        3'b000: begin // SHL acc (Shift Left, bit 7 to carry)
+                                            carry_flag <= acc[7];
+                                            acc        <= {acc[6:0], 1'b0};
+                                            zero_flag  <= ({acc[6:0], 1'b0} == 8'h00);
+                                        end
+                                        3'b001: begin // SHR acc (Shift Right, bit 0 to carry)
+                                            carry_flag <= acc[0];
+                                            acc        <= {1'b0, acc[7:1]};
+                                            zero_flag  <= ({1'b0, acc[7:1]} == 8'h00);
+                                        end
+                                        3'b010: begin // ROL acc (Rotate Left)
+                                            acc        <= {acc[6:0], acc[7]};
+                                            carry_flag <= acc[7];
+                                            zero_flag  <= ({acc[6:0], acc[7]} == 8'h00);
+                                        end
+                                        default: begin // ROR acc (Rotate Right)
+                                            acc        <= {acc[0], acc[7:1]};
+                                            carry_flag <= acc[0];
+                                            zero_flag  <= ({acc[0], acc[7:1]} == 8'h00);
+                                        end
+                                    endcase
+                                end
+                            endcase
+                        end
                     end
 
                     4'hC: begin // CALL: Push return address, jump to target
