@@ -26,7 +26,7 @@ module top (
     // Programming interface wires between Bootloader and Core
     wire        prog_en;
     wire        prog_we;
-    wire [4:0]  prog_addr;
+    wire [6:0]  prog_addr;
     wire [15:0] prog_wdata;
     wire [15:0] prog_rdata;
     wire        bootloader_tx;
@@ -133,7 +133,7 @@ module top (
     // LED 6: SCK (SPI clock visible on LED)
     // LED 5: Programming Mode active
     // LED 4..0: address during programming, or full byte during normal execution
-    assign o_led = prog_active ? {1'b0, 1'b0, 1'b1, 2'b00, prog_addr[4:0]} :
+    assign o_led = prog_active ? {1'b1, prog_addr[6:0]} :
                                  {!core_cs_n, core_sck, slave_ack_pulse, core_data[4:0]};
 
 endmodule

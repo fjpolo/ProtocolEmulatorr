@@ -15,12 +15,13 @@ from cocotb.triggers import RisingEdge, ClockCycles, Timer
 
 CLK_PERIOD_NS = 20  # 50 MHz clock
 
-ADDR_DATA   = 0x00
-ADDR_STATUS = 0x04
-ADDR_CTRL   = 0x08
-ADDR_BAUD   = 0x0C
-ADDR_GPIO   = 0x10
-ADDR_IMEM   = 0x80
+ADDR_DATA      = 0x00
+ADDR_STATUS    = 0x04
+ADDR_CTRL      = 0x08
+ADDR_BAUD      = 0x0C
+ADDR_GPIO      = 0x10
+ADDR_IMEM_BANK = 0x14
+ADDR_IMEM      = 0x80
 
 
 class WishboneMaster:
@@ -329,3 +330,41 @@ async def test_wb_irq_watermarks(dut):
     assert int(dut.o_irq.value) == 0, "Expected o_irq == 0 since RX FIFO is empty"
 
     dut._log.info("Wishbone IRQ Watermarks test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 6: IMEM Bank Switching & Isolation across all 4 banks (128 words)
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_imem_banking(dut):
+    """Test 16: Wishbone IMEM Bank Switching across all 4 banks (128 words)."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+
+    # Halt core before programming
+    await wb.write(ADDR_CTRL, 0x02) # prog_en = 1
+
+    # Write unique pattern to Word 0 of each of the 4 banks:
+    # Bank 0 (IMEM[0]): 0x1111
+    # Bank 1 (IMEM[32]): 0x2222
+    # Bank 2 (IMEM[64]): 0x3333
+    # Bank 3 (IMEM[96]): 0x4444
+    bank_patterns = {0: 0x1111, 1: 0x2222, 2: 0x3333, 3: 0x4444}
+    for bank, val in bank_patterns.items():
+        await wb.write(ADDR_IMEM_BANK, bank)
+        bank_read = await wb.read(ADDR_IMEM_BANK)
+        assert (bank_read & 0x3) == bank, f"Expected bank {bank}, got {bank_read & 0x3}"
+        # Write Word 0 in this bank (mapped via 0x80)
+        await wb.write(ADDR_IMEM, val)
+
+    # Now read back all 4 banks and verify data isolation
+    for bank, expected_val in bank_patterns.items():
+        await wb.write(ADDR_IMEM_BANK, bank)
+        read_val = (await wb.read(ADDR_IMEM)) & 0xFFFF
+        assert read_val == expected_val, f"Bank {bank} mismatch: expected 0x{expected_val:04X}, got 0x{read_val:04X}"
+        dut._log.info(f"Bank {bank} (IMEM[{bank*32}]): verified 0x{read_val:04X}")
+
+    await wb.write(ADDR_CTRL, 0x00) # prog_en = 0
+    dut._log.info("Wishbone IMEM Bank Switching test PASSED across all 4 banks!")
+
