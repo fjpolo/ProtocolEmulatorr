@@ -53,6 +53,7 @@ module ProtocolEmulator(
     reg [4:0]  pc;
     reg [8:0]  delay_cnt;
     reg        out_sck_phase;   // OUT SCK phase: 0=SCK rising, 1=SCK falling
+    reg        in_sck_phase;    // IN SCK/SDA phase: 0=clock active/high, 1=clock idle/low
     reg [7:0]  osr;             // Output Shift Register (Serializer)
     reg [3:0]  bit_cnt;         // Serialization bit counter
     reg [7:0]  isr;             // Input Shift Register (Deserializer)
@@ -89,8 +90,8 @@ module ProtocolEmulator(
     //
     // Opcodes:
     //   0x0 = NOP    [8:0 delay]
-    //   0x1 = OUT    [11:10 mode, 8:0 delay] (00=UART LSB, 01=SPI MSB+SCK, 11=I2C)
-    //   0x2 = IN     [11:9 bit_count, 8:0 delay] (samples gpio_in[rx_pin])
+    //   0x1 = OUT    [11:10 mode, 8:0 delay] (00=UART LSB, 01=SPI MSB+SCK, 11=I2C MSB+SCL)
+    //   0x2 = IN     [11:10 mode, 8:0 delay] (00=UART LSB, 01=SPI MSB+SCK, 11=I2C MSB+SCL)
     //   0x3 = SET    [11:9 pin_sel, 8 pin_val, 7:0 delay] (drives gpio_out_reg[pin_sel])
     //   0x4 = WAIT   [11:9 pin_sel, 8 pin_val, 7:0 delay] (waits on gpio_in[pin_sel])
     //   0x5 = PINMAP [11:9 tx, 8:6 rx, 5:3 sck, 2:0 cs]
@@ -230,6 +231,7 @@ module ProtocolEmulator(
             gpio_out_reg  <= 8'b1111_1101; // Pin 0=1 (TX idle), Pin 1=0 (SCK idle low), Pin 2=1 (CS idle high)
             gpio_oe_reg   <= 8'b0000_0111; // Pins 0, 1, 2 driven outputs, others high-Z
             out_sck_phase <= 1'b0;
+            in_sck_phase  <= 1'b0;
             osr           <= 8'h00;
             bit_cnt       <= 4'd0;
             isr           <= 8'h00;
@@ -257,18 +259,108 @@ module ProtocolEmulator(
                         end
                     end
 
-                    4'h2: begin // IN: Multi-cycle variable-bit deserialization from rx_pin into ISR
-                        isr       <= {gpio_in[rx_pin], isr[7:1]};
-                        delay_cnt <= eff_delay;
-                        if (rx_bit_cnt == 4'd0) begin
-                            rx_bit_cnt <= in_count_init;
-                            pc         <= (in_count_init == 4'd0) ? pc + 5'd1 : pc;
-                        end else if (rx_bit_cnt == 4'd1) begin
-                            rx_bit_cnt <= 4'd0;
-                            pc         <= pc + 5'd1;
+                    4'h2: begin // IN: Multi-cycle deserialization into ISR
+                        if (instr[11:10] == 2'b01) begin
+                            // -------------------------------------------------------
+                            // Synchronous SPI Master Read (IN SCK):
+                            // Generates 8 clock pulses on sck_pin (auto-toggles) and
+                            // samples rx_pin (MISO) MSB-first into ISR.
+                            // -------------------------------------------------------
+                            delay_cnt <= eff_delay;
+                            if (in_sck_phase == 1'b0) begin
+                                // Rising clock phase: drive SCK high
+                                if (gpio_od[sck_pin]) begin
+                                    gpio_out_reg[sck_pin] <= 1'b1;
+                                    gpio_oe_reg[sck_pin]  <= 1'b0; // release high
+                                end else begin
+                                    gpio_out_reg[sck_pin] <= 1'b1;
+                                    gpio_oe_reg[sck_pin]  <= 1'b1; // drive high
+                                end
+                                in_sck_phase <= 1'b1;
+                                pc           <= pc;
+                            end else begin
+                                // Falling clock phase: sample rx_pin into ISR, drive SCK low
+                                isr <= {isr[6:0], gpio_in[rx_pin]};
+                                if (gpio_od[sck_pin]) begin
+                                    gpio_out_reg[sck_pin] <= 1'b0;
+                                    gpio_oe_reg[sck_pin]  <= 1'b1; // drive low
+                                end else begin
+                                    gpio_out_reg[sck_pin] <= 1'b0;
+                                    gpio_oe_reg[sck_pin]  <= 1'b1; // drive low
+                                end
+                                in_sck_phase <= 1'b0;
+                                if (rx_bit_cnt == 4'd0) begin
+                                    rx_bit_cnt <= 4'd7;
+                                    pc         <= pc;
+                                end else if (rx_bit_cnt == 4'd1) begin
+                                    rx_bit_cnt <= 4'd0;
+                                    pc         <= pc + 5'd1;
+                                end else begin
+                                    rx_bit_cnt <= rx_bit_cnt - 4'd1;
+                                    pc         <= pc;
+                                end
+                            end
+                        end else if (instr[11:10] == 2'b11) begin
+                            // -------------------------------------------------------
+                            // Synchronous I2C Master Read (IN SDA):
+                            // Releases tx_pin (SDA) to Hi-Z open drain, generates 8
+                            // clock pulses on sck_pin (SCL), and samples rx_pin (SDA)
+                            // MSB-first into ISR while SCL is high.
+                            // -------------------------------------------------------
+                            delay_cnt <= eff_delay;
+                            // Ensure SDA is released in open-drain mode
+                            gpio_out_reg[tx_pin] <= 1'b1;
+                            gpio_oe_reg[tx_pin]  <= 1'b0;
+
+                            if (in_sck_phase == 1'b0) begin
+                                // High clock phase: release SCL high and sample SDA
+                                if (gpio_od[sck_pin]) begin
+                                    gpio_out_reg[sck_pin] <= 1'b1;
+                                    gpio_oe_reg[sck_pin]  <= 1'b0; // release high
+                                end else begin
+                                    gpio_out_reg[sck_pin] <= 1'b1;
+                                    gpio_oe_reg[sck_pin]  <= 1'b1; // drive high
+                                end
+                                isr          <= {isr[6:0], gpio_in[rx_pin]};
+                                in_sck_phase <= 1'b1;
+                                pc           <= pc;
+                            end else begin
+                                // Low clock phase: drive SCL low
+                                if (gpio_od[sck_pin]) begin
+                                    gpio_out_reg[sck_pin] <= 1'b0;
+                                    gpio_oe_reg[sck_pin]  <= 1'b1; // drive low
+                                end else begin
+                                    gpio_out_reg[sck_pin] <= 1'b0;
+                                    gpio_oe_reg[sck_pin]  <= 1'b1; // drive low
+                                end
+                                in_sck_phase <= 1'b0;
+                                if (rx_bit_cnt == 4'd0) begin
+                                    rx_bit_cnt <= 4'd7;
+                                    pc         <= pc;
+                                end else if (rx_bit_cnt == 4'd1) begin
+                                    rx_bit_cnt <= 4'd0;
+                                    pc         <= pc + 5'd1;
+                                end else begin
+                                    rx_bit_cnt <= rx_bit_cnt - 4'd1;
+                                    pc         <= pc;
+                                end
+                            end
                         end else begin
-                            rx_bit_cnt <= rx_bit_cnt - 4'd1;
-                            pc         <= pc;
+                            // -------------------------------------------------------
+                            // Normal IN mode (instr[11:10]=00): LSB-first UART deserializer
+                            // -------------------------------------------------------
+                            isr       <= {gpio_in[rx_pin], isr[7:1]};
+                            delay_cnt <= eff_delay;
+                            if (rx_bit_cnt == 4'd0) begin
+                                rx_bit_cnt <= in_count_init;
+                                pc         <= (in_count_init == 4'd0) ? pc + 5'd1 : pc;
+                            end else if (rx_bit_cnt == 4'd1) begin
+                                rx_bit_cnt <= 4'd0;
+                                pc         <= pc + 5'd1;
+                            end else begin
+                                rx_bit_cnt <= rx_bit_cnt - 4'd1;
+                                pc         <= pc;
+                            end
                         end
                     end
 
