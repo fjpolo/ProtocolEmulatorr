@@ -23,6 +23,12 @@ module ProtocolEmulator(
     input   wire    [7:0]   i_data,
     output  reg     [7:0]   o_data,
 
+    // Hardware FIFO Control & Handshaking Interface
+    input   wire            i_tx_valid,     // 1 when byte is available in TX FIFO
+    output  reg             o_tx_pop,       // 1-cycle active-high pop strobe on PULL
+    input   wire            i_rx_full,      // 1 when RX FIFO cannot accept data
+    output  reg             o_rx_push,      // 1-cycle active-high push strobe on PUSH
+
     // Runtime Baud Rate Divisor (cycles_per_bit - 1). Default 433 = 115200@50MHz.
     // $BAUD sentinels: 9'h1FF (NOP/OUT/IN) or 8'hFF (SET/WAIT) -> i_baud_div[8:0]
     // $HBAUD sentinels: 9'h1FE (NOP/OUT/IN) or 8'hFE (SET/WAIT) -> i_baud_div[8:0]>>1
@@ -188,18 +194,30 @@ module ProtocolEmulator(
     //                     [9:8] = 2'b10 : PUSH_LC LCx       (outputs LCx to o_data & OSR)
     //                     [9:8] = 2'b11 : MOV_LC  LCx, OSR  (loads LCx from OSR)
     //
-    // 0x8 | JMP target
+    // 0x8 | JMP [cond], target
     //       [15:12] = 4'h8
+    //       [10:8]  = condition:
+    //                 3'b000: Unconditional JMP target (default)
+    //                 3'b001: JMP TX_VALID, target (jump if i_tx_valid == 1)
+    //                 3'b010: JMP TX_EMPTY, target (jump if i_tx_valid == 0)
+    //                 3'b011: JMP RX_FULL,  target (jump if i_rx_full  == 1)
+    //                 3'b100: JMP RX_READY, target (jump if i_rx_full  == 0)
+    //                 3'b101: JMP PIN_HI,   target (jump if gpio_in[rx_pin] == 1)
+    //                 3'b110: JMP PIN_LO,   target (jump if gpio_in[rx_pin] == 0)
     //       [4:0]   = target address (0..31)
-    //       Unconditional single-cycle jump to target address in IMEM.
+    //       Single-cycle branch. If condition met, branches to target; else pc+1.
     //
-    // 0x9 | PULL
+    // 0x9 | PULL [BLOCK]
     //       [15:12] = 4'h9
+    //       [0]     = block_mode (0 = non-blocking, 1 = blocking wait for i_tx_valid)
     //       Refills Output Shift Register (OSR <= i_data) from host/TX FIFO.
+    //       Pulses o_tx_pop for 1 cycle when data is consumed.
     //
-    // 0xA | PUSH
+    // 0xA | PUSH [BLOCK]
     //       [15:12] = 4'hA
+    //       [0]     = block_mode (0 = non-blocking, 1 = blocking wait for !i_rx_full)
     //       Flushes Input Shift Register to output port and OSR (OSR <= ISR, o_data <= ISR).
+    //       Pulses o_rx_push for 1 cycle.
     //
     // 0xC | CALL target
     //       [15:12] = 4'hC
@@ -356,7 +374,13 @@ module ProtocolEmulator(
             call_stack[3] <= 5'd0;
             lc0           <= 8'd0;
             lc1           <= 8'd0;
+            o_tx_pop      <= 1'b0;
+            o_rx_push     <= 1'b0;
         end else begin
+            // Default: clear single-cycle pop/push strobes
+            o_tx_pop  <= 1'b0;
+            o_rx_push <= 1'b0;
+
             if (delay_cnt > 9'd0) begin
                 delay_cnt <= delay_cnt - 9'd1;
             end else begin
@@ -476,17 +500,31 @@ module ProtocolEmulator(
                         end
                     end
 
-                    4'hA: begin // PUSH: Transfer ISR to OSR and latch to o_data
-                        osr       <= isr;
-                        o_data    <= isr;
+                    4'hA: begin // PUSH [BLOCK]: Transfer ISR to OSR and latch to o_data
                         delay_cnt <= 9'd0;
-                        pc        <= pc + 5'd1;
+                        if (instr[0] && i_rx_full) begin
+                            // Blocking PUSH: stall until space is available in RX FIFO
+                            pc        <= pc;
+                            o_rx_push <= 1'b0;
+                        end else begin
+                            osr       <= isr;
+                            o_data    <= isr;
+                            o_rx_push <= 1'b1; // 1-cycle push strobe
+                            pc        <= pc + 5'd1;
+                        end
                     end
 
-                    4'h9: begin // PULL: Latch input data into OSR
-                        osr       <= i_data;
+                    4'h9: begin // PULL [BLOCK]: Latch input data into OSR
                         delay_cnt <= 9'd0;
-                        pc        <= pc + 5'd1;
+                        if (instr[0] && !i_tx_valid) begin
+                            // Blocking PULL: stall until valid data is available in TX FIFO
+                            pc       <= pc;
+                            o_tx_pop <= 1'b0;
+                        end else begin
+                            osr      <= i_data;
+                            o_tx_pop <= i_tx_valid; // 1-cycle pop strobe when data is consumed
+                            pc       <= pc + 5'd1;
+                        end
                     end
 
                     4'h1: begin // OUT: Multi-cycle serialization from OSR
@@ -677,9 +715,18 @@ module ProtocolEmulator(
                         end
                     end
 
-                    4'h8: begin // JMP: Jump to target address
+                    4'h8: begin // JMP [cond], target: Conditional or Unconditional Jump
                         delay_cnt <= 9'd0;
-                        pc        <= target;
+                        case (instr[10:8])
+                            3'b000: pc <= target;                              // Unconditional JMP target
+                            3'b001: pc <= i_tx_valid ? target : pc + 5'd1;     // JMP TX_VALID, target
+                            3'b010: pc <= !i_tx_valid ? target : pc + 5'd1;    // JMP TX_EMPTY, target
+                            3'b011: pc <= i_rx_full ? target : pc + 5'd1;      // JMP RX_FULL,  target
+                            3'b100: pc <= !i_rx_full ? target : pc + 5'd1;     // JMP RX_READY, target
+                            3'b101: pc <= gpio_in[rx_pin] ? target : pc + 5'd1;// JMP PIN_HI,   target
+                            3'b110: pc <= !gpio_in[rx_pin] ? target : pc + 5'd1;// JMP PIN_LO,  target
+                            default: pc <= target;
+                        endcase
                     end
 
                     4'hC: begin // CALL: Push return address, jump to target

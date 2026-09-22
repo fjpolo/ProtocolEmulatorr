@@ -375,14 +375,53 @@ class OmnibusAssembler:
                 word = (opcode_val << 12) | (lc_sel << 11) | (1 << 10) | (3 << 8)
 
             elif op == "JMP":
-                # JMP target
-                if len(tokens) < 2:
+                # Forms:
+                #   JMP target
+                #   JMP cond, target
+                CONDITIONS = {
+                    "ALWAYS": 0,
+                    "TX_VALID": 1,
+                    "TX_RDY": 1,
+                    "TX_READY": 1,
+                    "TX_EMPTY": 2,
+                    "NO_TX": 2,
+                    "RX_FULL": 3,
+                    "RX_READY": 4,
+                    "RX_RDY": 4,
+                    "NOT_FULL": 4,
+                    "PIN_HI": 5,
+                    "PIN_HIGH": 5,
+                    "PIN_1": 5,
+                    "PIN_LO": 6,
+                    "PIN_LOW": 6,
+                    "PIN_0": 6,
+                }
+                if len(tokens) >= 3:
+                    cond_name = tokens[1].strip().upper()
+                    if cond_name not in CONDITIONS:
+                        raise AssemblerError(f"Line {line_num}: Unknown JMP condition '{tokens[1]}'")
+                    cond = CONDITIONS[cond_name]
+                    target = eval_arg(tokens[2]) & 0x1F
+                elif len(tokens) == 2:
+                    cond = 0
+                    target = eval_arg(tokens[1]) & 0x1F
+                else:
                     raise AssemblerError(f"Line {line_num}: JMP requires target address or label")
-                target = eval_arg(tokens[1]) & 0x1F
-                word = (opcode_val << 12) | target
+                word = (opcode_val << 12) | (cond << 8) | target
 
-            elif op in ("PUSH", "PULL"):
-                word = opcode_val << 12
+            elif op == "PULL":
+                # Forms:
+                #   PULL
+                #   PULL BLOCK / PULL WAIT
+                block = 1 if (len(tokens) >= 2 and tokens[1].strip().upper() in ("BLOCK", "WAIT", "1")) else 0
+                word = (opcode_val << 12) | block
+
+            elif op == "PUSH":
+                # Forms:
+                #   PUSH
+                #   PUSH BLOCK / PUSH WAIT
+                block = 1 if (len(tokens) >= 2 and tokens[1].strip().upper() in ("BLOCK", "WAIT", "1")) else 0
+                word = (opcode_val << 12) | block
 
             elif op == "CALL":
                 # CALL target_label_or_addr
