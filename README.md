@@ -18,23 +18,41 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 * **Autonomous Stream Accelerators**: On-the-fly NRZI, Bit-Stuffing (USB/CAN), Manchester encoding, and multi-polynomial CRC (CRC-5/8/16)
 * **Wire-Speed MitM and Glitch Injection**: Dynamic rule-based byte replacement and sub-cycle fault triggering
 * **Retro and Creative Physical Protocols**: Native support for N64/GameCube Joybus, NES/SNES gamepads, NeoPixel LED strips, and 1-bit chiptune audio DAC
+* **Unified 8-Bit Bidirectional GPIO Bus**: Dynamic role mapping (`PINMAP`) and per-pin open-drain configuration (`CFG_OD`) allowing arbitrary protocol routing across GPIOs 0..7
 * **Multi-Target Prototyping**: Complete build and test flows for Sipeed Tang Console 60K, Nano 20K, and Nano 9K before CMOS5L tapeout
 
+## Architecture Specifications
 
-
+* [Task 01 — Baseline Engine & ALU](task01.md)
+* [Task 02 — Sidecar Delays & Opcode Decoding](task02.md)
+* [Task 03 — Mid-Bit Deserialization & Edge Wait](task03.md)
+* [Task 04 — In-Band Microcode Bootloader](task04.md)
+* [Task 05 — Hardware Subroutine Call Stack](task05.md)
+* [Task 06 — Runtime-Configurable Baud Divisor](task06.md)
+* [Task 07 — SPI Master & Auto-SCK Serialization](task07.md)
+* [Task 07C — Unified 8-Bit GPIO Bus & Dynamic Pin Mapping](task07c.md)
+* [Task 08 — I2C Master in Microcode (Plan)](task08.md)
 
 ## Usage
 
 1. **Instantiate the module:**
 
    ```verilog
-   ProtocolEmulator #(
-       // Optional parameters here 
-   ) ProtocolEmulator (
-       .clk(clk),           // Input
-       .reset_n(reset_n),   // Input - active low
-       .data_in(data_in),   // Input
-       .data_out(data_out)  // Output
+   ProtocolEmulator ProtocolEmulator (
+       .i_clk(i_clk),                   // 50 MHz clock
+       .i_reset_n(i_reset_n),           // Active-low synchronous reset
+       .i_data(i_data),                 // 8-bit host byte for PULL
+       .o_data(o_data),                 // 8-bit output register
+       .i_baud_div(i_baud_div),         // Runtime baud rate divisor (cycles/bit - 1)
+       .i_gpio(i_gpio),                 // 8-bit bidirectional GPIO inputs
+       .o_gpio(o_gpio),                 // 8-bit bidirectional GPIO outputs
+       .o_gpio_oe(o_gpio_oe),           // 8-bit GPIO output enables (1=drive, 0=Hi-Z)
+       // Microcode programming port
+       .i_prog_en(i_prog_en),
+       .i_prog_we(i_prog_we),
+       .i_prog_addr(i_prog_addr),
+       .i_prog_data(i_prog_data),
+       .o_prog_rdata(o_prog_rdata)
    );
    ```
 
