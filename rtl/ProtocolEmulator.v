@@ -279,25 +279,48 @@ module ProtocolEmulator(
                     end
 
                     4'h1: begin // OUT: Multi-cycle serialization from OSR
-                        if (instr[11:10] == 2'b01) begin
+                        if (instr[11:10] == 2'b01 || instr[11:10] == 2'b11) begin
                             // -------------------------------------------------------
-                            // OUT SCK mode (instr[11:10]=01): MSB-first SPI serializer
+                            // MSB-first Serializer with Auto-Clock Toggle:
+                            //   instr[11:10] = 01: SPI Mode (OUT SCK)
+                            //   instr[11:10] = 11: I2C Mode (OUT SDA)
                             // Full-duplex: drives tx_pin + auto-toggles sck_pin +
-                            // samples rx_pin into ISR.
+                            // samples rx_pin into ISR. Honors gpio_od open-drain mask.
                             // -------------------------------------------------------
                             delay_cnt <= eff_delay;
                             if (out_sck_phase == 1'b0) begin
-                                gpio_out_reg[tx_pin]  <= osr[7];
-                                gpio_oe_reg[tx_pin]   <= 1'b1;
-                                gpio_out_reg[sck_pin] <= 1'b1;
-                                gpio_oe_reg[sck_pin]  <= 1'b1;
-                                out_sck_phase         <= 1'b1;
-                                pc                    <= pc;
+                                // Rising clock phase: set data, raise clock
+                                if (gpio_od[tx_pin]) begin
+                                    gpio_out_reg[tx_pin] <= osr[7];
+                                    gpio_oe_reg[tx_pin]  <= ~osr[7]; // 0: drive low, 1: release
+                                end else begin
+                                    gpio_out_reg[tx_pin] <= osr[7];
+                                    gpio_oe_reg[tx_pin]  <= 1'b1;
+                                end
+
+                                if (gpio_od[sck_pin]) begin
+                                    gpio_out_reg[sck_pin] <= 1'b1;
+                                    gpio_oe_reg[sck_pin]  <= 1'b0;   // release high
+                                end else begin
+                                    gpio_out_reg[sck_pin] <= 1'b1;
+                                    gpio_oe_reg[sck_pin]  <= 1'b1;   // drive high
+                                end
+                                out_sck_phase <= 1'b1;
+                                pc            <= pc;
                             end else begin
-                                isr                   <= {isr[6:0], gpio_in[rx_pin]};
-                                gpio_out_reg[sck_pin] <= 1'b0;
-                                osr                   <= {osr[6:0], 1'b0};
-                                out_sck_phase         <= 1'b0;
+                                // Falling clock phase: sample rx_pin, lower clock, shift OSR
+                                isr <= {isr[6:0], gpio_in[rx_pin]};
+
+                                if (gpio_od[sck_pin]) begin
+                                    gpio_out_reg[sck_pin] <= 1'b0;
+                                    gpio_oe_reg[sck_pin]  <= 1'b1;   // drive low
+                                end else begin
+                                    gpio_out_reg[sck_pin] <= 1'b0;
+                                    gpio_oe_reg[sck_pin]  <= 1'b1;   // drive low
+                                end
+
+                                osr           <= {osr[6:0], 1'b0};
+                                out_sck_phase <= 1'b0;
                                 if (bit_cnt == 4'd0) begin
                                     bit_cnt <= 4'd7;
                                     pc      <= pc;

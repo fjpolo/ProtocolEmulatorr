@@ -53,11 +53,32 @@ module top (
     wire [7:0]  core_gpio_oe;
     wire [7:0]  core_gpio_in;
 
+    // -------------------------------------------------------------------------
+    // I2C Loopback Stub on GPIO 4 (SDA) and GPIO 1 (SCL)
+    // -------------------------------------------------------------------------
+    wire slave_sda_drive;
+    wire slave_ack_pulse;
+
+    // SCL wire (Pin 1): 0 when master drives low, 1 when released (pull-up)
+    wire scl_wire = !(core_gpio_oe[1] && !core_gpio_out[1]);
+
+    // SDA wire (Pin 4): 0 when master drives low OR slave pulls low (ACK), 1 when both release
+    wire sda_wire = !( (core_gpio_oe[4] && !core_gpio_out[4]) || slave_sda_drive );
+
+    I2CSlaveStub i2c_slave (
+        .i_clk       (i_sys_clk),
+        .i_reset_n   (sys_rst_n),
+        .i_scl       (scl_wire),
+        .i_sda       (sda_wire),
+        .o_sda_drive (slave_sda_drive),
+        .o_ack_pulse (slave_ack_pulse)
+    );
+
     assign core_gpio_in[0] = core_rx_in;
-    assign core_gpio_in[1] = 1'b1;
+    assign core_gpio_in[1] = scl_wire;
     assign core_gpio_in[2] = 1'b1;
     assign core_gpio_in[3] = core_tx; // Dedicated MISO loopback pin (Pin 3)
-    assign core_gpio_in[4] = 1'b1;
+    assign core_gpio_in[4] = sda_wire;
     assign core_gpio_in[5] = 1'b1;
     assign core_gpio_in[6] = 1'b1;
     assign core_gpio_in[7] = 1'b1;
@@ -109,6 +130,6 @@ module top (
     // LED 5: Programming Mode active
     // LED 4..0: address during programming, or full byte during normal execution
     assign o_led = prog_active ? {1'b0, 1'b0, 1'b1, 2'b00, prog_addr[4:0]} :
-                                 {!core_cs_n, core_sck, 1'b0, core_data[4:0]};
+                                 {!core_cs_n, core_sck, slave_ack_pulse, core_data[4:0]};
 
 endmodule
