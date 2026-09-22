@@ -51,7 +51,7 @@
                     imem[0][15:12] == 4'h6 || imem[0][15:12] == 4'h7 ||
                     imem[0][15:12] == 4'h8 || imem[0][15:12] == 4'h9 ||
                     imem[0][15:12] == 4'hA || imem[0][15:12] == 4'hC ||
-                    imem[0][15:12] == 4'hD);
+                    imem[0][15:12] == 4'hD || imem[0][15:12] == 4'hE);
             // Bound target address to valid IMEM range (0..31)
             `ASSUME(imem[0][4:0] <= 5'd31);
         end
@@ -84,6 +84,8 @@
             `ASSERT(gpio_od == 8'h00);
             `ASSERT(lc0 == 8'h00);
             `ASSERT(lc1 == 8'h00);
+            `ASSERT(crc_reg == 16'd0);
+            `ASSERT(crc_poly == 2'd0);
             `ASSERT(in_sck_phase == 2'd0);
             `ASSERT(o_tx_pop == 1'b0);
             `ASSERT(o_rx_push == 1'b0);
@@ -367,8 +369,13 @@
                             3'b100: `ASSERT(pc == (!$past(i_rx_full) ? $past(target) : $past(pc) + 5'd1));
                             3'b101: `ASSERT(pc == ($past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 5'd1));
                             3'b110: `ASSERT(pc == (!$past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 5'd1));
+                            3'b111: `ASSERT(pc == (($past(crc_reg) == 16'h0000) ? $past(target) : $past(pc) + 5'd1));
                             default: `ASSERT(pc == $past(target));
                         endcase
+                    end
+                    4'hE: begin // CRC: Hardware CRC Generator & Checksum Accelerator
+                        `ASSERT(delay_cnt == 16'd0);
+                        `ASSERT(pc == $past(pc) + 5'd1);
                     end
                     4'hC: begin // CALL: push pc+1 onto stack, jump to target
                         if ($past(sp) < 2'd3) begin
@@ -469,6 +476,14 @@
             // Cover 18 (Task 12): 1-Wire single-bit slot mode executed (instr[9]==1)
             cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && $past(opcode) == 4'h1 &&
                   $past(instr[11:10]) == 2'b10 && $past(instr[9]) == 1'b1);
+
+            // Cover 19 (Task 13): CRC_BYTE executed (OSR, ISR, or DATA update)
+            cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && $past(opcode) == 4'hE &&
+                  ($past(instr[11:9]) == 3'b001 || $past(instr[11:9]) == 3'b010 || $past(instr[11:9]) == 3'b011));
+
+            // Cover 20 (Task 13): JMP CRC_OK taken when crc_reg == 0
+            cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && $past(opcode) == 4'h8 &&
+                  $past(instr[10:8]) == 3'b111 && $past(crc_reg) == 16'h0000 && pc == $past(target));
         end
     end
 

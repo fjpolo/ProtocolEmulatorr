@@ -73,6 +73,11 @@ module ProtocolEmulator(
     reg [7:0]  lc0;              // Loop counter 0
     reg [7:0]  lc1;              // Loop counter 1
 
+    // Hardware CRC Generator & Checksum Accelerator State
+    reg [15:0] crc_reg;          // 16-bit CRC accumulator
+    reg [15:0] crc_seed;         // Initial/reload seed value
+    reg [1:0]  crc_poly;         // Active polynomial: 0=Dallas CRC-8, 1=SMBus CRC-8, 2=CCITT CRC-16, 3=Modbus CRC-16
+
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
     reg [2:0]  rx_pin;          // Pin index for IN deserializer / default WAIT (default 0)
@@ -210,6 +215,7 @@ module ProtocolEmulator(
     //                 3'b100: JMP RX_READY, target (jump if i_rx_full  == 0)
     //                 3'b101: JMP PIN_HI,   target (jump if gpio_in[rx_pin] == 1)
     //                 3'b110: JMP PIN_LO,   target (jump if gpio_in[rx_pin] == 0)
+    //                 3'b111: JMP CRC_OK,   target (jump if crc_reg == 16'h0000)
     //       [4:0]   = target address (0..31)
     //       Single-cycle branch. If condition met, branches to target; else pc+1.
     //
@@ -234,6 +240,21 @@ module ProtocolEmulator(
     // 0xD | RET
     //       [15:12] = 4'hD
     //       Pops return address from hardware call stack and jumps to it.
+    //
+    // 0xE | CRC sub_op, [operands]
+    //       [15:12] = 4'hE
+    //       [11:9]  = sub_op:
+    //                 3'b000: CRC_INIT poly, seed
+    //                         [8:7] poly: 00=Dallas CRC-8 (0x8C), 01=SMBus CRC-8 (0x07),
+    //                                     10=CCITT CRC-16 (0x1021), 11=Modbus CRC-16 (0xA001)
+    //                         [6:5] seed: 00=Default for poly (Modbus=0xFFFF, others=0x0000),
+    //                                     01=0x0000, 10/11=0xFFFF
+    //                 3'b001: CRC_BYTE OSR  (updates crc_reg with OSR byte in 1 cycle)
+    //                 3'b010: CRC_BYTE ISR  (updates crc_reg with ISR byte in 1 cycle)
+    //                 3'b011: CRC_BYTE DATA (updates crc_reg with i_data in 1 cycle)
+    //                 3'b100: CRC_READ_LOW  (latches crc_reg[7:0] to OSR & o_data)
+    //                 3'b101: CRC_READ_HIGH (latches crc_reg[15:8] to OSR & o_data)
+    //                 3'b110: CRC_RESET     (reloads configured seed into crc_reg)
     //
     // =========================================================================
     // Microcode RAM (32 words x 16 bits)
@@ -357,6 +378,89 @@ module ProtocolEmulator(
     wire [7:0] gpio_in = gpio_sync_1;
 
     // -------------------------------------------------------------------------
+    // Hardware CRC Generator Combinational Functions (Parallel 8-bit XOR Tree)
+    // -------------------------------------------------------------------------
+    function [15:0] fn_crc8_dallas;
+        input [7:0]  data;
+        input [15:0] current_crc;
+        reg   [7:0]  c;
+        reg          fb;
+        integer      i;
+        begin
+            c = current_crc[7:0];
+            for (i = 0; i < 8; i = i + 1) begin
+                fb = c[0] ^ data[i];
+                c  = (c >> 1) ^ (fb ? 8'h8C : 8'h00);
+            end
+            fn_crc8_dallas = {8'h00, c};
+        end
+    endfunction
+
+    function [15:0] fn_crc8_smbus;
+        input [7:0]  data;
+        input [15:0] current_crc;
+        reg   [7:0]  c;
+        integer      i;
+        begin
+            c = current_crc[7:0] ^ data;
+            for (i = 0; i < 8; i = i + 1) begin
+                if (c[7])
+                    c = (c << 1) ^ 8'h07;
+                else
+                    c = (c << 1);
+            end
+            fn_crc8_smbus = {8'h00, c};
+        end
+    endfunction
+
+    function [15:0] fn_crc16_ccitt;
+        input [7:0]  data;
+        input [15:0] current_crc;
+        reg   [15:0] c;
+        integer      i;
+        begin
+            c = current_crc ^ {data, 8'h00};
+            for (i = 0; i < 8; i = i + 1) begin
+                if (c[15])
+                    c = (c << 1) ^ 16'h1021;
+                else
+                    c = (c << 1);
+            end
+            fn_crc16_ccitt = c;
+        end
+    endfunction
+
+    function [15:0] fn_crc16_modbus;
+        input [7:0]  data;
+        input [15:0] current_crc;
+        reg   [15:0] c;
+        integer      i;
+        begin
+            c = current_crc ^ {8'h00, data};
+            for (i = 0; i < 8; i = i + 1) begin
+                if (c[0])
+                    c = (c >> 1) ^ 16'hA001;
+                else
+                    c = (c >> 1);
+            end
+            fn_crc16_modbus = c;
+        end
+    endfunction
+
+    wire [7:0] crc_in_byte = (instr[10:9] == 2'b01) ? osr :
+                             (instr[10:9] == 2'b10) ? isr : i_data;
+
+    wire [15:0] next_crc_dallas = fn_crc8_dallas(crc_in_byte, crc_reg);
+    wire [15:0] next_crc_smbus  = fn_crc8_smbus(crc_in_byte, crc_reg);
+    wire [15:0] next_crc_ccitt  = fn_crc16_ccitt(crc_in_byte, crc_reg);
+    wire [15:0] next_crc_modbus = fn_crc16_modbus(crc_in_byte, crc_reg);
+
+    wire [15:0] next_crc = (crc_poly == 2'b00) ? next_crc_dallas :
+                           (crc_poly == 2'b01) ? next_crc_smbus  :
+                           (crc_poly == 2'b10) ? next_crc_ccitt  :
+                                                 next_crc_modbus;
+
+    // -------------------------------------------------------------------------
     // Execution Engine
     // -------------------------------------------------------------------------
     always @(posedge i_clk) begin
@@ -384,6 +488,9 @@ module ProtocolEmulator(
             call_stack[3] <= 5'd0;
             lc0           <= 8'd0;
             lc1           <= 8'd0;
+            crc_reg       <= 16'd0;
+            crc_seed      <= 16'd0;
+            crc_poly      <= 2'd0;
             o_tx_pop      <= 1'b0;
             o_rx_push     <= 1'b0;
         end else begin
@@ -810,7 +917,64 @@ module ProtocolEmulator(
                             3'b100: pc <= !i_rx_full ? target : pc + 5'd1;     // JMP RX_READY, target
                             3'b101: pc <= gpio_in[rx_pin] ? target : pc + 5'd1;// JMP PIN_HI,   target
                             3'b110: pc <= !gpio_in[rx_pin] ? target : pc + 5'd1;// JMP PIN_LO,  target
+                            3'b111: pc <= (crc_reg == 16'h0000) ? target : pc + 5'd1;// JMP CRC_OK, target
                             default: pc <= target;
+                        endcase
+                    end
+
+                    4'hE: begin // CRC: Hardware CRC Generator & Checksum Accelerator
+                        delay_cnt <= 16'd0;
+                        case (instr[11:9])
+                            3'b000: begin // CRC_INIT poly, seed
+                                crc_poly <= instr[8:7];
+                                case (instr[6:5])
+                                    2'b01: begin
+                                        crc_seed <= 16'h0000;
+                                        crc_reg  <= 16'h0000;
+                                    end
+                                    2'b10,
+                                    2'b11: begin
+                                        crc_seed <= 16'hFFFF;
+                                        crc_reg  <= 16'hFFFF;
+                                    end
+                                    default: begin // 2'b00: default seed for poly
+                                        case (instr[8:7])
+                                            2'b11: begin
+                                                crc_seed <= 16'hFFFF; // Modbus default 0xFFFF
+                                                crc_reg  <= 16'hFFFF;
+                                            end
+                                            default: begin
+                                                crc_seed <= 16'h0000; // Dallas, SMBus, CCITT default 0x0000
+                                                crc_reg  <= 16'h0000;
+                                            end
+                                        endcase
+                                    end
+                                endcase
+                                pc <= pc + 5'd1;
+                            end
+                            3'b001,
+                            3'b010,
+                            3'b011: begin // CRC_BYTE (OSR=001, ISR=010, DATA=011)
+                                crc_reg <= next_crc;
+                                pc      <= pc + 5'd1;
+                            end
+                            3'b100: begin // CRC_READ_LOW: copy crc_reg[7:0] to OSR & o_data
+                                osr    <= crc_reg[7:0];
+                                o_data <= crc_reg[7:0];
+                                pc     <= pc + 5'd1;
+                            end
+                            3'b101: begin // CRC_READ_HIGH: copy crc_reg[15:8] to OSR & o_data
+                                osr    <= crc_reg[15:8];
+                                o_data <= crc_reg[15:8];
+                                pc     <= pc + 5'd1;
+                            end
+                            3'b110: begin // CRC_RESET: reload active seed
+                                crc_reg <= crc_seed;
+                                pc      <= pc + 5'd1;
+                            end
+                            default: begin
+                                pc <= pc + 5'd1;
+                            end
                         endcase
                     end
 
