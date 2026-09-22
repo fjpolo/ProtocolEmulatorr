@@ -157,20 +157,20 @@ class OmnibusLoader:
         raise RuntimeError("Failed to synchronize with OmniBootloader. Check FPGA power and bitstream.")
 
     def write_word(self, addr, word):
-        """Writes one 16-bit instruction word into IMEM at target addr."""
+        """Writes one 16-bit instruction word into IMEM at target addr (0..127)."""
         data_hi = (word >> 8) & 0xFF
         data_lo = word & 0xFF
-        pkt = bytes([ord('W'), addr & 0x1F, data_hi, data_lo])
+        pkt = bytes([ord('W'), addr & 0x7F, data_hi, data_lo])
         self.ser.write(pkt)
         self.ser.flush()
 
         resp = self.ser.read(2)
-        if len(resp) < 2 or resp[0] != 0x06 or resp[1] != (addr & 0x1F):
+        if len(resp) < 2 or resp[0] != 0x06 or resp[1] != (addr & 0x7F):
             raise RuntimeError(f"Write failure at address 0x{addr:02X} (got: {resp.hex()})")
 
     def read_word(self, addr):
-        """Reads back one 16-bit instruction word from IMEM."""
-        pkt = bytes([ord('R'), addr & 0x1F])
+        """Reads back one 16-bit instruction word from IMEM (0..127)."""
+        pkt = bytes([ord('R'), addr & 0x7F])
         self.ser.write(pkt)
         self.ser.flush()
 
@@ -373,8 +373,10 @@ Examples:
             loader.set_spi_data(spi_byte)
 
         if args.dump:
-            print("[*] Dumping IMEM contents (32 words):")
-            for addr in range(32):
+            print("[*] Dumping IMEM contents (128 words, 4 banks):")
+            for addr in range(128):
+                if addr % 32 == 0:
+                    print(f"--- Bank {addr // 32} (0x{addr:02X}..0x{addr+31:02X}) ---")
                 w = loader.read_word(addr)
                 print(f"  [0x{addr:02X}]: 0x{w:04X}")
             loader.exit_and_run()

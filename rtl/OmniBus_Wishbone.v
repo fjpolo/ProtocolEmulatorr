@@ -52,14 +52,16 @@ module OmniBus_Wishbone #(
     localparam [7:0] ADDR_DATA   = 8'h00;  // RW: TX FIFO write / RX FIFO read
     localparam [7:0] ADDR_STATUS = 8'h04;  // RO: FIFO flags, levels, PC telemetry
     localparam [7:0] ADDR_CTRL   = 8'h08;  // RW: Soft reset, prog_en, FIFO flushes, IRQ mask
-    localparam [7:0] ADDR_BAUD   = 8'h0C;  // RW: Dynamic baud rate divisor
-    localparam [7:0] ADDR_GPIO   = 8'h10;  // RO: GPIO pin readback [i_gpio, o_gpio, o_oe]
-    localparam [7:0] ADDR_IMEM   = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
+    localparam [7:0] ADDR_BAUD      = 8'h0C;  // RW: Dynamic baud rate divisor
+    localparam [7:0] ADDR_GPIO      = 8'h10;  // RO: GPIO pin readback [i_gpio, o_gpio, o_oe]
+    localparam [7:0] ADDR_IMEM_BANK = 8'h14;  // RW: Active IMEM bank for programming window (0..3)
+    localparam [7:0] ADDR_IMEM      = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
 
     // =========================================================================
     // Control & Configuration Registers
     // =========================================================================
     reg [15:0] reg_baud;
+    reg [1:0]  reg_imem_bank;                 // Active Wishbone IMEM programming bank (0..3)
     reg        reg_prog_en;
     reg        reg_tx_flush;
     reg        reg_rx_flush;
@@ -142,9 +144,9 @@ module OmniBus_Wishbone #(
     assign rx_fifo_push  = core_rx_push;
     assign rx_fifo_wdata = core_odata;
 
-    // Direct IMEM programming signals from Wishbone
+    // Direct IMEM programming signals from Wishbone (mapped through reg_imem_bank)
     wire        wb_imem_sel  = (i_wb_addr[7] == 1'b1); // Address 0x80 to 0xFF
-    wire [4:0]  wb_imem_addr = i_wb_addr[6:2];         // Word offset 0..31
+    wire [6:0]  wb_imem_addr = {reg_imem_bank, i_wb_addr[6:2]}; // 7-bit word offset 0..127
     wire        wb_imem_we   = i_wb_cyc && i_wb_stb && i_wb_we && wb_imem_sel;
 
     // The core is placed in programming mode either via reg_prog_en OR when writing to IMEM window
@@ -229,12 +231,13 @@ module OmniBus_Wishbone #(
             wb_rdata_comb = {16'h0000, core_prog_rdata};
         end else begin
             case (i_wb_addr)
-                ADDR_DATA:   wb_rdata_comb = {24'h000000, rx_fifo_rdata};
-                ADDR_STATUS: wb_rdata_comb = reg_status;
-                ADDR_CTRL:   wb_rdata_comb = reg_ctrl_read;
-                ADDR_BAUD:   wb_rdata_comb = {16'h0000, reg_baud};
-                ADDR_GPIO:   wb_rdata_comb = reg_gpio_read;
-                default:     wb_rdata_comb = 32'h00000000;
+                ADDR_DATA:      wb_rdata_comb = {24'h000000, rx_fifo_rdata};
+                ADDR_STATUS:    wb_rdata_comb = reg_status;
+                ADDR_CTRL:      wb_rdata_comb = reg_ctrl_read;
+                ADDR_BAUD:      wb_rdata_comb = {16'h0000, reg_baud};
+                ADDR_GPIO:      wb_rdata_comb = reg_gpio_read;
+                ADDR_IMEM_BANK: wb_rdata_comb = {14'd0, core.active_bank, 1'b0, core.pc, 6'd0, reg_imem_bank};
+                default:        wb_rdata_comb = 32'h00000000;
             endcase
         end
     end
@@ -243,6 +246,7 @@ module OmniBus_Wishbone #(
     always @(posedge i_wb_clk or negedge i_wb_rst_n) begin
         if (!i_wb_rst_n) begin
             reg_baud            <= DEFAULT_BAUD_DIV[15:0];
+            reg_imem_bank       <= 2'b00;
             reg_prog_en         <= 1'b0;
             reg_tx_flush        <= 1'b0;
             reg_rx_flush        <= 1'b0;
@@ -273,6 +277,9 @@ module OmniBus_Wishbone #(
                         end
                         ADDR_BAUD: begin
                             reg_baud <= i_wb_data[15:0];
+                        end
+                        ADDR_IMEM_BANK: begin
+                            reg_imem_bank <= i_wb_data[1:0];
                         end
                         default: ;
                     endcase

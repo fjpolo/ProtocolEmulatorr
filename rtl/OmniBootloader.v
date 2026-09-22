@@ -32,7 +32,7 @@ module OmniBootloader #(
     // Interface to ProtocolEmulator IMEM
     output  wire            o_prog_en,
     output  reg             o_prog_we,
-    output  reg     [4:0]   o_prog_addr,
+    output  reg     [6:0]   o_prog_addr,
     output  reg     [15:0]  o_prog_data,
     input   wire    [15:0]  i_prog_rdata
 );
@@ -254,7 +254,7 @@ module OmniBootloader #(
         if (!i_reset_n) begin
             prog_active_reg <= 1'b0;
             o_prog_we       <= 1'b0;
-            o_prog_addr     <= 5'd0;
+            o_prog_addr     <= 7'd0;
             o_prog_data     <= 16'd0;
             cmd_state       <= CMD_IDLE;
             token_step      <= 2'd0;
@@ -335,7 +335,7 @@ module OmniBootloader #(
 
                 CMD_W_ADDR: begin
                     if (rx_valid) begin
-                        o_prog_addr <= rx_byte[4:0];
+                        o_prog_addr <= rx_byte[6:0];
                         cmd_state   <= CMD_W_DATA_HI;
                     end
                 end
@@ -354,7 +354,7 @@ module OmniBootloader #(
 
                         // Reply ACK + echo written address
                         resp_bytes[0]  <= 8'h06; // ACK
-                        resp_bytes[1]  <= {3'b0, o_prog_addr};
+                        resp_bytes[1]  <= {1'b0, o_prog_addr};
                         resp_len       <= 3'd2;
                         resp_idx       <= 3'd0;
                         next_cmd_state <= CMD_WAIT_OP;
@@ -364,7 +364,7 @@ module OmniBootloader #(
 
                 CMD_R_ADDR: begin
                     if (rx_valid) begin
-                        o_prog_addr <= rx_byte[4:0];
+                        o_prog_addr <= rx_byte[6:0];
                         cmd_state   <= CMD_R_SETTLE;
                     end
                 end

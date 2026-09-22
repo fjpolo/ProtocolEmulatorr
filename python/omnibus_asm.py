@@ -50,6 +50,9 @@ OPCODES = {
     "SHR":    0xB,
     "ROL":    0xB,
     "ROR":    0xB,
+    "BANK":     0xB,  # Switch active execution bank (0..3)
+    "SET_BANK": 0xB,
+    "JMP_BANK": 0xB,  # Switch bank and jump to bank start (offset 0)
     "CALL":   0xC,  # Push pc+1 to call stack, jump to target
     "RET":    0xD,  # Pop return address from call stack
     "CRC":           0xE,  # Hardware CRC Generator & Checksum Accelerator
@@ -130,6 +133,13 @@ class OmnibusAssembler:
                     symbols["HALF_DELAY"] = self.half_bit_delay
                 elif directive == ".equ" and len(parts) >= 3:
                     symbols[parts[1]] = int(parts[2], 0)
+                elif directive == ".bank" and len(parts) >= 2:
+                    bank_num = int(parts[1], 0)
+                    if bank_num < 0 or bank_num > 3:
+                        raise AssemblerError(f"Line {line_num}: Invalid bank number {bank_num} (must be 0..3)")
+                    current_addr = bank_num * 32
+                elif directive == ".org" and len(parts) >= 2:
+                    current_addr = int(parts[1], 0)
                 continue
 
             # Check for labels: "label:"
@@ -155,8 +165,8 @@ class OmnibusAssembler:
 
             parsed_instructions.append((line_num, current_addr, line))
             current_addr += 1
-            if current_addr > 32:
-                raise AssemblerError(f"Program exceeds 32 words of IMEM at line {line_num}")
+            if current_addr > 128:
+                raise AssemblerError(f"Program exceeds 128 words of IMEM at line {line_num}")
 
         # ---------------------------------------------------------------------
         # Pass 2: Assemble machine code words
@@ -364,17 +374,17 @@ class OmnibusAssembler:
                     lc_sel = 0
                     if len(tokens) < 2:
                         raise AssemblerError(f"Line {line_num}: LOOP requires target address or label")
-                    target = eval_arg(tokens[1]) & 0x1F
+                    target = eval_arg(tokens[1]) & 0x7F
                 else:
-                    if len(tokens) >= 3:
-                        lc_sel = parse_lc(tokens[1])
-                        target = eval_arg(tokens[2]) & 0x1F
+                    if len(tokens) >= 3 and tokens[1].strip().upper() in ("LC0", "LC_0", "LC1", "LC_1"):
+                        lc_sel = 0 if tokens[1].strip().upper() in ("LC0", "LC_0") else 1
+                        target = eval_arg(tokens[2]) & 0x7F
                     elif len(tokens) == 2:
                         lc_sel = 0
-                        target = eval_arg(tokens[1]) & 0x1F
+                        target = eval_arg(tokens[1]) & 0x7F
                     else:
                         raise AssemblerError(f"Line {line_num}: DJNZ requires [LCx,] target")
-                # Format: [15:12]=0x7, [11]=lc_sel, [10]=0, [4:0]=target
+                # Format: [15:12]=0x7, [11]=lc_sel, [10]=0, [6:0]=target
                 word = (opcode_val << 12) | (lc_sel << 11) | (0 << 10) | target
 
             elif op == "SET_LC":
@@ -459,12 +469,12 @@ class OmnibusAssembler:
                 if len(tokens) >= 3:
                     cond_name = tokens[1].strip().upper()
                     if cond_name not in CONDITIONS:
-                        raise AssemblerError(f"Line {line_num}: Unknown JMP condition '{tokens[1]}'")
+                        raise AssemblerError(f"Line {line_num}: Unknown condition '{tokens[1]}' for JMP")
                     cond = CONDITIONS[cond_name]
-                    target = eval_arg(tokens[2]) & 0x1F
+                    target = eval_arg(tokens[2]) & 0x7F
                 elif len(tokens) == 2:
-                    cond = 0
-                    target = eval_arg(tokens[1]) & 0x1F
+                    cond = 0  # Unconditional JMP
+                    target = eval_arg(tokens[1]) & 0x7F
                 else:
                     raise AssemblerError(f"Line {line_num}: JMP requires target address or label")
                 word = (opcode_val << 12) | (cond << 8) | target
@@ -487,7 +497,7 @@ class OmnibusAssembler:
                 # CALL target_label_or_addr
                 if len(tokens) < 2:
                     raise AssemblerError(f"Line {line_num}: CALL requires a target address or label")
-                target = eval_arg(tokens[1]) & 0x1F
+                target = eval_arg(tokens[1]) & 0x7F
                 word = (opcode_val << 12) | target
 
             elif op == "RET":
@@ -578,14 +588,14 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown CRC command '{sub_cmd}'")
 
-            elif op in ("ALU", "ADD", "SUB", "CMP", "AND", "OR", "XOR", "MOV", "NOT", "INV", "INC", "DEC", "CLR", "SHL", "SHR", "ROL", "ROR"):
+            elif op in ("ALU", "ADD", "SUB", "CMP", "AND", "OR", "XOR", "MOV", "NOT", "INV", "INC", "DEC", "CLR", "SHL", "SHR", "ROL", "ROR", "BANK", "SET_BANK", "JMP_BANK"):
                 SRC_REG_MAP = {
                     "OSR": 0,
                     "ISR": 1,
                     "LC0": 2, "LC_0": 2,
                     "LC1": 3, "LC_1": 3,
                     "DATA": 4, "I_DATA": 4, "DIN": 4,
-                    "ACC": 5, "A": 5,
+                    "ACC": 5, "A": 5, "BANK": 5, "ACTIVE_BANK": 5,
                     "CRC_L": 6, "CRC_LOW": 6, "CRC_REG_L": 6,
                     "CRC_H": 7, "CRC_HIGH": 7, "CRC_REG_H": 7,
                 }
@@ -595,7 +605,7 @@ class OmnibusAssembler:
                     "LC0": 2, "LC_0": 2,
                     "LC1": 3, "LC_1": 3,
                     "O_DATA": 4, "DATA_OUT": 4, "DOUT": 4, "DATA": 4,
-                    "ACC": 5, "A": 5,
+                    "ACC": 5, "A": 5, "BANK": 5, "ACTIVE_BANK": 5,
                     "CRC_SEED_L": 6, "CRC_SEED_LOW": 6,
                     "CRC_SEED_H": 7, "CRC_SEED_HIGH": 7,
                 }
@@ -608,9 +618,19 @@ class OmnibusAssembler:
                     alu_cmd = tokens[1].strip().upper()
                     alu_tokens = tokens[2:]
 
-                # 1. Unary operations on acc: NOT, INV, INC, DEC, CLR
+                # 1. Unary operations on acc & Bank switching: NOT, INV, INC, DEC, CLR, BANK, JMP_BANK
                 if alu_cmd in ("NOT", "INV"):
                     word = (0xB << 12) | (0 << 11) | (7 << 8)
+                elif alu_cmd in ("BANK", "SET_BANK"):
+                    if len(alu_tokens) < 1:
+                        raise AssemblerError(f"Line {line_num}: BANK requires bank number (0..3)")
+                    bank_imm = eval_arg(alu_tokens[0]) & 3
+                    word = (0xB << 12) | (0 << 11) | (7 << 8) | (1 << 6) | bank_imm
+                elif alu_cmd in ("JMP_BANK", "JMP.BANK"):
+                    if len(alu_tokens) < 1:
+                        raise AssemblerError(f"Line {line_num}: JMP_BANK requires bank number (0..3)")
+                    bank_imm = eval_arg(alu_tokens[0]) & 3
+                    word = (0xB << 12) | (0 << 11) | (7 << 8) | (2 << 6) | bank_imm
                 elif alu_cmd == "INC":
                     word = (0xB << 12) | (1 << 11) | (6 << 8) | (0 << 3)
                 elif alu_cmd == "DEC":

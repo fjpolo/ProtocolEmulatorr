@@ -367,12 +367,12 @@ async def test_imem_programming_interface(dut):
         )
     dut._log.info("Power-on IMEM default contents verified!")
 
-    # 2. Enter programming mode and write new instructions across all 32 words
+    # 2. Enter programming mode and write new instructions across all 128 words (4 banks)
     dut.i_prog_en.value = 1
     await RisingEdge(dut.i_clk)
 
     test_program = {}
-    for addr in range(32):
+    for addr in range(128):
         # Unique test word: 0x5000 | (addr << 4) | (addr & 0xF)
         val = 0x5000 | (addr << 4) | (addr & 0xF)
         test_program[addr] = val
@@ -383,7 +383,7 @@ async def test_imem_programming_interface(dut):
         dut.i_prog_we.value = 0
         await RisingEdge(dut.i_clk)
 
-    # 3. Verify readback across all 32 words
+    # 3. Verify readback across all 128 words
     for addr, expected_val in test_program.items():
         dut.i_prog_addr.value = addr
         await Timer(1, unit="ns")
@@ -394,7 +394,7 @@ async def test_imem_programming_interface(dut):
 
     dut.i_prog_en.value = 0
     await RisingEdge(dut.i_clk)
-    dut._log.info("IMEM 32-word runtime write and readback verified 100%!")
+    dut._log.info("IMEM 128-word (4-bank) runtime write and readback verified 100%!")
 
 
 async def load_program_direct(dut, instructions):
@@ -2253,3 +2253,148 @@ async def test_alu_packet_parser(dut):
     dut._log.info(f"Corrupt CRC Packet rejected: response = 0x{resp3:02X} (NAK)")
 
     dut._log.info("Test 15D: Autonomous Packet Parser Demo PASSED across all frame types!")
+
+
+# =============================================================================
+# Task 16: Instruction Memory (IMEM) Expansion to 128 Words & Bank Switching
+# =============================================================================
+
+@cocotb.test()
+async def test_imem_128_words_linear(dut):
+    """Task 16A: Verifies linear execution across all 128 words crossing bank boundaries."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Build 128-instruction program:
+    #   [0..125]: ADD acc, 1 (each increments acc by 1)
+    #   [126]:    ADD acc, 1
+    #   [127]:    JMP 127      (halt loop)
+    asm_source = ""
+    for i in range(127):
+        asm_source += f"ADD acc, 1\n"
+    asm_source += "halt:\nJMP halt\n"
+
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    assert len(instructions) == 128, f"Expected 128 instructions, got {len(instructions)}"
+
+    prog = [w[1] for w in instructions]
+    await load_program_direct(dut, prog)
+
+    # Wait for execution to reach word 127
+    for _ in range(250):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 127:
+            break
+    else:
+        assert False, f"Timeout waiting for linear execution to reach PC=127 (current PC={int(dut.pc.value)})"
+
+    assert int(dut.acc.value) == 127, f"Expected acc=127 after 127 ADDs, got {int(dut.acc.value)}"
+    dut._log.info("Test 16A: Linear execution across all 128 words and 4 banks verified! (acc=127, PC=127)")
+
+
+@cocotb.test()
+async def test_bank_switching_and_hot_reload(dut):
+    """Task 16B: Verifies BANK instruction, active_bank register, and JMP_BANK inter-bank jump."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Bank 0:
+    #   [0]: SET_BANK 1     (switch active bank to 1)
+    #   [1]: MOV acc, BANK  (read active bank into acc)
+    #   [2]: JMP_BANK 2     (switch active bank to 2 and jump to address 64)
+    # Bank 2 (address 64):
+    #   [64]: ADD acc, 10   (acc = 1 + 10 = 11)
+    #   [65]: JMP 65        (halt)
+    asm_source = """
+    SET_BANK 1
+    MOV acc, BANK
+    JMP_BANK 2
+
+    @64
+    ADD acc, 10
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    # Load instructions directly to their addresses
+    dut.i_prog_en.value = 1
+    await RisingEdge(dut.i_clk)
+    for addr, word, _ in instructions:
+        dut.i_prog_addr.value = addr
+        dut.i_prog_data.value = word
+        dut.i_prog_we.value = 1
+        await RisingEdge(dut.i_clk)
+        dut.i_prog_we.value = 0
+        await RisingEdge(dut.i_clk)
+    dut.i_prog_en.value = 0
+    await RisingEdge(dut.i_clk)
+
+    # Run and verify execution reaches Bank 2 halt
+    for _ in range(50):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 65:
+            break
+    else:
+        assert False, f"Timeout: failed to jump to Bank 2 (PC={int(dut.pc.value)}, active_bank={int(dut.active_bank.value)})"
+
+    assert int(dut.active_bank.value) == 2, f"Expected active_bank=2, got {int(dut.active_bank.value)}"
+    assert int(dut.acc.value) == 11, f"Expected acc=11 (1 from Bank 1 + 10 in Bank 2), got {int(dut.acc.value)}"
+    dut._log.info("Test 16B: Bank switching and JMP_BANK verified! (active_bank=2, acc=11, PC=65)")
+
+
+@cocotb.test()
+async def test_call_ret_extended_range(dut):
+    """Task 16C: Verifies CALL and RET across banks (caller in Bank 0, callee in Bank 3)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Caller in Bank 0:
+    #   [0]: MOV acc, 5
+    #   [1]: CALL 100       (jump to subroutine in Bank 3 at address 100)
+    #   [2]: ADD acc, 3     (acc = 5 + 20 + 3 = 28)
+    #   [3]: JMP halt
+    #
+    # Callee in Bank 3 (address 100):
+    #   [100]: ADD acc, 20
+    #   [101]: RET
+    asm_source = """
+    MOV acc, 5
+    CALL sub_bank3
+    ADD acc, 3
+halt:
+    JMP halt
+
+    @100
+sub_bank3:
+    ADD acc, 20
+    RET
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+
+    dut.i_prog_en.value = 1
+    await RisingEdge(dut.i_clk)
+    for addr, word, _ in instructions:
+        dut.i_prog_addr.value = addr
+        dut.i_prog_data.value = word
+        dut.i_prog_we.value = 1
+        await RisingEdge(dut.i_clk)
+        dut.i_prog_we.value = 0
+        await RisingEdge(dut.i_clk)
+    dut.i_prog_en.value = 0
+    await RisingEdge(dut.i_clk)
+
+    # Run and wait for halt
+    for _ in range(50):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 3:
+            break
+    else:
+        assert False, f"Timeout: failed to return from Bank 3 subroutine (PC={int(dut.pc.value)})"
+
+    assert int(dut.acc.value) == 28, f"Expected acc=28 after cross-bank CALL/RET, got {int(dut.acc.value)}"
+    dut._log.info("Test 16C: Cross-bank CALL/RET verified! (Caller Bank 0 -> Callee Bank 3 -> Return Bank 0, acc=28)")

@@ -48,7 +48,7 @@ module ProtocolEmulator(
     // Runtime Microcode Programming Interface
     input   wire            i_prog_en,
     input   wire            i_prog_we,
-    input   wire    [4:0]   i_prog_addr,
+    input   wire    [6:0]   i_prog_addr,
     input   wire    [15:0]  i_prog_data,
     output  wire    [15:0]  o_prog_rdata
 );
@@ -56,7 +56,7 @@ module ProtocolEmulator(
     // -------------------------------------------------------------------------
     // Execution State Registers
     // -------------------------------------------------------------------------
-    reg [4:0]  pc;
+    reg [6:0]  pc;              // 7-bit Program Counter (0 to 127 instructions)
     reg [15:0] delay_cnt;       // 16-bit hardware sidecar delay counter (0 to 65535 cycles)
     reg        out_sck_phase;   // OUT SCK/1W phase: 0=drive phase, 1=release phase
     reg [1:0]  in_sck_phase;    // IN phase: SPI/I2C: 0=high/active, 1=low/idle; 1W: 0=drive, 1=wait/sample, 2=recovery
@@ -65,9 +65,12 @@ module ProtocolEmulator(
     reg [7:0]  isr;             // Input Shift Register (Deserializer)
     reg [3:0]  rx_bit_cnt;      // Deserialization bit counter
 
-    // 4-deep x 5-bit hardware call stack for CALL/RET subroutines
-    reg [4:0]  call_stack [0:3]; // Return address stack
+    // 4-deep x 7-bit hardware call stack for CALL/RET subroutines
+    reg [6:0]  call_stack [0:3]; // Return address stack (7 bits: 0..127)
     reg [1:0]  sp;               // Stack pointer (0..3, wraps-safe)
+
+    // Active execution bank (4 banks of 32 words: 0..3)
+    reg [1:0]  active_bank;
 
     // 2x 8-bit Hardware Loop Counters for zero-overhead loops (LC0, LC1)
     reg [7:0]  lc0;              // Loop counter 0
@@ -296,15 +299,15 @@ module ProtocolEmulator(
     //                 3'b110: CRC_RESET     (reloads configured seed into crc_reg)
     //
     // =========================================================================
-    // Microcode RAM (32 words x 16 bits)
+    // Microcode RAM (128 words x 16 bits = 4 banks of 32 words)
     // =========================================================================
-    reg [15:0] imem [0:31];
+    reg [15:0] imem [0:127];
 
     assign o_prog_rdata = imem[i_prog_addr];
 
     integer i;
     initial begin
-        for (i = 0; i < 32; i = i + 1) begin
+        for (i = 0; i < 128; i = i + 1) begin
             imem[i] = 16'h0000;
         end
         // UART Echo Transceiver with runtime baud sentinels ($HBAUD=0xFE, $BAUD=0xFF)
@@ -331,29 +334,9 @@ module ProtocolEmulator(
             imem[6]  <= 16'h11FF;
             imem[7]  <= 16'h31FF;
             imem[8]  <= 16'h8000;
-            imem[9]  <= 16'h0000;
-            imem[10] <= 16'h0000;
-            imem[11] <= 16'h0000;
-            imem[12] <= 16'h0000;
-            imem[13] <= 16'h0000;
-            imem[14] <= 16'h0000;
-            imem[15] <= 16'h0000;
-            imem[16] <= 16'h0000;
-            imem[17] <= 16'h0000;
-            imem[18] <= 16'h0000;
-            imem[19] <= 16'h0000;
-            imem[20] <= 16'h0000;
-            imem[21] <= 16'h0000;
-            imem[22] <= 16'h0000;
-            imem[23] <= 16'h0000;
-            imem[24] <= 16'h0000;
-            imem[25] <= 16'h0000;
-            imem[26] <= 16'h0000;
-            imem[27] <= 16'h0000;
-            imem[28] <= 16'h0000;
-            imem[29] <= 16'h0000;
-            imem[30] <= 16'h0000;
-            imem[31] <= 16'h0000;
+            for (i = 9; i < 128; i = i + 1) begin
+                imem[i] <= 16'h0000;
+            end
         end else if (i_prog_en && i_prog_we) begin
             imem[i_prog_addr] <= i_prog_data;
         end
@@ -375,7 +358,7 @@ module ProtocolEmulator(
 
     // Standard 9-bit delay for NOP, OUT, IN:
     wire [8:0]  delay   = instr[8:0];
-    wire [4:0]  target  = instr[4:0];
+    wire [6:0]  target  = instr[6:0];
 
     // Resolved delays:
     // Full 16-bit eff_delay (NOP, OUT, IN):
@@ -507,7 +490,7 @@ module ProtocolEmulator(
                              (instr[2:0] == 3'b010) ? lc0 :
                              (instr[2:0] == 3'b011) ? lc1 :
                              (instr[2:0] == 3'b100) ? i_data :
-                             (instr[2:0] == 3'b101) ? acc :
+                             (instr[2:0] == 3'b101) ? {6'b0, active_bank} :
                              (instr[2:0] == 3'b110) ? crc_reg[7:0] :
                                                       crc_reg[15:8];
 
@@ -522,7 +505,7 @@ module ProtocolEmulator(
     // -------------------------------------------------------------------------
     always @(posedge i_clk) begin
         if (!i_reset_n || i_prog_en) begin
-            pc            <= 5'd0;
+            pc            <= 7'd0;
             delay_cnt     <= 16'd0;
             tx_pin        <= 3'd0; // Default: Pin 0 = TX / MOSI
             rx_pin        <= 3'd0; // Default: Pin 0 = RX (legacy compat)
@@ -539,10 +522,11 @@ module ProtocolEmulator(
             rx_bit_cnt    <= 4'd0;
             o_data        <= 8'h00;
             sp            <= 2'd0;
-            call_stack[0] <= 5'd0;
-            call_stack[1] <= 5'd0;
-            call_stack[2] <= 5'd0;
-            call_stack[3] <= 5'd0;
+            call_stack[0] <= 7'd0;
+            call_stack[1] <= 7'd0;
+            call_stack[2] <= 7'd0;
+            call_stack[3] <= 7'd0;
+            active_bank   <= 2'b00;
             lc0           <= 8'd0;
             lc1           <= 8'd0;
             crc_reg       <= 16'd0;
@@ -565,7 +549,7 @@ module ProtocolEmulator(
                     4'h4: begin // WAIT: Wait until gpio_in[pin_sel] == pin_val, then delay
                         if (gpio_in[pin_sel] == pin_val) begin
                             delay_cnt <= eff_sw_delay;
-                            pc        <= pc + 5'd1;
+                            pc        <= pc + 7'd1;
                         end else begin
                             delay_cnt <= 16'd0;
                             pc        <= pc;
@@ -607,7 +591,7 @@ module ProtocolEmulator(
                                     pc         <= pc;
                                 end else if (rx_bit_cnt == 4'd1) begin
                                     rx_bit_cnt <= 4'd0;
-                                    pc         <= pc + 5'd1;
+                                    pc         <= pc + 7'd1;
                                 end else begin
                                     rx_bit_cnt <= rx_bit_cnt - 4'd1;
                                     pc         <= pc;
@@ -652,7 +636,7 @@ module ProtocolEmulator(
                                     pc         <= pc;
                                 end else if (rx_bit_cnt == 4'd1) begin
                                     rx_bit_cnt <= 4'd0;
-                                    pc         <= pc + 5'd1;
+                                    pc         <= pc + 7'd1;
                                 end else begin
                                     rx_bit_cnt <= rx_bit_cnt - 4'd1;
                                     pc         <= pc;
@@ -691,7 +675,7 @@ module ProtocolEmulator(
                                 in_sck_phase         <= 2'd0;
                                 if (instr[9] || rx_bit_cnt == 4'd1) begin
                                     rx_bit_cnt <= 4'd0;
-                                    pc         <= pc + 5'd1;
+                                    pc         <= pc + 7'd1;
                                 end else if (rx_bit_cnt == 4'd0) begin
                                     rx_bit_cnt <= 4'd7;
                                     pc         <= pc;
@@ -708,10 +692,10 @@ module ProtocolEmulator(
                             delay_cnt <= eff_delay;
                             if (rx_bit_cnt == 4'd0) begin
                                 rx_bit_cnt <= in_count_init;
-                                pc         <= (in_count_init == 4'd0) ? pc + 5'd1 : pc;
+                                pc         <= (in_count_init == 4'd0) ? pc + 7'd1 : pc;
                             end else if (rx_bit_cnt == 4'd1) begin
                                 rx_bit_cnt <= 4'd0;
-                                pc         <= pc + 5'd1;
+                                pc         <= pc + 7'd1;
                             end else begin
                                 rx_bit_cnt <= rx_bit_cnt - 4'd1;
                                 pc         <= pc;
@@ -729,7 +713,7 @@ module ProtocolEmulator(
                             osr       <= isr;
                             o_data    <= isr;
                             o_rx_push <= 1'b1; // 1-cycle push strobe
-                            pc        <= pc + 5'd1;
+                            pc        <= pc + 7'd1;
                         end
                     end
 
@@ -742,7 +726,7 @@ module ProtocolEmulator(
                         end else begin
                             osr      <= i_data;
                             o_tx_pop <= i_tx_valid; // 1-cycle pop strobe when data is consumed
-                            pc       <= pc + 5'd1;
+                            pc       <= pc + 7'd1;
                         end
                     end
 
@@ -794,7 +778,7 @@ module ProtocolEmulator(
                                     pc      <= pc;
                                 end else if (bit_cnt == 4'd1) begin
                                     bit_cnt <= 4'd0;
-                                    pc      <= pc + 5'd1;
+                                    pc      <= pc + 7'd1;
                                 end else begin
                                     bit_cnt <= bit_cnt - 4'd1;
                                     pc      <= pc;
@@ -824,7 +808,7 @@ module ProtocolEmulator(
                                 out_sck_phase        <= 1'b0;
                                 if (instr[9] || bit_cnt == 4'd1) begin
                                     bit_cnt <= 4'd0;
-                                    pc      <= pc + 5'd1;
+                                    pc      <= pc + 7'd1;
                                 end else if (bit_cnt == 4'd0) begin
                                     bit_cnt <= 4'd7;
                                     pc      <= pc;
@@ -847,7 +831,7 @@ module ProtocolEmulator(
                                 pc      <= pc;
                             end else if (bit_cnt == 4'd1) begin
                                 bit_cnt <= 4'd0;
-                                pc      <= pc + 5'd1;
+                                pc      <= pc + 7'd1;
                             end else begin
                                 bit_cnt <= bit_cnt - 4'd1;
                                 pc      <= pc;
@@ -873,7 +857,7 @@ module ProtocolEmulator(
                             gpio_oe_reg[pin_sel]  <= 1'b1;
                         end
                         delay_cnt <= eff_sw_delay;
-                        pc        <= pc + 5'd1;
+                        pc        <= pc + 7'd1;
                     end
 
                     4'h5: begin // PINMAP: Configure protocol roles to physical GPIO pins
@@ -887,18 +871,18 @@ module ProtocolEmulator(
                         gpio_oe_reg[instr[2:0]]  <= 1'b1;
                         gpio_oe_reg[instr[8:6]]  <= 1'b0;
                         delay_cnt                <= 16'd0;
-                        pc                       <= pc + 5'd1;
+                        pc                       <= pc + 7'd1;
                     end
 
                     4'h6: begin // CFG_OD: Configure open-drain mask for GPIO[7:0]
                         gpio_od   <= instr[7:0];
                         delay_cnt <= 16'd0;
-                        pc        <= pc + 5'd1;
+                        pc        <= pc + 7'd1;
                     end
 
                     4'h0: begin // NOP: Pure delay
                         delay_cnt <= eff_delay;
-                        pc        <= pc + 5'd1;
+                        pc        <= pc + 7'd1;
                     end
 
                     4'h7: begin // Hardware Loop Counters (DJNZ / SET_LC / PULL_LC / PUSH_LC / MOV_LC)
@@ -917,7 +901,7 @@ module ProtocolEmulator(
                                     pc  <= target;
                                 end else begin
                                     lc0 <= 8'd0;
-                                    pc  <= pc + 5'd1;
+                                    pc  <= pc + 7'd1;
                                 end
                             end else begin
                                 if (lc1 != 8'd1) begin
@@ -925,7 +909,7 @@ module ProtocolEmulator(
                                     pc  <= target;
                                 end else begin
                                     lc1 <= 8'd0;
-                                    pc  <= pc + 5'd1;
+                                    pc  <= pc + 7'd1;
                                 end
                             end
                             delay_cnt <= 16'd0;
@@ -963,7 +947,7 @@ module ProtocolEmulator(
                                 end
                             endcase
                             delay_cnt <= 16'd0;
-                            pc        <= pc + 5'd1;
+                            pc        <= pc + 7'd1;
                         end
                     end
 
@@ -971,20 +955,20 @@ module ProtocolEmulator(
                         delay_cnt <= 16'd0;
                         case (instr[11:8])
                             4'h0: pc <= target;                              // Unconditional JMP target
-                            4'h1: pc <= i_tx_valid ? target : pc + 5'd1;     // JMP TX_VALID, target
-                            4'h2: pc <= !i_tx_valid ? target : pc + 5'd1;    // JMP TX_EMPTY, target
-                            4'h3: pc <= i_rx_full ? target : pc + 5'd1;      // JMP RX_FULL,  target
-                            4'h4: pc <= !i_rx_full ? target : pc + 5'd1;     // JMP RX_READY, target
-                            4'h5: pc <= gpio_in[rx_pin] ? target : pc + 5'd1;// JMP PIN_HI,   target
-                            4'h6: pc <= !gpio_in[rx_pin] ? target : pc + 5'd1;// JMP PIN_LO,  target
-                            4'h7: pc <= (crc_reg == 16'h0000) ? target : pc + 5'd1;// JMP CRC_OK, target
-                            4'h8: pc <= zero_flag ? target : pc + 5'd1;      // JMP ZERO / EQ
-                            4'h9: pc <= !zero_flag ? target : pc + 5'd1;     // JMP NOT_ZERO / NE
-                            4'hA: pc <= carry_flag ? target : pc + 5'd1;     // JMP CARRY / ULT
-                            4'hB: pc <= !carry_flag ? target : pc + 5'd1;    // JMP NOT_CARRY / UGE
-                            4'hC: pc <= acc[7] ? target : pc + 5'd1;         // JMP NEG / SIGN
-                            4'hD: pc <= !acc[7] ? target : pc + 5'd1;        // JMP POS
-                            4'hE: pc <= (crc_reg != 16'h0000) ? target : pc + 5'd1;// JMP CRC_ERR
+                            4'h1: pc <= i_tx_valid ? target : pc + 7'd1;     // JMP TX_VALID, target
+                            4'h2: pc <= !i_tx_valid ? target : pc + 7'd1;    // JMP TX_EMPTY, target
+                            4'h3: pc <= i_rx_full ? target : pc + 7'd1;      // JMP RX_FULL,  target
+                            4'h4: pc <= !i_rx_full ? target : pc + 7'd1;     // JMP RX_READY, target
+                            4'h5: pc <= gpio_in[rx_pin] ? target : pc + 7'd1;// JMP PIN_HI,   target
+                            4'h6: pc <= !gpio_in[rx_pin] ? target : pc + 7'd1;// JMP PIN_LO,  target
+                            4'h7: pc <= (crc_reg == 16'h0000) ? target : pc + 7'd1;// JMP CRC_OK, target
+                            4'h8: pc <= zero_flag ? target : pc + 7'd1;      // JMP ZERO / EQ
+                            4'h9: pc <= !zero_flag ? target : pc + 7'd1;     // JMP NOT_ZERO / NE
+                            4'hA: pc <= carry_flag ? target : pc + 7'd1;     // JMP CARRY / ULT
+                            4'hB: pc <= !carry_flag ? target : pc + 7'd1;    // JMP NOT_CARRY / UGE
+                            4'hC: pc <= acc[7] ? target : pc + 7'd1;         // JMP NEG / SIGN
+                            4'hD: pc <= !acc[7] ? target : pc + 7'd1;        // JMP POS
+                            4'hE: pc <= (crc_reg != 16'h0000) ? target : pc + 7'd1;// JMP CRC_ERR
                             default: pc <= target;
                         endcase
                     end
@@ -1017,37 +1001,37 @@ module ProtocolEmulator(
                                         endcase
                                     end
                                 endcase
-                                pc <= pc + 5'd1;
+                                pc <= pc + 7'd1;
                             end
                             3'b001,
                             3'b010,
                             3'b011: begin // CRC_BYTE (OSR=001, ISR=010, DATA=011)
                                 crc_reg <= next_crc;
-                                pc      <= pc + 5'd1;
+                                pc      <= pc + 7'd1;
                             end
                             3'b100: begin // CRC_READ_LOW: copy crc_reg[7:0] to OSR & o_data
                                 osr    <= crc_reg[7:0];
                                 o_data <= crc_reg[7:0];
-                                pc     <= pc + 5'd1;
+                                pc     <= pc + 7'd1;
                             end
                             3'b101: begin // CRC_READ_HIGH: copy crc_reg[15:8] to OSR & o_data
                                 osr    <= crc_reg[15:8];
                                 o_data <= crc_reg[15:8];
-                                pc     <= pc + 5'd1;
+                                pc     <= pc + 7'd1;
                             end
                             3'b110: begin // CRC_RESET: reload active seed
                                 crc_reg <= crc_seed;
-                                pc      <= pc + 5'd1;
+                                pc      <= pc + 7'd1;
                             end
                             default: begin
-                                pc <= pc + 5'd1;
+                                pc <= pc + 7'd1;
                             end
                         endcase
                     end
 
                     4'hB: begin // ALU: 8-bit Micro-ALU & Arithmetic Engine
                         delay_cnt <= 16'd0;
-                        pc        <= pc + 5'd1;
+                        pc        <= pc + 7'd1;
                         if (instr[11] == 1'b0) begin
                             // -------------------------------------------------
                             // Immediate ALU Operations (instr[11] == 0)
@@ -1087,10 +1071,30 @@ module ProtocolEmulator(
                                     zero_flag  <= (instr[7:0] == 8'h00);
                                     carry_flag <= 1'b0;
                                 end
-                                3'b111: begin // NOT acc (bitwise inversion)
-                                    acc        <= ~acc;
-                                    zero_flag  <= ((~acc) == 8'h00);
-                                    carry_flag <= 1'b0;
+                                3'b111: begin // NOT acc / Bank switching operations
+                                    case (instr[7:6])
+                                        2'b00: begin // NOT acc (bitwise inversion)
+                                            acc        <= ~acc;
+                                            zero_flag  <= ((~acc) == 8'h00);
+                                            carry_flag <= 1'b0;
+                                        end
+                                        2'b01: begin // BANK imm2 / SET_BANK imm2 (switch active execution bank)
+                                            active_bank <= instr[1:0];
+                                            zero_flag   <= (instr[1:0] == 2'b00);
+                                            carry_flag  <= 1'b0;
+                                        end
+                                        2'b10: begin // JMP_BANK imm2 (switch bank and jump to bank start offset 0)
+                                            active_bank <= instr[1:0];
+                                            pc          <= {instr[1:0], 5'd0};
+                                            zero_flag   <= (instr[1:0] == 2'b00);
+                                            carry_flag  <= 1'b0;
+                                        end
+                                        default: begin
+                                            acc        <= ~acc;
+                                            zero_flag  <= ((~acc) == 8'h00);
+                                            carry_flag <= 1'b0;
+                                        end
+                                    endcase
                                 end
                             endcase
                         end else begin
@@ -1105,12 +1109,12 @@ module ProtocolEmulator(
                                 end
                                 3'b001: begin // MOV reg[dst], acc
                                     case (instr[5:3])
-                                        3'b000: osr    <= acc;
-                                        3'b001: isr    <= acc;
-                                        3'b010: lc0    <= acc;
-                                        3'b011: lc1    <= acc;
-                                        3'b100: o_data <= acc;
-                                        3'b101: acc    <= acc;
+                                        3'b000: osr         <= acc;
+                                        3'b001: isr         <= acc;
+                                        3'b010: lc0         <= acc;
+                                        3'b011: lc1         <= acc;
+                                        3'b100: o_data      <= acc;
+                                        3'b101: active_bank <= acc[1:0]; // MOV BANK, acc
                                         3'b110: crc_seed[7:0]  <= acc;
                                         3'b111: crc_seed[15:8] <= acc;
                                     endcase
@@ -1196,7 +1200,7 @@ module ProtocolEmulator(
                     end
 
                     4'hC: begin // CALL: Push return address, jump to target
-                        call_stack[sp] <= pc + 5'd1;
+                        call_stack[sp] <= pc + 7'd1;
                         sp             <= (sp == 2'd3) ? 2'd3 : sp + 2'd1;
                         delay_cnt      <= 16'd0;
                         pc             <= target;
@@ -1204,12 +1208,12 @@ module ProtocolEmulator(
 
                     4'hD: begin // RET: Pop return address from call stack
                         sp        <= (sp == 2'd0) ? 2'd0 : sp - 2'd1;
-                        pc        <= (sp == 2'd0) ? 5'd0 : call_stack[sp - 2'd1];
+                        pc        <= (sp == 2'd0) ? 7'd0 : call_stack[sp - 2'd1];
                         delay_cnt <= 16'd0;
                     end
 
                     default: begin
-                        pc <= pc + 5'd1;
+                        pc <= pc + 7'd1;
                     end
                 endcase
             end

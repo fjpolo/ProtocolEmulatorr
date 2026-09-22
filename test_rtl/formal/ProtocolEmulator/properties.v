@@ -54,7 +54,7 @@
                     imem[0][15:12] == 4'hC || imem[0][15:12] == 4'hD ||
                     imem[0][15:12] == 4'hE);
             // Bound target address to valid IMEM range (0..31)
-            `ASSUME(imem[0][4:0] <= 5'd31);
+            `ASSUME(imem[0][6:0] <= 7'd127);
         end
         // Baud divisor liveness: must be >= 1 (avoids zero-length bit periods)
         // and bounded by 9 bits (eff_delay is 9-bit; i_baud_div[8:0] is the operand).
@@ -68,7 +68,7 @@
     always @(posedge i_clk) begin
         if (f_past_valid && $past(!i_reset_n)) begin
             // State immediately following active reset
-            `ASSERT(pc == 5'd0);
+            `ASSERT(pc == 7'd0);
             `ASSERT(delay_cnt == 16'd0);
             `ASSERT(gpio_out_reg == 8'b1111_1101);
             `ASSERT(gpio_oe_reg == 8'b0000_0111);
@@ -95,10 +95,10 @@
             `ASSERT(o_rx_push == 1'b0);
             // Call stack cleared on reset
             `ASSERT(sp == 2'd0);
-            `ASSERT(call_stack[0] == 5'd0);
-            `ASSERT(call_stack[1] == 5'd0);
-            `ASSERT(call_stack[2] == 5'd0);
-            `ASSERT(call_stack[3] == 5'd0);
+            `ASSERT(call_stack[0] == 7'd0);
+            `ASSERT(call_stack[1] == 7'd0);
+            `ASSERT(call_stack[2] == 7'd0);
+            `ASSERT(call_stack[3] == 7'd0);
         end
     end
 
@@ -120,7 +120,7 @@
     // Safe halt contract: while programming mode is active, core execution is frozen
     always @(posedge i_clk) begin
         if (f_past_valid && i_reset_n && $past(i_prog_en)) begin
-            `ASSERT(pc == 5'd0);
+            `ASSERT(pc == 7'd0);
             `ASSERT(delay_cnt == 16'd0);
             `ASSERT(o_tx == 1'b1);
             `ASSERT(bit_cnt == 4'd0);
@@ -134,7 +134,7 @@
     always @(posedge i_clk) begin
         if (f_past_valid && i_reset_n && !i_prog_en && $past(i_reset_n) && !$past(i_prog_en)) begin
             // Program Counter is strictly bounded within valid IMEM range (0..31)
-            `ASSERT(pc <= 5'd31);
+            `ASSERT(pc <= 7'd127);
 
             // Sidecar delay counter never exceeds maximum 16-bit field
             `ASSERT(delay_cnt <= 16'd5110);
@@ -181,7 +181,7 @@
                     4'h4: begin // WAIT: Wait until gpio_in[pin_sel] matches pin_val
                         if ($past(gpio_in[pin_sel]) == $past(pin_val)) begin
                             `ASSERT(delay_cnt == $past(eff_sw_delay));
-                            `ASSERT(pc == $past(pc) + 5'd1);
+                            `ASSERT(pc == $past(pc) + 7'd1);
                         end else begin
                             `ASSERT(delay_cnt == 16'd0);
                             `ASSERT(pc == $past(pc));
@@ -201,7 +201,7 @@
                                     `ASSERT(pc == $past(pc));
                                 end else if ($past(rx_bit_cnt) == 4'd1) begin
                                     `ASSERT(rx_bit_cnt == 4'd0);
-                                    `ASSERT(pc == $past(pc) + 5'd1);
+                                    `ASSERT(pc == $past(pc) + 7'd1);
                                 end else begin
                                     `ASSERT(rx_bit_cnt == $past(rx_bit_cnt) - 4'd1);
                                     `ASSERT(pc == $past(pc));
@@ -222,7 +222,7 @@
                                 `ASSERT(delay_cnt == $past(eff_delay_9x));
                                 if ($past(instr[9]) || $past(rx_bit_cnt) == 4'd1) begin
                                     `ASSERT(rx_bit_cnt == 4'd0);
-                                    `ASSERT(pc == $past(pc) + 5'd1);
+                                    `ASSERT(pc == $past(pc) + 7'd1);
                                 end else if ($past(rx_bit_cnt) == 4'd0) begin
                                     `ASSERT(rx_bit_cnt == 4'd7);
                                     `ASSERT(pc == $past(pc));
@@ -235,10 +235,10 @@
                             `ASSERT(delay_cnt == $past(eff_delay));
                             // Normal asynchronous UART mode
                             if ($past(rx_bit_cnt) == 4'd0) begin
-                                `ASSERT(pc == ($past(in_count_init) == 4'd0 ? $past(pc) + 5'd1 : $past(pc)));
+                                `ASSERT(pc == ($past(in_count_init) == 4'd0 ? $past(pc) + 7'd1 : $past(pc)));
                             end else if ($past(rx_bit_cnt) == 4'd1) begin
                                 `ASSERT(rx_bit_cnt == 4'd0);
-                                `ASSERT(pc == $past(pc) + 5'd1);
+                                `ASSERT(pc == $past(pc) + 7'd1);
                             end else begin
                                 `ASSERT(rx_bit_cnt == $past(rx_bit_cnt) - 4'd1);
                                 `ASSERT(pc == $past(pc));
@@ -254,7 +254,7 @@
                             `ASSERT(osr == $past(isr));
                             `ASSERT(o_data == $past(isr));
                             `ASSERT(o_rx_push == 1'b1);
-                            `ASSERT(pc == $past(pc) + 5'd1);
+                            `ASSERT(pc == $past(pc) + 7'd1);
                         end
                     end
                     4'h9: begin // PULL [BLOCK]: latches i_data into OSR
@@ -265,7 +265,7 @@
                         end else begin
                             `ASSERT(osr == $past(i_data));
                             `ASSERT(o_tx_pop == $past(i_tx_valid));
-                            `ASSERT(pc == $past(pc) + 5'd1);
+                            `ASSERT(pc == $past(pc) + 7'd1);
                         end
                     end
                     4'h1: begin // OUT: dynamic serialization from OSR
@@ -280,7 +280,7 @@
                                 `ASSERT(delay_cnt == ($past(osr[0]) ? $past(eff_delay_10x) : $past(eff_delay)));
                                 if ($past(instr[9]) || $past(bit_cnt) == 4'd1) begin
                                     `ASSERT(bit_cnt == 4'd0);
-                                    `ASSERT(pc == $past(pc) + 5'd1);
+                                    `ASSERT(pc == $past(pc) + 7'd1);
                                 end else if ($past(bit_cnt) == 4'd0) begin
                                     `ASSERT(bit_cnt == 4'd7);
                                     `ASSERT(pc == $past(pc));
@@ -295,7 +295,7 @@
                     end
                     4'h3: begin // SET: drive selected GPIO pin
                         `ASSERT(delay_cnt == $past(eff_sw_delay));
-                        `ASSERT(pc == $past(pc) + 5'd1);
+                        `ASSERT(pc == $past(pc) + 7'd1);
                     end
                     4'h5: begin // PINMAP: configure protocol roles
                         `ASSERT(tx_pin == $past(instr[11:9]));
@@ -303,12 +303,12 @@
                         `ASSERT(sck_pin == $past(instr[5:3]));
                         `ASSERT(cs_pin == $past(instr[2:0]));
                         `ASSERT(delay_cnt == 16'd0);
-                        `ASSERT(pc == $past(pc) + 5'd1);
+                        `ASSERT(pc == $past(pc) + 7'd1);
                     end
                     4'h6: begin // CFG_OD: configure open drain mask
                         `ASSERT(gpio_od == $past(instr[7:0]));
                         `ASSERT(delay_cnt == 16'd0);
-                        `ASSERT(pc == $past(pc) + 5'd1);
+                        `ASSERT(pc == $past(pc) + 7'd1);
                     end
                     4'h7: begin // Loop Counters (DJNZ / SET_LC / PULL_LC / PUSH_LC / MOV_LC)
                         `ASSERT(delay_cnt == 16'd0);
@@ -320,7 +320,7 @@
                                     `ASSERT(pc == $past(target));
                                 end else begin
                                     `ASSERT(lc0 == 8'd0);
-                                    `ASSERT(pc == $past(pc) + 5'd1);
+                                    `ASSERT(pc == $past(pc) + 7'd1);
                                 end
                             end else begin
                                 if ($past(lc1) != 8'd1) begin
@@ -328,12 +328,12 @@
                                     `ASSERT(pc == $past(target));
                                 end else begin
                                     `ASSERT(lc1 == 8'd0);
-                                    `ASSERT(pc == $past(pc) + 5'd1);
+                                    `ASSERT(pc == $past(pc) + 7'd1);
                                 end
                             end
                         end else begin
                             // Load / Store
-                            `ASSERT(pc == $past(pc) + 5'd1);
+                            `ASSERT(pc == $past(pc) + 7'd1);
                             case ($past(instr[9:8]))
                                 2'b00: begin // SET_LC
                                     if ($past(instr[11]) == 1'b0) `ASSERT(lc0 == $past(instr[7:0]));
@@ -361,41 +361,45 @@
                     end
                     4'h0: begin // NOP: delay only
                         `ASSERT(delay_cnt == $past(eff_delay));
-                        `ASSERT(pc == $past(pc) + 5'd1);
+                        `ASSERT(pc == $past(pc) + 7'd1);
                     end
                     4'h8: begin // JMP [cond], target: conditional or unconditional
                         `ASSERT(delay_cnt == 16'd0);
                         case ($past(instr[11:8]))
                             4'h0: `ASSERT(pc == $past(target));
-                            4'h1: `ASSERT(pc == ($past(i_tx_valid) ? $past(target) : $past(pc) + 5'd1));
-                            4'h2: `ASSERT(pc == (!$past(i_tx_valid) ? $past(target) : $past(pc) + 5'd1));
-                            4'h3: `ASSERT(pc == ($past(i_rx_full) ? $past(target) : $past(pc) + 5'd1));
-                            4'h4: `ASSERT(pc == (!$past(i_rx_full) ? $past(target) : $past(pc) + 5'd1));
-                            4'h5: `ASSERT(pc == ($past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 5'd1));
-                            4'h6: `ASSERT(pc == (!$past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 5'd1));
-                            4'h7: `ASSERT(pc == (($past(crc_reg) == 16'h0000) ? $past(target) : $past(pc) + 5'd1));
-                            4'h8: `ASSERT(pc == ($past(zero_flag) ? $past(target) : $past(pc) + 5'd1));
-                            4'h9: `ASSERT(pc == (!$past(zero_flag) ? $past(target) : $past(pc) + 5'd1));
-                            4'hA: `ASSERT(pc == ($past(carry_flag) ? $past(target) : $past(pc) + 5'd1));
-                            4'hB: `ASSERT(pc == (!$past(carry_flag) ? $past(target) : $past(pc) + 5'd1));
-                            4'hC: `ASSERT(pc == ($past(acc[7]) ? $past(target) : $past(pc) + 5'd1));
-                            4'hD: `ASSERT(pc == (!$past(acc[7]) ? $past(target) : $past(pc) + 5'd1));
-                            4'hE: `ASSERT(pc == (($past(crc_reg) != 16'h0000) ? $past(target) : $past(pc) + 5'd1));
+                            4'h1: `ASSERT(pc == ($past(i_tx_valid) ? $past(target) : $past(pc) + 7'd1));
+                            4'h2: `ASSERT(pc == (!$past(i_tx_valid) ? $past(target) : $past(pc) + 7'd1));
+                            4'h3: `ASSERT(pc == ($past(i_rx_full) ? $past(target) : $past(pc) + 7'd1));
+                            4'h4: `ASSERT(pc == (!$past(i_rx_full) ? $past(target) : $past(pc) + 7'd1));
+                            4'h5: `ASSERT(pc == ($past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 7'd1));
+                            4'h6: `ASSERT(pc == (!$past(gpio_in[rx_pin]) ? $past(target) : $past(pc) + 7'd1));
+                            4'h7: `ASSERT(pc == (($past(crc_reg) == 16'h0000) ? $past(target) : $past(pc) + 7'd1));
+                            4'h8: `ASSERT(pc == ($past(zero_flag) ? $past(target) : $past(pc) + 7'd1));
+                            4'h9: `ASSERT(pc == (!$past(zero_flag) ? $past(target) : $past(pc) + 7'd1));
+                            4'hA: `ASSERT(pc == ($past(carry_flag) ? $past(target) : $past(pc) + 7'd1));
+                            4'hB: `ASSERT(pc == (!$past(carry_flag) ? $past(target) : $past(pc) + 7'd1));
+                            4'hC: `ASSERT(pc == ($past(acc[7]) ? $past(target) : $past(pc) + 7'd1));
+                            4'hD: `ASSERT(pc == (!$past(acc[7]) ? $past(target) : $past(pc) + 7'd1));
+                            4'hE: `ASSERT(pc == (($past(crc_reg) != 16'h0000) ? $past(target) : $past(pc) + 7'd1));
                             default: `ASSERT(pc == $past(target));
                         endcase
                     end
                     4'hB: begin // ALU: 8-bit Micro-ALU & Arithmetic Engine
                         `ASSERT(delay_cnt == 16'd0);
-                        `ASSERT(pc == $past(pc) + 5'd1);
+                        if (!$past(instr[11]) && $past(instr[10:8]) == 3'b111 && $past(instr[7:6]) == 2'b10) begin
+                            `ASSERT(pc == {$past(instr[1:0]), 5'd0});
+                        end else begin
+                            `ASSERT(pc == $past(pc) + 7'd1);
+                        end
                     end
                     4'hE: begin // CRC: Hardware CRC Generator & Checksum Accelerator
                         `ASSERT(delay_cnt == 16'd0);
-                        `ASSERT(pc == $past(pc) + 5'd1);
+                        `ASSERT(pc == $past(pc) + 7'd1);
                     end
                     4'hC: begin // CALL: push pc+1 onto stack, jump to target
                         if ($past(sp) < 2'd3) begin
                             `ASSERT(sp == $past(sp) + 2'd1);
-                            `ASSERT(call_stack[$past(sp)] == $past(pc) + 5'd1);
+                            `ASSERT(call_stack[$past(sp)] == $past(pc) + 7'd1);
                         end else begin
                             `ASSERT(sp == 2'd3);
                         end
@@ -413,12 +417,12 @@
                                 `ASSERT(pc == $past(call_stack[2]));
                         end else begin
                             `ASSERT(sp == 2'd0);
-                            `ASSERT(pc == 5'd0);
+                            `ASSERT(pc == 7'd0);
                         end
                         `ASSERT(delay_cnt == 16'd0);
                     end
                     default: begin
-                        `ASSERT(pc == $past(pc) + 5'd1);
+                        `ASSERT(pc == $past(pc) + 7'd1);
                     end
                 endcase
             end
@@ -434,10 +438,10 @@
             cover($past(!i_reset_n) && i_reset_n);
 
             // Cover 2: WAIT triggered by edge match
-            cover(!i_prog_en && pc == 5'd1 && $past(pc) == 5'd0);
+            cover(!i_prog_en && pc == 7'd1 && $past(pc) == 7'd0);
 
             // Cover 3: Sidecar delay down-counting active (zero-jitter freeze)
-            cover(!i_prog_en && pc == 5'd1 && delay_cnt == 16'd210);
+            cover(!i_prog_en && pc == 7'd1 && delay_cnt == 16'd210);
 
             // Cover 4: Programming write strobe
             cover(i_prog_en && i_prog_we);
