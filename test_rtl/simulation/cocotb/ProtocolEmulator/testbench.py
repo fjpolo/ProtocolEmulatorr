@@ -7,6 +7,14 @@
 #               baud-rate tolerance (skew margin), and zero-jitter echo timing.
 # =============================================================================
 
+import sys
+import os
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.."))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
+from python.omnibus_asm import OmnibusAssembler, assemble_file
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles, Timer
@@ -2017,3 +2025,231 @@ async def test_crc_jmp_conditional(dut):
     assert pin1_val == 0, f"Expected Pin 1 == 0 (fail), got {pin1_val}"
     assert int(dut.pc.value) == 7, f"Expected PC == 7 (fail loop), got {int(dut.pc.value)}"
     dut._log.info("Corrupted packet branch PASSED: JMP CRC_OK fell through to failure branch!")
+
+
+# =============================================================================
+# Task 15: 8-bit Micro-ALU & Arithmetic Engine (Opcode 0xB) Tests
+# =============================================================================
+
+@cocotb.test()
+async def test_alu_arithmetic_and_flags(dut):
+    """Test 15A: ADD, SUB, CMP arithmetic operations, carry and zero flags, and JMP conditions."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Microcode test program:
+    # 0: MOV acc, 0x55
+    # 1: ADD acc, 0xAA      ; 0x55 + 0xAA = 0xFF (no carry, non-zero)
+    # 2: ADD acc, 0x01      ; 0xFF + 0x01 = 0x00 (carry=1, zero=1)
+    # 3: JMP NOT_ZERO, 10   ; Should not jump
+    # 4: JMP CARRY, 6       ; Should jump to 6
+    # 5: JMP 10             ; Trap if jump missed
+    # 6: SUB acc, 0x01      ; 0x00 - 0x01 = 0xFF (carry/borrow=1, non-zero)
+    # 7: CMP acc, 0xFF      ; 0xFF - 0xFF = 0 (carry=0, zero=1, acc remains 0xFF)
+    # 8: JMP ZERO, 9        ; Should jump to 9
+    # 9: SET 1, 1, 0        ; Success indicator (Pin 1 = 1)
+    # 10: NOP               ; Error/halt
+    prog_asm = """
+    MOV acc, 0x55
+    ADD acc, 0xAA
+    ADD acc, 0x01
+    JMP NOT_ZERO, 10
+    JMP CARRY, 6
+    JMP 10
+    SUB acc, 0x01
+    CMP acc, 0xFF
+    JMP ZERO, 9
+    SET 1, 1, 0
+    NOP
+    """
+    asm = OmnibusAssembler()
+    words, _ = asm.assemble(prog_asm)
+    prog = [w[1] for w in words]
+
+    await load_program_direct(dut, prog)
+
+    # Step through execution and observe flags & results
+    for _ in range(25):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 10:
+            break
+
+    assert int(dut.acc.value) == 0xFF, f"Expected acc == 0xFF, got 0x{int(dut.acc.value):02X}"
+    assert int(dut.zero_flag.value) == 1, f"Expected zero_flag == 1 from CMP, got {int(dut.zero_flag.value)}"
+    assert int(dut.carry_flag.value) == 0, f"Expected carry_flag == 0 from CMP 0xFF, got {int(dut.carry_flag.value)}"
+
+    pin1_val = (int(dut.o_gpio.value) >> 1) & 1
+    assert pin1_val == 1, f"Expected Pin 1 == 1 (success), got {pin1_val}"
+    dut._log.info("Test 15A: ALU Arithmetic, Flags, and JMP Conditions PASSED!")
+
+
+@cocotb.test()
+async def test_alu_logic_and_shifts(dut):
+    """Test 15B: AND, OR, XOR, NOT, INC, DEC, CLR, SHL, SHR bitwise and shift operations."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    prog_asm = """
+    MOV acc, 0xF0
+    AND acc, 0x3C       ; 0xF0 & 0x3C = 0x30
+    OR  acc, 0x05       ; 0x30 | 0x05 = 0x35
+    XOR acc, 0x35       ; 0x35 ^ 0x35 = 0x00 (zero=1)
+    NOT acc             ; ~0x00 = 0xFF
+    INC acc             ; 0xFF + 1 = 0x00 (carry=1, zero=1)
+    DEC acc             ; 0x00 - 1 = 0xFF (carry/borrow=1)
+    SHL acc             ; 0xFF << 1 = 0xFE (carry=1)
+    SHR acc             ; 0xFE >> 1 = 0x7F (carry=0)
+    CLR acc             ; acc = 0x00 (zero=1)
+    SET 2, 1, 0         ; Success: Pin 2 = 1
+    NOP
+    """
+    asm = OmnibusAssembler()
+    words, _ = asm.assemble(prog_asm)
+    prog = [w[1] for w in words]
+
+    await load_program_direct(dut, prog)
+
+    for _ in range(25):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 11:
+            break
+
+    assert int(dut.acc.value) == 0x00, f"Expected acc == 0x00, got 0x{int(dut.acc.value):02X}"
+    assert int(dut.zero_flag.value) == 1, f"Expected zero_flag == 1, got {int(dut.zero_flag.value)}"
+
+    pin2_val = (int(dut.o_gpio.value) >> 2) & 1
+    assert pin2_val == 1, f"Expected Pin 2 == 1 (success), got {pin2_val}"
+    dut._log.info("Test 15B: ALU Logic, Inversion, and Shifts PASSED!")
+
+
+@cocotb.test()
+async def test_alu_register_transfers(dut):
+    """Test 15C: Inter-register transfers (MOV acc, reg & MOV reg, acc) and dynamic loop setup."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Use ALU to compute LC0 count = 4, then loop with DJNZ
+    prog_asm = """
+    MOV acc, 10
+    SUB acc, 6          ; acc <= 4
+    MOV LC0, acc        ; LC0 <= 4
+    MOV acc, 0
+loop:
+    INC acc             ; increments acc 4 times
+    DJNZ LC0, loop
+    SET 0, 1, 0         ; Pin 0 = 1 on loop completion
+    NOP
+    """
+    asm = OmnibusAssembler()
+    words, _ = asm.assemble(prog_asm)
+    prog = [w[1] for w in words]
+
+    await load_program_direct(dut, prog)
+
+    for _ in range(30):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 6:
+            break
+
+    assert int(dut.acc.value) == 4, f"Expected acc == 4 after loop, got {int(dut.acc.value)}"
+    assert int(dut.lc0.value) == 0, f"Expected LC0 == 0 after loop, got {int(dut.lc0.value)}"
+
+    pin0_val = int(dut.o_gpio.value) & 1
+    assert pin0_val == 1, f"Expected Pin 0 == 1, got {pin0_val}"
+    dut._log.info("Test 15C: ALU Register Transfers & Dynamic Loop Setup PASSED!")
+
+
+@cocotb.test()
+async def test_alu_packet_parser(dut):
+    """Test 15D: Full autonomous packet parser demo (magic verification, length decode, CRC validation)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+    dut.i_tx_valid.value = 0
+
+    demo_path = os.path.join(repo_root, "examples/packet_parser_demo.asm")
+    words, _ = assemble_file(demo_path)
+    prog = [w[1] for w in words]
+
+    def calc_dallas(bytes_list):
+        crc = 0
+        for b in bytes_list:
+            cur = b
+            for _ in range(8):
+                mix = (crc ^ cur) & 0x01
+                crc >>= 1
+                if mix:
+                    crc ^= 0x8C
+                cur >>= 1
+        return crc
+
+    # Sub-test 1: Valid Packet [0x5A, 3, 0x10, 0x20, 0x30, CRC] -> expects ACK (0x06)
+    payload = [0x10, 0x20, 0x30]
+    crc_val = calc_dallas(payload)
+    valid_pkt = [0x5A, len(payload)] + payload + [crc_val]
+
+    await load_program_direct(dut, prog)
+
+    async def send_pkt(bytes_data):
+        for b in bytes_data:
+            dut.i_data.value = b
+            dut.i_tx_valid.value = 1
+            while True:
+                await RisingEdge(dut.i_clk)
+                if int(dut.o_tx_pop.value) == 1:
+                    break
+            dut.i_tx_valid.value = 0
+            await RisingEdge(dut.i_clk)
+
+    pkt_task = cocotb.start_soon(send_pkt(valid_pkt))
+
+    # Wait for response on o_data with o_rx_push
+    for _ in range(200):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_rx_push.value) == 1:
+            resp = int(dut.o_data.value)
+            break
+    else:
+        pkt_task.cancel()
+        assert False, "Timeout waiting for packet parser response"
+
+    pkt_task.cancel()
+    assert resp == 0x06, f"Expected ACK (0x06) for valid packet, got 0x{resp:02X}"
+    dut._log.info(f"Valid Packet parsed successfully: response = 0x{resp:02X} (ACK)")
+    await ClockCycles(dut.i_clk, 5)
+
+    # Sub-test 2: Bad Magic Packet [0x55] -> expects 0xFF error
+    bad_magic_pkt = [0x55]
+    pkt_task2 = cocotb.start_soon(send_pkt(bad_magic_pkt))
+
+    for _ in range(200):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_rx_push.value) == 1:
+            resp2 = int(dut.o_data.value)
+            break
+    else:
+        pkt_task2.cancel()
+        assert False, "Timeout waiting for bad magic response"
+
+    pkt_task2.cancel()
+    assert resp2 == 0xFF, f"Expected Error (0xFF) for bad magic packet, got 0x{resp2:02X}"
+    dut._log.info(f"Bad Magic Packet detected: response = 0x{resp2:02X} (Error)")
+    await ClockCycles(dut.i_clk, 5)
+
+    # Sub-test 3: Corrupt CRC Packet [0x5A, 3, 0x10, 0x20, 0x30, 0xEE] -> expects NAK (0x15)
+    bad_crc_pkt = [0x5A, len(payload)] + payload + [0xEE]
+    pkt_task3 = cocotb.start_soon(send_pkt(bad_crc_pkt))
+
+    for _ in range(200):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_rx_push.value) == 1:
+            resp3 = int(dut.o_data.value)
+            break
+    else:
+        pkt_task3.cancel()
+        assert False, "Timeout waiting for bad CRC response"
+
+    pkt_task3.cancel()
+    assert resp3 == 0x15, f"Expected NAK (0x15) for corrupt CRC packet, got 0x{resp3:02X}"
+    dut._log.info(f"Corrupt CRC Packet rejected: response = 0x{resp3:02X} (NAK)")
+
+    dut._log.info("Test 15D: Autonomous Packet Parser Demo PASSED across all frame types!")
