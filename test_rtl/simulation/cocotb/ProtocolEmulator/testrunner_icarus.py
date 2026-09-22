@@ -26,9 +26,11 @@ def test_protocol_emulator_runner():
         waves=True,
     )
 
+    testcase = os.getenv("TESTCASE", None)
     runner.test(
         hdl_toplevel="ProtocolEmulator",
         test_module="testbench",
+        testcase=testcase,
         waves=True,
     )
 
