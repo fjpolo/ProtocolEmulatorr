@@ -22,9 +22,15 @@ OPCODES = {
     "IN":     0x2,
     "SET":    0x3,
     "WAIT":   0x4,
-    "PINMAP": 0x5,  # Dynamic role mapping: tx, rx, sck, cs (3 bits each)
-    "CFG_OD": 0x6,  # Open-drain mask: mask[7:0]
-    "JMP":    0x8,
+    "PINMAP":  0x5,  # Dynamic role mapping: tx, rx, sck, cs (3 bits each)
+    "CFG_OD":  0x6,  # Open-drain mask: mask[7:0]
+    "DJNZ":    0x7,  # Decrement loop counter and jump if not zero
+    "LOOP":    0x7,  # Alias for DJNZ LC0, target
+    "SET_LC":  0x7,  # Load immediate into loop counter
+    "PULL_LC": 0x7,  # Load loop counter from i_data
+    "PUSH_LC": 0x7,  # Transfer loop counter to o_data & osr
+    "MOV_LC":  0x7,  # Load loop counter from osr
+    "JMP":     0x8,
     "PULL":   0x9,
     "PUSH":   0xA,
     "CALL":   0xC,  # Push pc+1 to call stack, jump to target
@@ -274,6 +280,81 @@ class OmnibusAssembler:
                     raise AssemblerError(f"Line {line_num}: CFG_OD requires mask argument (e.g. CFG_OD 0x10)")
                 mask = eval_arg(tokens[1]) & 0xFF
                 word = (opcode_val << 12) | mask
+
+            elif op in ("DJNZ", "LOOP"):
+                # Forms:
+                #   DJNZ LC0, target
+                #   DJNZ LC1, target
+                #   DJNZ target       (defaults to LC0)
+                #   LOOP target       (alias for DJNZ LC0, target)
+                def parse_lc(tok):
+                    tok = tok.strip().upper()
+                    if tok in ("LC1", "1", "1'B1"):
+                        return 1
+                    return 0
+
+                if op == "LOOP":
+                    lc_sel = 0
+                    if len(tokens) < 2:
+                        raise AssemblerError(f"Line {line_num}: LOOP requires target address or label")
+                    target = eval_arg(tokens[1]) & 0x1F
+                else:
+                    if len(tokens) >= 3:
+                        lc_sel = parse_lc(tokens[1])
+                        target = eval_arg(tokens[2]) & 0x1F
+                    elif len(tokens) == 2:
+                        lc_sel = 0
+                        target = eval_arg(tokens[1]) & 0x1F
+                    else:
+                        raise AssemblerError(f"Line {line_num}: DJNZ requires [LCx,] target")
+                # Format: [15:12]=0x7, [11]=lc_sel, [10]=0, [4:0]=target
+                word = (opcode_val << 12) | (lc_sel << 11) | (0 << 10) | target
+
+            elif op == "SET_LC":
+                # Forms:
+                #   SET_LC LC0, count
+                #   SET_LC LC1, count
+                #   SET_LC count      (defaults to LC0)
+                def parse_lc(tok):
+                    tok = tok.strip().upper()
+                    if tok in ("LC1", "1"):
+                        return 1
+                    return 0
+
+                if len(tokens) >= 3:
+                    lc_sel = parse_lc(tokens[1])
+                    count = eval_arg(tokens[2]) & 0xFF
+                elif len(tokens) == 2:
+                    lc_sel = 0
+                    count = eval_arg(tokens[1]) & 0xFF
+                else:
+                    raise AssemblerError(f"Line {line_num}: SET_LC requires [LCx,] count")
+                # Format: [15:12]=0x7, [11]=lc_sel, [10]=1, [9:8]=00, [7:0]=count
+                word = (opcode_val << 12) | (lc_sel << 11) | (1 << 10) | (0 << 8) | count
+
+            elif op == "PULL_LC":
+                # Forms:
+                #   PULL_LC LCx
+                #   PULL_LC           (defaults to LC0)
+                lc_sel = 1 if (len(tokens) >= 2 and tokens[1].strip().upper() in ("LC1", "1")) else 0
+                # Format: [15:12]=0x7, [11]=lc_sel, [10]=1, [9:8]=01
+                word = (opcode_val << 12) | (lc_sel << 11) | (1 << 10) | (1 << 8)
+
+            elif op == "PUSH_LC":
+                # Forms:
+                #   PUSH_LC LCx
+                #   PUSH_LC           (defaults to LC0)
+                lc_sel = 1 if (len(tokens) >= 2 and tokens[1].strip().upper() in ("LC1", "1")) else 0
+                # Format: [15:12]=0x7, [11]=lc_sel, [10]=1, [9:8]=10
+                word = (opcode_val << 12) | (lc_sel << 11) | (1 << 10) | (2 << 8)
+
+            elif op == "MOV_LC":
+                # Forms:
+                #   MOV_LC LCx, OSR
+                #   MOV_LC LCx
+                lc_sel = 1 if (len(tokens) >= 2 and tokens[1].strip().upper() in ("LC1", "1")) else 0
+                # Format: [15:12]=0x7, [11]=lc_sel, [10]=1, [9:8]=11
+                word = (opcode_val << 12) | (lc_sel << 11) | (1 << 10) | (3 << 8)
 
             elif op == "JMP":
                 # JMP target
