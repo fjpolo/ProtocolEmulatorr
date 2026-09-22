@@ -156,3 +156,37 @@ bad_magic:
     PUSH
     JMP start
 ```
+
+---
+
+## 6. Real FPGA Hardware Testing (Sipeed Tang Console 60K)
+
+Dedicated batch runners are provided to test the 8-bit Micro-ALU on physical FPGA hardware:
+
+- **Interactive Echo & Case Conversion**:
+  ```cmd
+  run_alu_demo.bat
+  # or alias
+  run_alu.bat
+  ```
+  Uploads `examples\alu_interactive.asm` into FPGA IMEM in ~20ms and opens an interactive serial terminal. When characters are typed:
+  - Lowercase `'a'..'z'` (0x61..0x7A) are converted in real-time hardware to `'A'..'Z'` via `CMP acc, 0x61` / `CMP acc, 0x7B` + `SUB acc, 0x20`.
+  - Non-lowercase characters, numbers, and symbols are echoed as-is.
+
+- **Autonomous Micro-ALU Self-Test**:
+  ```cmd
+  run_alu_demo.bat selftest
+  ```
+  Loads `examples\alu_selftest.asm` into IMEM and opens a monitor terminal. The FPGA continuously exercises:
+  - Immediate addition (`ADD acc, imm8`)
+  - Immediate subtraction (`SUB acc, imm8`)
+  - Bitwise masking (`AND acc, imm8`)
+  - Unary increment (`INC`) and logical shift (`SHL`)
+  - Comparison (`CMP acc, imm8`) and zero-flag branching (`JMP NOT_ZERO`)
+  - Continuously streams `OK\n` over UART @ 115200 baud on success (or `E\n` on error).
+
+- **Board Bitstream Programming**:
+  ```cmd
+  run_alu_demo.bat flash    # Program SRAM via Gowin Programmer
+  run_alu_demo.bat build    # Full Gowin synthesis & place-and-route
+  ```
