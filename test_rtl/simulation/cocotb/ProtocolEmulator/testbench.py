@@ -953,3 +953,222 @@ async def test_hardware_loop_counter(dut):
     assert push_events == [3, 2, 1, 3, 2, 1], f"Loop counter sequence mismatch: {push_events}"
     dut._log.info(f"Hardware Loop Counter test PASSED: nested loop executed 6 times with sequence {push_events}!")
 
+
+@cocotb.test()
+async def test_spi_full_duplex(dut):
+    """Test 10A: Full-Duplex SPI - simultaneous MOSI transmit and MISO receive in 1 transfer."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    SPI_DIV = 4  # SCK half-period = 5 cycles
+    dut.i_baud_div.value = SPI_DIV
+    TX_BYTE = 0xA5  # 1010_0101
+    RX_SLAVE_BYTE = 0x5A  # 0101_1010
+
+    # Program:
+    # 0x00: PINMAP 0, 3, 1, 2 (TX=0, RX=3, SCK=1, CS=2) -> 0x50CA
+    # 0x01: PULL              -> 0x9000
+    # 0x02: SET CS, 0, 0      -> 0x3400
+    # 0x03: OUT SCK, $HBAUD   -> 0x15FE
+    # 0x04: SET CS, 1, 0      -> 0x3500
+    # 0x05: PUSH              -> 0xA000
+    # 0x06: JMP 0x06          -> 0x8006
+    prog = [
+        0x50CA,
+        0x9000,
+        0x3400,
+        0x15FE,
+        0x3500,
+        0xA000,
+        0x8006
+    ]
+    dut.i_data.value = TX_BYTE
+
+    # Slave SPI device model on Pin 3 (MISO):
+    mosi_captured = []
+    async def spi_slave():
+        slave_sr = RX_SLAVE_BYTE
+        prev_sck = 0
+        while True:
+            await RisingEdge(dut.i_clk)
+            sck = (int(dut.o_gpio.value) >> 1) & 1
+            cs  = (int(dut.o_gpio.value) >> 2) & 1
+            if cs == 0:
+                miso_bit = (slave_sr >> 7) & 1
+                curr_gpio = int(dut.i_gpio.value)
+                if miso_bit:
+                    dut.i_gpio.value = curr_gpio | (1 << 3)
+                else:
+                    dut.i_gpio.value = curr_gpio & ~(1 << 3)
+
+                if prev_sck == 1 and sck == 0:
+                    slave_sr = ((slave_sr << 1) & 0xFF) | 1
+
+                if prev_sck == 0 and sck == 1:
+                    mosi_bit = (int(dut.o_gpio.value) >> 0) & 1
+                    mosi_captured.append(mosi_bit)
+            prev_sck = sck
+
+    slave_task = cocotb.start_soon(spi_slave())
+    await load_program_direct(dut, prog)
+
+    for _ in range(500):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 6:
+            break
+    else:
+        slave_task.cancel()
+        assert False, "Timeout: SPI transaction did not complete at PC=6"
+
+    slave_task.cancel()
+    assert len(mosi_captured) == 8, f"Expected 8 MOSI bits captured, got {len(mosi_captured)}"
+    captured_tx = 0
+    for b in mosi_captured:
+        captured_tx = (captured_tx << 1) | b
+    assert captured_tx == TX_BYTE, f"MOSI TX mismatch: expected 0x{TX_BYTE:02X}, got 0x{captured_tx:02X}"
+
+    received_rx = int(dut.o_data.value)
+    assert received_rx == RX_SLAVE_BYTE, f"MISO RX mismatch: expected 0x{RX_SLAVE_BYTE:02X}, got 0x{received_rx:02X}"
+    dut._log.info(f"Full-Duplex SPI test PASSED: MOSI sent 0x{TX_BYTE:02X}, MISO received 0x{RX_SLAVE_BYTE:02X} simultaneously!")
+
+
+@cocotb.test()
+async def test_in_sck_master_read(dut):
+    """Test 10B: Synchronous SPI Master Read (IN SCK) auto-toggles SCK and reads MISO."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    SPI_DIV = 9  # SCK half-period = 4 cycles (80 ns @ 50 MHz)
+    dut.i_baud_div.value = SPI_DIV
+    SLAVE_DATA = 0x3C  # 0011_1100
+
+    # Program:
+    # 0x00: PINMAP 0, 3, 1, 2 -> 0x50CA
+    # 0x01: SET CS, 0, 0      -> 0x3400
+    # 0x02: IN SCK, $HBAUD    -> 0x25FE (opcode 2, mode 1, delay 0x1FE)
+    # 0x03: SET CS, 1, 0      -> 0x3500
+    # 0x04: PUSH              -> 0xA000
+    # 0x05: JMP 0x05          -> 0x8005
+    prog = [
+        0x50CA,
+        0x3400,
+        0x25FE,
+        0x3500,
+        0xA000,
+        0x8005
+    ]
+
+    sck_pulses = 0
+    async def spi_slave():
+        nonlocal sck_pulses
+        slave_sr = SLAVE_DATA
+        prev_sck = 0
+        while True:
+            await RisingEdge(dut.i_clk)
+            sck = (int(dut.o_gpio.value) >> 1) & 1
+            cs  = (int(dut.o_gpio.value) >> 2) & 1
+            if cs == 0:
+                miso_bit = (slave_sr >> 7) & 1
+                curr_gpio = int(dut.i_gpio.value)
+                if miso_bit:
+                    dut.i_gpio.value = curr_gpio | (1 << 3)
+                else:
+                    dut.i_gpio.value = curr_gpio & ~(1 << 3)
+
+                if prev_sck == 0 and sck == 1:
+                    sck_pulses += 1
+                elif prev_sck == 1 and sck == 0:
+                    slave_sr = ((slave_sr << 1) & 0xFF) | 1
+            prev_sck = sck
+
+    slave_task = cocotb.start_soon(spi_slave())
+    await load_program_direct(dut, prog)
+
+    for _ in range(500):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 5:
+            break
+    else:
+        slave_task.cancel()
+        assert False, "Timeout: IN SCK transaction did not finish at PC=5"
+
+    slave_task.cancel()
+    assert sck_pulses == 8, f"Expected 8 SCK pulses, got {sck_pulses}"
+    received = int(dut.o_data.value)
+    assert received == SLAVE_DATA, f"Expected 0x{SLAVE_DATA:02X}, got 0x{received:02X}"
+    dut._log.info(f"IN SCK master read test PASSED: 8 SCK pulses generated, received 0x{received:02X}!")
+
+
+@cocotb.test()
+async def test_in_sda_i2c_read(dut):
+    """Test 10C: Synchronous I2C Master Read (IN SDA) releases SDA and reads slave byte."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    dut.i_baud_div.value = 2  # fast simulation
+    SLAVE_DATA = 0xD2  # 1101_0010
+
+    # Program:
+    # 0x00: PINMAP 4, 4, 1, 2 -> 0x590A (Pin 4 = SDA, Pin 1 = SCL)
+    # 0x01: CFG_OD 0x12       -> 0x6012 (Pins 4, 1 open drain)
+    # 0x02: IN SDA, 2         -> 0x2C02 (opcode 2, mode 3, delay 2)
+    # 0x03: PUSH              -> 0xA000
+    # 0x04: JMP 0x04          -> 0x8004
+    prog = [
+        0x590A,
+        0x6012,
+        0x2C02,
+        0xA000,
+        0x8004
+    ]
+
+    scl_pulses = 0
+    sda_oe_during_in = []
+    async def i2c_slave():
+        nonlocal scl_pulses
+        slave_sr = SLAVE_DATA
+        prev_scl = 1
+        while True:
+            await RisingEdge(dut.i_clk)
+            pc_val = int(dut.pc.value)
+            scl_oe = (int(dut.o_gpio_oe.value) >> 1) & 1
+            scl_out = (int(dut.o_gpio.value) >> 1) & 1
+            scl = 0 if (scl_oe and not scl_out) else 1
+
+            sda_oe = (int(dut.o_gpio_oe.value) >> 4) & 1
+            if pc_val == 2:
+                sda_oe_during_in.append(sda_oe)
+
+            bit = (slave_sr >> 7) & 1
+            curr_gpio = int(dut.i_gpio.value)
+            if bit:
+                dut.i_gpio.value = curr_gpio | (1 << 4)
+            else:
+                dut.i_gpio.value = curr_gpio & ~(1 << 4)
+
+            if prev_scl == 0 and scl == 1:
+                scl_pulses += 1
+            elif prev_scl == 1 and scl == 0:
+                slave_sr = ((slave_sr << 1) & 0xFF) | 1
+
+            prev_scl = scl
+
+    slave_task = cocotb.start_soon(i2c_slave())
+    await load_program_direct(dut, prog)
+
+    for _ in range(500):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 4:
+            break
+    else:
+        slave_task.cancel()
+        assert False, "Timeout: IN SDA transaction did not finish at PC=4"
+
+    slave_task.cancel()
+    assert scl_pulses == 8, f"Expected 8 SCL pulses, got {scl_pulses}"
+    assert all(oe == 0 for oe in sda_oe_during_in), f"Expected master to release SDA (oe=0), got {sda_oe_during_in}"
+    received = int(dut.o_data.value)
+    assert received == SLAVE_DATA, f"Expected 0x{SLAVE_DATA:02X}, got 0x{received:02X}"
+    dut._log.info(f"IN SDA I2C master read test PASSED: 8 SCL pulses, SDA released, received 0x{received:02X}!")
+
+

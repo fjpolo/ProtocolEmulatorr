@@ -170,18 +170,36 @@ class OmnibusAssembler:
                 #   0 -> 8 bits (backward compat, old programs encode 0)
                 #   1..7 -> N bits (new variable-bit form)
                 if op == "IN":
-                    if len(tokens) == 2:
-                        # IN delay — 8-bit default (bit_count=0)
+                    # Forms:
+                    #   IN delay            (mode=0, 8-bit default LSB-first UART)
+                    #   IN N, delay         (mode=0, variable N-bit LSB-first UART, N=8 -> 0)
+                    #   IN SCK, delay       (mode=1, 8-bit MSB-first SPI Master Read + auto-SCK toggle)
+                    #   IN SDA, delay       (mode=3, 8-bit MSB-first I2C Master Read + auto-SCL toggle)
+                    def _in_mode(s):
+                        s = s.strip().upper()
+                        if s in ("SCK", "SCLK", "CLK", "SPI"):
+                            return 1
+                        elif s in ("SDA", "SCL", "I2C"):
+                            return 3
+                        return 0
+
+                    if len(tokens) >= 3 and _in_mode(tokens[1]) != 0:
+                        mode = _in_mode(tokens[1])
+                        delay = eval_arg(tokens[2]) & 0x1FF
+                        word = (opcode_val << 12) | (mode << 10) | delay
+                    elif len(tokens) == 2:
+                        # IN delay — 8-bit default (bit_count=0, mode=0)
                         bit_count = 0
-                        delay = eval_arg(tokens[1])
+                        delay = eval_arg(tokens[1]) & 0x1FF
+                        word = (opcode_val << 12) | (bit_count << 9) | delay
                     elif len(tokens) >= 3:
                         # IN N, delay
                         n = eval_arg(tokens[1])
                         bit_count = 0 if n == 8 else (n & 0x7)  # 8->0 (compat), 1-7->N
-                        delay = eval_arg(tokens[2])
+                        delay = eval_arg(tokens[2]) & 0x1FF
+                        word = (opcode_val << 12) | (bit_count << 9) | delay
                     else:
-                        bit_count, delay = 0, 0
-                    word = (opcode_val << 12) | (bit_count << 9) | (delay & 0x1FF)
+                        word = (opcode_val << 12)
                 else:  # OUT
                     # Forms:
                     #   OUT delay           (mode=0, 8-bit LSB-first UART, backward compat)

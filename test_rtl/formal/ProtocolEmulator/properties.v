@@ -84,6 +84,7 @@
             `ASSERT(gpio_od == 8'h00);
             `ASSERT(lc0 == 8'h00);
             `ASSERT(lc1 == 8'h00);
+            `ASSERT(in_sck_phase == 1'b0);
             // Call stack cleared on reset
             `ASSERT(sp == 2'd0);
             `ASSERT(call_stack[0] == 5'd0);
@@ -165,6 +166,7 @@
                 `ASSERT(rx_bit_cnt == $past(rx_bit_cnt));
                 `ASSERT(lc0 == $past(lc0));
                 `ASSERT(lc1 == $past(lc1));
+                `ASSERT(in_sck_phase == $past(in_sck_phase));
             end else begin
                 // When sidecar delay reaches 0, instruction executes deterministically
                 case ($past(opcode))
@@ -179,14 +181,35 @@
                     end
                     4'h2: begin // IN: dynamic deserialization into ISR
                         `ASSERT(delay_cnt == $past(eff_delay));
-                        if ($past(rx_bit_cnt) == 4'd0) begin
-                            `ASSERT(pc == ($past(in_count_init) == 4'd0 ? $past(pc) + 5'd1 : $past(pc)));
-                        end else if ($past(rx_bit_cnt) == 4'd1) begin
-                            `ASSERT(rx_bit_cnt == 4'd0);
-                            `ASSERT(pc == $past(pc) + 5'd1);
+                        if ($past(instr[11:10]) == 2'b01 || $past(instr[11:10]) == 2'b11) begin
+                            // Synchronous modes (IN SCK / IN SDA)
+                            if ($past(in_sck_phase) == 1'b0) begin
+                                `ASSERT(in_sck_phase == 1'b1);
+                                `ASSERT(pc == $past(pc));
+                            end else begin
+                                `ASSERT(in_sck_phase == 1'b0);
+                                if ($past(rx_bit_cnt) == 4'd0) begin
+                                    `ASSERT(rx_bit_cnt == 4'd7);
+                                    `ASSERT(pc == $past(pc));
+                                end else if ($past(rx_bit_cnt) == 4'd1) begin
+                                    `ASSERT(rx_bit_cnt == 4'd0);
+                                    `ASSERT(pc == $past(pc) + 5'd1);
+                                end else begin
+                                    `ASSERT(rx_bit_cnt == $past(rx_bit_cnt) - 4'd1);
+                                    `ASSERT(pc == $past(pc));
+                                end
+                            end
                         end else begin
-                            `ASSERT(rx_bit_cnt == $past(rx_bit_cnt) - 4'd1);
-                            `ASSERT(pc == $past(pc));
+                            // Normal asynchronous UART mode
+                            if ($past(rx_bit_cnt) == 4'd0) begin
+                                `ASSERT(pc == ($past(in_count_init) == 4'd0 ? $past(pc) + 5'd1 : $past(pc)));
+                            end else if ($past(rx_bit_cnt) == 4'd1) begin
+                                `ASSERT(rx_bit_cnt == 4'd0);
+                                `ASSERT(pc == $past(pc) + 5'd1);
+                            end else begin
+                                `ASSERT(rx_bit_cnt == $past(rx_bit_cnt) - 4'd1);
+                                `ASSERT(pc == $past(pc));
+                            end
                         end
                     end
                     4'hA: begin // PUSH: transfer ISR to OSR and o_data
@@ -346,6 +369,14 @@
             // Cover 10 (Task 09): DJNZ branch taken (lc0 decremented and jumped)
             cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && $past(opcode) == 4'h7 &&
                   $past(instr[10]) == 1'b0 && pc == $past(target));
+
+            // Cover 11 (Task 10): IN SCK executed (SPI master read)
+            cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && $past(opcode) == 4'h2 &&
+                  $past(instr[11:10]) == 2'b01);
+
+            // Cover 12 (Task 10): IN SDA executed (I2C master read)
+            cover(!i_prog_en && f_past_valid && $past(!i_prog_en) && $past(opcode) == 4'h2 &&
+                  $past(instr[11:10]) == 2'b11);
         end
     end
 
