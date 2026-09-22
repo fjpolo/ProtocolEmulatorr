@@ -37,29 +37,30 @@ module top (
     // SPI wires
     wire        core_sck;         // o_spi_sck from ProtocolEmulator
     wire        core_cs_n;        // o_spi_cs_n from ProtocolEmulator
-    wire        spi_miso_in = core_tx;  // loopback: MOSI -> MISO
 
     assign spi_sck  = core_sck;
     assign spi_mosi = core_tx;
     assign spi_cs_n = core_cs_n;
+
+    // Core RX input routing:
+    // When SPI transaction is active (!core_cs_n), MISO is internally looped back from MOSI (core_tx).
+    // When SPI is idle (core_cs_n == 1), RX is connected to the board UART RX pin (uart_rx on Pin V14).
+    wire spi_active = !core_cs_n;
+    wire core_rx_in = spi_active ? core_tx : uart_rx;
 
     // 8-bit GPIO bus from ProtocolEmulator
     wire [7:0]  core_gpio_out;
     wire [7:0]  core_gpio_oe;
     wire [7:0]  core_gpio_in;
 
-    // Internal loopback routing:
-    // When core drives an output (core_gpio_oe[k]=1), that output is reflected on core_gpio_in[k].
-    // Pin 0 (TX/MOSI) also loops back to Pin 3 (RX/MISO) for SPI loopback.
-    // Floating/undriven pins pull high (1'b1).
-    assign core_gpio_in[0] = core_gpio_oe[0] ? core_gpio_out[0] : 1'b1;
-    assign core_gpio_in[1] = core_gpio_oe[1] ? core_gpio_out[1] : 1'b1;
-    assign core_gpio_in[2] = core_gpio_oe[2] ? core_gpio_out[2] : 1'b1;
-    assign core_gpio_in[3] = core_gpio_oe[0] ? core_gpio_out[0] : (core_gpio_oe[3] ? core_gpio_out[3] : 1'b1);
-    assign core_gpio_in[4] = core_gpio_oe[4] ? core_gpio_out[4] : 1'b1;
-    assign core_gpio_in[5] = core_gpio_oe[5] ? core_gpio_out[5] : 1'b1;
-    assign core_gpio_in[6] = core_gpio_oe[6] ? core_gpio_out[6] : 1'b1;
-    assign core_gpio_in[7] = core_gpio_oe[7] ? core_gpio_out[7] : 1'b1;
+    assign core_gpio_in[0] = core_rx_in;
+    assign core_gpio_in[1] = 1'b1;
+    assign core_gpio_in[2] = 1'b1;
+    assign core_gpio_in[3] = core_tx; // Dedicated MISO loopback pin (Pin 3)
+    assign core_gpio_in[4] = 1'b1;
+    assign core_gpio_in[5] = 1'b1;
+    assign core_gpio_in[6] = 1'b1;
+    assign core_gpio_in[7] = 1'b1;
 
     ProtocolEmulator DUT (
         .i_clk        (i_sys_clk),
@@ -70,7 +71,7 @@ module top (
         .i_gpio       (core_gpio_in),
         .o_gpio       (core_gpio_out),
         .o_gpio_oe    (core_gpio_oe),
-        .i_rx         (spi_miso_in),
+        .i_rx         (core_rx_in),
         .o_tx         (core_tx),
         .o_spi_sck    (core_sck),
         .o_spi_cs_n   (core_cs_n),
