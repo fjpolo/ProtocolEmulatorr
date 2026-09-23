@@ -97,6 +97,21 @@ module ProtocolEmulator(
     reg        rx_last_bit;         // RX previous decoded bit (for CAN 5 identical bits)
     reg        stuff_error;         // Sticky bit-stuff error flag on RX
 
+    // Asymmetric Single-Wire & Retro Physical Protocol Accelerators State (Task 18)
+    reg [1:0]  pulse_mode;          // 00=Off, 01=Single-Wire Asymmetric (WS2812B/Joybus), 10=NES/SNES Host, 11=NES/SNES Device
+    reg        pulse_polarity;      // 0=Active-High (WS2812B), 1=Active-Low Open-Drain (N64 Joybus / NES/SNES)
+    reg        pulse_msb_first;     // 0=LSB-first, 1=MSB-first (for WS2812B 24-bit GRB)
+    reg [1:0]  pulse_phase;         // Phase sequencing for 2-phase asymmetric pulse or gamepad LATCH/CLOCK
+    reg [7:0]  t_act_0;             // Active pulse duration for bit '0' (cycles - 1, default 19 for 400ns @ 50MHz)
+    reg [7:0]  t_rest_0;            // Rest duration for bit '0' (cycles - 1, default 41 for 850ns @ 50MHz)
+    reg [7:0]  t_act_1;             // Active pulse duration for bit '1' (cycles - 1, default 39 for 800ns @ 50MHz)
+    reg [7:0]  t_rest_1;            // Rest duration for bit '1' (cycles - 1, default 21 for 450ns @ 50MHz)
+    reg [7:0]  t_latch;             // Gamepad LATCH pulse width (cycles - 1, default 60 @ 50MHz)
+    reg [7:0]  pulse_thresh;        // RX pulse discrimination threshold (default 29 for 600ns @ 50MHz)
+    reg        pad_snes_16b;        // 0=8-bit NES mode, 1=16-bit SNES mode
+    reg [15:0] pad_shift_reg;       // 16-bit shift register for NES/SNES multi-byte reads/emulation
+    reg [7:0]  pulse_rx_cnt;        // Measured duration of active pulse during RX
+
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
     reg [2:0]  rx_pin;          // Pin index for IN deserializer / default WAIT (default 0)
@@ -428,6 +443,9 @@ module ProtocolEmulator(
     wire nrzi_rx_bit = (gpio_in[rx_pin] == nrzi_rx_prev) ? 1'b1 : 1'b0;
     wire dec_rx_bit  = assist_nrzi_en ? nrzi_rx_bit : gpio_in[rx_pin];
 
+    // Asymmetric Single-Wire Serializer bit selector
+    wire cur_pulse_bit = pulse_msb_first ? osr[7] : osr[0];
+
     // -------------------------------------------------------------------------
     // Hardware CRC Generator Combinational Functions (Parallel 8-bit XOR Tree)
     // -------------------------------------------------------------------------
@@ -575,6 +593,19 @@ module ProtocolEmulator(
             tx_last_bit       <= 1'b1;
             rx_last_bit       <= 1'b1;
             stuff_error       <= 1'b0;
+            pulse_mode        <= 2'b00;
+            pulse_polarity    <= 1'b0;
+            pulse_msb_first   <= 1'b0;
+            pulse_phase       <= 2'd0;
+            t_act_0           <= 8'd19;
+            t_rest_0          <= 8'd41;
+            t_act_1           <= 8'd39;
+            t_rest_1          <= 8'd21;
+            t_latch           <= 8'd60;
+            pulse_thresh      <= 8'd29;
+            pad_snes_16b      <= 1'b0;
+            pad_shift_reg     <= 16'd0;
+            pulse_rx_cnt      <= 8'd0;
         end else begin
             // Default: clear single-cycle pop/push strobes
             o_tx_pop  <= 1'b0;
@@ -595,7 +626,53 @@ module ProtocolEmulator(
                     end
 
                     4'h2: begin // IN: Multi-cycle deserialization into ISR
-                        if (instr[11:10] == 2'b01) begin
+                        if (pulse_mode == 2'b10) begin
+                            // -------------------------------------------------------
+                            // NES / SNES Gamepad Host Read Mode (Task 18)
+                            // Phase 0: Assert LATCH high on cs_pin for t_latch cycles
+                            // Phase 1: Lower LATCH low on cs_pin, inter-pulse setup
+                            // Phase 2: Drive CLOCK high on sck_pin
+                            // Phase 3: Drive CLOCK low on sck_pin, sample rx_pin into ISR
+                            // -------------------------------------------------------
+                            if (pulse_phase == 2'd0) begin
+                                gpio_out_reg[cs_pin]  <= 1'b1; // LATCH high
+                                gpio_oe_reg[cs_pin]   <= 1'b1;
+                                gpio_out_reg[sck_pin] <= 1'b0; // CLOCK idle low
+                                gpio_oe_reg[sck_pin]  <= 1'b1;
+                                delay_cnt             <= {8'd0, t_latch};
+                                pulse_phase           <= 2'd1;
+                                pc                    <= pc;
+                            end else if (pulse_phase == 2'd1) begin
+                                gpio_out_reg[cs_pin] <= 1'b0; // LATCH low
+                                delay_cnt            <= eff_delay;
+                                pulse_phase          <= 2'd2;
+                                pc                   <= pc;
+                            end else if (pulse_phase == 2'd2) begin
+                                gpio_out_reg[sck_pin] <= 1'b1; // CLOCK high
+                                delay_cnt             <= eff_delay;
+                                pulse_phase           <= 2'd3;
+                                pc                    <= pc;
+                            end else begin
+                                // Phase 3: Falling clock edge, sample DATA
+                                gpio_out_reg[sck_pin] <= 1'b0; // CLOCK low
+                                delay_cnt             <= eff_delay;
+                                isr                   <= {isr[6:0], gpio_in[rx_pin]};
+                                pad_shift_reg         <= {pad_shift_reg[14:0], gpio_in[rx_pin]};
+                                if (rx_bit_cnt == 4'd1) begin
+                                    rx_bit_cnt  <= 4'd0;
+                                    pulse_phase <= 2'd0;
+                                    pc          <= pc + 7'd1;
+                                end else if (rx_bit_cnt == 4'd0) begin
+                                    rx_bit_cnt  <= pad_snes_16b ? 4'd15 : in_count_init;
+                                    pulse_phase <= 2'd2; // next clock
+                                    pc          <= pc;
+                                end else begin
+                                    rx_bit_cnt  <= rx_bit_cnt - 4'd1;
+                                    pulse_phase <= 2'd2; // next clock
+                                    pc          <= pc;
+                                end
+                            end
+                        end else if (instr[11:10] == 2'b01) begin
                             // -------------------------------------------------------
                             // Synchronous SPI Master Read (IN SCK):
                             // Generates 8 clock pulses on sck_pin (auto-toggles) and
@@ -903,12 +980,48 @@ module ProtocolEmulator(
                             end
                         end else begin
                             // -------------------------------------------------------
-                            // Normal OUT mode (instr[11:10]=00): LSB-first Serializer
+                            // Normal OUT mode (instr[11:10]=00): Serializer
                             // Features Autonomous Stream Accelerators:
+                            //   - Asymmetric Single-Wire Pulse Accelerator (WS2812B / Joybus)
                             //   - Hardware Bit-Stuffing (USB 6 ones, CAN 5 identical)
                             //   - Hardware NRZI Encoding (Toggle on 0, Hold on 1)
                             // -------------------------------------------------------
-                            if (assist_stuff_mode == 2'b01 && tx_stuff_cnt == 3'd6) begin
+                            if (pulse_mode == 2'b01) begin
+                                // ---------------------------------------------------
+                                // Asymmetric Single-Wire Pulse Serializer (Task 18)
+                                // Phase 0: Drive Active level for t_act
+                                // Phase 1: Drive Rest level for t_rest & shift OSR
+                                // ---------------------------------------------------
+                                if (pulse_phase == 2'd0) begin
+                                    // Phase 0: Active duration
+                                    gpio_out_reg[tx_pin] <= pulse_polarity ? 1'b0 : 1'b1;
+                                    gpio_oe_reg[tx_pin]  <= 1'b1;
+                                    delay_cnt            <= cur_pulse_bit ? {8'd0, t_act_1} : {8'd0, t_act_0};
+                                    pulse_phase          <= 2'd1;
+                                    pc                   <= pc;
+                                end else begin
+                                    // Phase 1: Rest duration
+                                    gpio_out_reg[tx_pin] <= pulse_polarity ? 1'b1 : 1'b0;
+                                    gpio_oe_reg[tx_pin]  <= (pulse_polarity && gpio_od[tx_pin]) ? 1'b0 : 1'b1;
+                                    delay_cnt            <= cur_pulse_bit ? {8'd0, t_rest_1} : {8'd0, t_rest_0};
+                                    pulse_phase          <= 2'd0;
+                                    if (pulse_msb_first)
+                                        osr <= {osr[6:0], 1'b0};
+                                    else
+                                        osr <= {1'b0, osr[7:1]};
+
+                                    if (bit_cnt == 4'd0) begin
+                                        bit_cnt <= 4'd7;
+                                        pc      <= pc;
+                                    end else if (bit_cnt == 4'd1) begin
+                                        bit_cnt <= 4'd0;
+                                        pc      <= pc + 7'd1;
+                                    end else begin
+                                        bit_cnt <= bit_cnt - 4'd1;
+                                        pc      <= pc;
+                                    end
+                                end
+                            end else if (assist_stuff_mode == 2'b01 && tx_stuff_cnt == 3'd6) begin
                                 // USB Bit-Stuffing: Insert '0' after 6 consecutive 1s
                                 if (assist_nrzi_en) begin
                                     nrzi_tx_state        <= ~nrzi_tx_state;
@@ -1384,10 +1497,65 @@ module ProtocolEmulator(
                                 pc <= pc + 7'd1;
                             end
                             2'b10: begin // ASSIST READ (read status into acc)
-                                acc        <= {stuff_error, assist_nrzi_en, assist_stuff_mode, 1'b0, tx_stuff_cnt};
-                                zero_flag  <= (stuff_error == 1'b0);
-                                carry_flag <= stuff_error;
+                                if (instr[9]) begin
+                                    acc        <= pad_shift_reg[15:8]; // Read upper byte of 16-bit SNES gamepad
+                                    zero_flag  <= (pad_shift_reg[15:8] == 8'h00);
+                                    carry_flag <= 1'b0;
+                                end else begin
+                                    acc        <= {stuff_error, assist_nrzi_en, assist_stuff_mode, 1'b0, tx_stuff_cnt};
+                                    zero_flag  <= (stuff_error == 1'b0);
+                                    carry_flag <= stuff_error;
+                                end
                                 pc <= pc + 7'd1;
+                            end
+                            2'b11: begin // ASSIST PULSE & GAMEPAD (Task 18)
+                                case (instr[9:8])
+                                    2'b00: begin // PULSE_CFG: instr[7:6]=mode, instr[5]=pol, instr[4]=msb_first, instr[3:2]=profile
+                                        pulse_mode      <= instr[7:6];
+                                        pulse_polarity  <= instr[5];
+                                        pulse_msb_first <= instr[4];
+                                        pulse_phase     <= 2'd0;
+                                        if (instr[3:2] == 2'b01) begin
+                                            // NEOPIXEL Profile (WS2812B @ 50MHz: 400ns/850ns 0, 800ns/450ns 1, MSB-first)
+                                            pulse_mode      <= 2'b01;
+                                            pulse_polarity  <= 1'b0; // Active High
+                                            pulse_msb_first <= 1'b1; // MSB-first
+                                            t_act_0         <= 8'd19; // 20 cycles
+                                            t_rest_0        <= 8'd41; // 42 cycles
+                                            t_act_1         <= 8'd39; // 40 cycles
+                                            t_rest_1        <= 8'd21; // 22 cycles
+                                            pulse_thresh    <= 8'd29; // 30 cycles
+                                        end else if (instr[3:2] == 2'b10) begin
+                                            // JOYBUS Profile (N64/GC @ 50MHz: 3us/1us 0, 1us/3us 1, LSB-first open-drain)
+                                            pulse_mode      <= 2'b01;
+                                            pulse_polarity  <= 1'b1; // Active Low Open-Drain
+                                            pulse_msb_first <= 1'b0; // LSB-first
+                                            t_act_0         <= 8'd149; // 150 cycles (3us)
+                                            t_rest_0        <= 8'd49;  // 50 cycles (1us)
+                                            t_act_1         <= 8'd49;  // 50 cycles (1us)
+                                            t_rest_1        <= 8'd149; // 150 cycles (3us)
+                                            pulse_thresh    <= 8'd99;  // 100 cycles (2us)
+                                        end
+                                        pc <= pc + 7'd1;
+                                    end
+                                    2'b01: begin // GAMEPAD_CFG: instr[7]=snes_16b, instr[6]=role (0=Host, 1=Device)
+                                        pulse_mode   <= instr[6] ? 2'b11 : 2'b10;
+                                        pad_snes_16b <= instr[7];
+                                        pulse_phase  <= 2'd0;
+                                        if (instr[5:0] != 6'd0) begin
+                                            t_latch <= {2'b00, instr[5:0]};
+                                        end
+                                        pc <= pc + 7'd1;
+                                    end
+                                    2'b10: begin // PULSE_TIME0: t_act_0 <= instr[7:0]
+                                        t_act_0 <= instr[7:0];
+                                        pc <= pc + 7'd1;
+                                    end
+                                    2'b11: begin // PULSE_TIME1: t_act_1 <= instr[7:0]
+                                        t_act_1 <= instr[7:0];
+                                        pc <= pc + 7'd1;
+                                    end
+                                endcase
                             end
                             default: begin
                                 pc <= pc + 7'd1;

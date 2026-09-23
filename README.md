@@ -41,6 +41,7 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 * [Task 15 — 8-bit Micro-ALU & Arithmetic Engine](task15.md)
 * [Task 16 — 128-Word IMEM Expansion & 4-Bank Switching](task16.md)
 * [Task 17 — Autonomous Stream Accelerators: NRZI & Bit-Stuffer/De-stuffer](task17.md)
+* [Task 18 — Asymmetric Single-Wire & Retro Physical Protocol Accelerators](task18.md)
 
 ## Usage
 

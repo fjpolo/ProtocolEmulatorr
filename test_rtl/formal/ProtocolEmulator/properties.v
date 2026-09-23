@@ -102,6 +102,8 @@
             `ASSERT(assist_nrzi_en == 1'b0);
             `ASSERT(assist_stuff_mode == 2'b00);
             `ASSERT(stuff_error == 1'b0);
+            `ASSERT(pulse_mode == 2'b00);
+            `ASSERT(pulse_phase == 2'd0);
         end
     end
 
@@ -145,8 +147,8 @@
             // Bit counter in OUT serializer is bounded between 0 and 7
             `ASSERT(bit_cnt <= 4'd7);
 
-            // Bit counter in IN deserializer is bounded between 0 and 7
-            `ASSERT(rx_bit_cnt <= 4'd7);
+            // Bit counter in IN deserializer is bounded between 0 and 7 (or 15 for 16-bit SNES gamepad)
+            `ASSERT(rx_bit_cnt <= (pad_snes_16b ? 4'd15 : 4'd7));
 
             // Dedicated TX output port reflects selected tx_pin
             `ASSERT(o_tx == gpio_out_reg[tx_pin]);
@@ -191,7 +193,32 @@
                         end
                     end
                     4'h2: begin // IN: dynamic deserialization into ISR
-                        if ($past(instr[11:10]) == 2'b01 || $past(instr[11:10]) == 2'b11) begin
+                        if ($past(pulse_mode) == 2'b10) begin
+                            // Gamepad Host (Task 18)
+                            if ($past(pulse_phase) == 2'd0) begin
+                                `ASSERT(delay_cnt == {8'd0, $past(t_latch)});
+                                `ASSERT(pulse_phase == 2'd1);
+                                `ASSERT(pc == $past(pc));
+                            end else if ($past(pulse_phase) == 2'd1) begin
+                                `ASSERT(delay_cnt == $past(eff_delay));
+                                `ASSERT(pulse_phase == 2'd2);
+                                `ASSERT(pc == $past(pc));
+                            end else if ($past(pulse_phase) == 2'd2) begin
+                                `ASSERT(delay_cnt == $past(eff_delay));
+                                `ASSERT(pulse_phase == 2'd3);
+                                `ASSERT(pc == $past(pc));
+                            end else begin
+                                `ASSERT(delay_cnt == $past(eff_delay));
+                                if ($past(rx_bit_cnt) == 4'd1) begin
+                                    `ASSERT(rx_bit_cnt == 4'd0);
+                                    `ASSERT(pulse_phase == 2'd0);
+                                    `ASSERT(pc == $past(pc) + 7'd1);
+                                end else begin
+                                    `ASSERT(pulse_phase == 2'd2);
+                                    `ASSERT(pc == $past(pc));
+                                end
+                            end
+                        end else if ($past(instr[11:10]) == 2'b01 || $past(instr[11:10]) == 2'b11) begin
                             `ASSERT(delay_cnt == $past(eff_delay));
                             // Synchronous modes (IN SCK / IN SDA)
                             if ($past(in_sck_phase) == 2'd0) begin
@@ -286,6 +313,25 @@
                                 `ASSERT(out_sck_phase == 1'b0);
                                 `ASSERT(delay_cnt == ($past(osr[0]) ? $past(eff_delay_10x) : $past(eff_delay)));
                                 if ($past(instr[9]) || $past(bit_cnt) == 4'd1) begin
+                                    `ASSERT(bit_cnt == 4'd0);
+                                    `ASSERT(pc == $past(pc) + 7'd1);
+                                end else if ($past(bit_cnt) == 4'd0) begin
+                                    `ASSERT(bit_cnt == 4'd7);
+                                    `ASSERT(pc == $past(pc));
+                                end else begin
+                                    `ASSERT(bit_cnt == $past(bit_cnt) - 4'd1);
+                                    `ASSERT(pc == $past(pc));
+                                end
+                            end
+                        end else if ($past(instr[11:10]) == 2'b00 && $past(pulse_mode) == 2'b01) begin
+                            if ($past(pulse_phase) == 2'd0) begin
+                                `ASSERT(delay_cnt == ($past(cur_pulse_bit) ? {8'd0, $past(t_act_1)} : {8'd0, $past(t_act_0)}));
+                                `ASSERT(pulse_phase == 2'd1);
+                                `ASSERT(pc == $past(pc));
+                            end else begin
+                                `ASSERT(delay_cnt == ($past(cur_pulse_bit) ? {8'd0, $past(t_rest_1)} : {8'd0, $past(t_rest_0)}));
+                                `ASSERT(pulse_phase == 2'd0);
+                                if ($past(bit_cnt) == 4'd1) begin
                                     `ASSERT(bit_cnt == 4'd0);
                                     `ASSERT(pc == $past(pc) + 7'd1);
                                 end else if ($past(bit_cnt) == 4'd0) begin

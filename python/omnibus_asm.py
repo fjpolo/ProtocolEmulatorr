@@ -67,6 +67,10 @@ OPCODES = {
     "ASSIST_CFG":    0xF,
     "ASSIST_RESET":  0xF,
     "ASSIST_READ":   0xF,
+    "PULSE_CFG":     0xF,  # Task 18: Asymmetric Single-Wire Pulse Accelerator
+    "GAMEPAD_CFG":   0xF,  # Task 18: Retro NES/SNES Gamepad Controller Bus
+    "PULSE_TIME0":   0xF,
+    "PULSE_TIME1":   0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -720,11 +724,16 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
-            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ"):
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1"):
                 # Sub-operations:
                 # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
                 # 2'b01: ASSIST RESET
-                # 2'b10: ASSIST READ
+                # 2'b10: ASSIST READ [, PAD_HIGH]
+                # 2'b11: ASSIST PULSE / GAMEPAD
+                #        [9:8]=00: PULSE_CFG
+                #        [9:8]=01: GAMEPAD_CFG
+                #        [9:8]=10: PULSE_TIME0
+                #        [9:8]=11: PULSE_TIME1
                 STUFF_MAP = {
                     "OFF": 0, "NONE": 0, "0": 0, "DISABLE": 0, "BYPASS": 0,
                     "USB": 1, "USB1": 1, "USB11": 1, "1": 1, "6ONES": 1,
@@ -737,11 +746,14 @@ class OmnibusAssembler:
 
                 if op == "ASSIST":
                     if len(tokens) < 2:
-                        raise AssemblerError(f"Line {line_num}: ASSIST requires sub-operation (CFG, RESET, READ)")
+                        raise AssemblerError(f"Line {line_num}: ASSIST requires sub-operation (CFG, RESET, READ, PULSE_CFG, GAMEPAD_CFG, PULSE_TIME0, PULSE_TIME1)")
                     sub_cmd = tokens[1].strip().upper()
                     arg_tokens = tokens[2:]
-                else:
+                elif op.startswith("ASSIST_"):
                     sub_cmd = op[7:]  # Strip 'ASSIST_'
+                    arg_tokens = tokens[1:]
+                else:
+                    sub_cmd = op  # Direct mnemonic like PULSE_CFG, GAMEPAD_CFG
                     arg_tokens = tokens[1:]
 
                 if sub_cmd == "CFG":
@@ -789,7 +801,99 @@ class OmnibusAssembler:
                     word = (0xF << 12) | (1 << 10)
 
                 elif sub_cmd in ("READ", "STATUS"):
-                    word = (0xF << 12) | (2 << 10)
+                    pad_high = 1 if any("PAD" in a.upper() or "SNES" in a.upper() or "HIGH" in a.upper() for a in arg_tokens) else 0
+                    word = (0xF << 12) | (2 << 10) | (pad_high << 9)
+
+                elif sub_cmd in ("PULSE_CFG", "PULSE", "PULSECFG"):
+                    # ASSIST PULSE_CFG, MODE=NEOPIXEL / JOYBUS / OFF / CUSTOM
+                    # Defaults:
+                    pmode = 1       # 01 = Single-wire asymmetric
+                    ppol = 0        # 0 = Active-High, 1 = Active-Low
+                    pmsb = 0        # 0 = LSB, 1 = MSB
+                    pprofile = 0    # 0 = None, 1 = NeoPixel, 2 = Joybus
+
+                    for a in arg_tokens:
+                        item = a.strip().upper()
+                        if "=" in item:
+                            k, v = item.split("=", 1)
+                            k, v = k.strip(), v.strip()
+                            if k in ("MODE", "PROFILE", "TYPE"):
+                                if v in ("NEOPIXEL", "WS2812", "WS2812B", "WS2811", "PIXEL"):
+                                    pprofile = 1
+                                    pmode = 1
+                                    ppol = 0
+                                    pmsb = 1
+                                elif v in ("JOYBUS", "N64", "GAMECUBE", "GC"):
+                                    pprofile = 2
+                                    pmode = 1
+                                    ppol = 1
+                                    pmsb = 0
+                                elif v in ("OFF", "DISABLE", "NONE", "0"):
+                                    pmode = 0
+                                    pprofile = 0
+                                else:
+                                    pmode = eval_arg(v) & 3
+                            elif k in ("POL", "POLARITY"):
+                                ppol = 1 if v in ("LOW", "ACTIVE_LOW", "OD", "OPEN_DRAIN", "1") else 0
+                            elif k in ("ORDER", "DIR", "MSB"):
+                                pmsb = 1 if v in ("MSB", "MSB_FIRST", "1") else 0
+                        else:
+                            if item in ("NEOPIXEL", "WS2812", "WS2812B", "WS2811", "PIXEL"):
+                                pprofile = 1
+                                pmode = 1
+                                ppol = 0
+                                pmsb = 1
+                            elif item in ("JOYBUS", "N64", "GAMECUBE", "GC"):
+                                pprofile = 2
+                                pmode = 1
+                                ppol = 1
+                                pmsb = 0
+                            elif item in ("OFF", "DISABLE", "NONE"):
+                                pmode = 0
+                                pprofile = 0
+                            elif item in ("MSB", "MSB_FIRST"):
+                                pmsb = 1
+                            elif item in ("LSB", "LSB_FIRST"):
+                                pmsb = 0
+
+                    word = (0xF << 12) | (3 << 10) | (0 << 8) | (pmode << 6) | (ppol << 5) | (pmsb << 4) | (pprofile << 2)
+
+                elif sub_cmd in ("GAMEPAD_CFG", "GAMEPAD", "PAD_CFG", "PAD"):
+                    # ASSIST GAMEPAD_CFG, ROLE=HOST/DEVICE, TYPE=NES/SNES, LATCH=cycles
+                    role = 0      # 0 = Host (Console), 1 = Device (Gamepad)
+                    snes_16b = 0  # 0 = NES 8-bit, 1 = SNES 16-bit
+                    latch_t = 0   # 0 = default (60 cycles)
+
+                    for a in arg_tokens:
+                        item = a.strip().upper()
+                        if "=" in item:
+                            k, v = item.split("=", 1)
+                            k, v = k.strip(), v.strip()
+                            if k in ("ROLE", "MODE"):
+                                role = 1 if v in ("DEVICE", "GAMEPAD", "CONTROLLER", "SLAVE", "1") else 0
+                            elif k in ("TYPE", "CONSOLE", "PAD"):
+                                snes_16b = 1 if v in ("SNES", "16", "16BIT", "SUPER") else 0
+                            elif k in ("LATCH", "TIME", "PULSE"):
+                                latch_t = eval_arg(v) & 0x3F
+                        else:
+                            if item in ("DEVICE", "GAMEPAD", "CONTROLLER", "SLAVE"):
+                                role = 1
+                            elif item in ("HOST", "CONSOLE", "MASTER"):
+                                role = 0
+                            elif item in ("SNES", "16", "16BIT", "SUPER"):
+                                snes_16b = 1
+                            elif item in ("NES", "8", "8BIT"):
+                                snes_16b = 0
+
+                    word = (0xF << 12) | (3 << 10) | (1 << 8) | (snes_16b << 7) | (role << 6) | latch_t
+
+                elif sub_cmd in ("PULSE_TIME0", "TIME0", "PULSETIME0"):
+                    cycles = eval_arg(arg_tokens[0]) if arg_tokens else 0
+                    word = (0xF << 12) | (3 << 10) | (2 << 8) | (cycles & 0xFF)
+
+                elif sub_cmd in ("PULSE_TIME1", "TIME1", "PULSETIME1"):
+                    cycles = eval_arg(arg_tokens[0]) if arg_tokens else 0
+                    word = (0xF << 12) | (3 << 10) | (3 << 8) | (cycles & 0xFF)
 
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ASSIST sub-operation '{sub_cmd}'")
