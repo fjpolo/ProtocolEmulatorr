@@ -3569,5 +3569,389 @@ pass_loop:
     dut._log.info("Test 20D: Complete Ethernet Packet FCS Integration & Verification PASSED!")
 
 
+# =============================================================================
+# Task 21: Dedicated Hardware I2C / SMBus Slave Engine
+# =============================================================================
+
+class I2CMasterModel:
+    def __init__(self, dut, sda_pin=4, scl_pin=1, period_ns=200):
+        self.dut = dut
+        self.sda_pin = sda_pin
+        self.scl_pin = scl_pin
+        self.period_ns = period_ns
+        self.master_sda = 1
+        self.master_scl = 1
+        self._updater = None
+
+    async def start(self):
+        self._updater = cocotb.start_soon(self._bus_loop())
+
+    def stop(self):
+        if self._updater:
+            self._updater.cancel()
+
+    async def _bus_loop(self):
+        while True:
+            await RisingEdge(self.dut.i_clk)
+            dut_oe = int(self.dut.o_gpio_oe.value)
+            dut_out = int(self.dut.o_gpio.value)
+
+            dut_sda_low = ((dut_oe >> self.sda_pin) & 1) and not ((dut_out >> self.sda_pin) & 1)
+            dut_scl_low = ((dut_oe >> self.scl_pin) & 1) and not ((dut_out >> self.scl_pin) & 1)
+
+            bus_sda = 0 if (self.master_sda == 0 or dut_sda_low) else 1
+            bus_scl = 0 if (self.master_scl == 0 or dut_scl_low) else 1
+
+            curr_in = int(self.dut.i_gpio.value)
+            new_in = curr_in
+            if bus_sda:
+                new_in |= (1 << self.sda_pin)
+            else:
+                new_in &= ~(1 << self.sda_pin)
+            if bus_scl:
+                new_in |= (1 << self.scl_pin)
+            else:
+                new_in &= ~(1 << self.scl_pin)
+            self.dut.i_gpio.value = new_in
+
+    async def _wait_scl_high(self):
+        for _ in range(1000):
+            dut_oe = int(self.dut.o_gpio_oe.value)
+            dut_out = int(self.dut.o_gpio.value)
+            dut_scl_low = ((dut_oe >> self.scl_pin) & 1) and not ((dut_out >> self.scl_pin) & 1)
+            if self.master_scl == 1 and not dut_scl_low:
+                return
+            await Timer(self.period_ns // 4, unit="ns")
+        assert False, "Timeout waiting for SCL clock stretch release!"
+
+    async def send_start(self):
+        self.master_sda = 1
+        self.master_scl = 1
+        await Timer(self.period_ns, unit="ns")
+        await self._wait_scl_high()
+        self.master_sda = 0
+        await Timer(self.period_ns, unit="ns")
+        self.master_scl = 0
+        await Timer(self.period_ns, unit="ns")
+
+    async def send_stop(self):
+        self.master_sda = 0
+        self.master_scl = 0
+        await Timer(self.period_ns, unit="ns")
+        self.master_scl = 1
+        await Timer(self.period_ns, unit="ns")
+        await self._wait_scl_high()
+        self.master_sda = 1
+        await Timer(self.period_ns, unit="ns")
+
+    async def write_byte(self, byte_val):
+        for i in range(7, -1, -1):
+            bit = (byte_val >> i) & 1
+            self.master_sda = bit
+            await Timer(self.period_ns // 2, unit="ns")
+            self.master_scl = 1
+            await Timer(self.period_ns // 2, unit="ns")
+            await self._wait_scl_high()
+            self.master_scl = 0
+            await Timer(self.period_ns // 2, unit="ns")
+
+        # 9th clock: sample slave ACK
+        self.master_sda = 1
+        await Timer(self.period_ns // 2, unit="ns")
+        self.master_scl = 1
+        await Timer(self.period_ns // 2, unit="ns")
+        await self._wait_scl_high()
+
+        dut_oe = int(self.dut.o_gpio_oe.value)
+        dut_out = int(self.dut.o_gpio.value)
+        dut_sda_low = ((dut_oe >> self.sda_pin) & 1) and not ((dut_out >> self.sda_pin) & 1)
+        bus_sda = 0 if dut_sda_low else 1
+        ack_received = (bus_sda == 0)
+
+        self.master_scl = 0
+        await Timer(self.period_ns // 2, unit="ns")
+        return ack_received
+
+    async def read_byte(self, ack=True):
+        val = 0
+        self.master_sda = 1
+        for i in range(7, -1, -1):
+            await Timer(self.period_ns // 2, unit="ns")
+            self.master_scl = 1
+            await Timer(self.period_ns // 2, unit="ns")
+            await self._wait_scl_high()
+
+            dut_oe = int(self.dut.o_gpio_oe.value)
+            dut_out = int(self.dut.o_gpio.value)
+            dut_sda_low = ((dut_oe >> self.sda_pin) & 1) and not ((dut_out >> self.sda_pin) & 1)
+            bit = 0 if dut_sda_low else 1
+            val = (val << 1) | bit
+
+            self.master_scl = 0
+            await Timer(self.period_ns // 2, unit="ns")
+
+        # 9th clock: Send master ACK/NACK
+        self.master_sda = 0 if ack else 1
+        await Timer(self.period_ns // 2, unit="ns")
+        self.master_scl = 1
+        await Timer(self.period_ns // 2, unit="ns")
+        await self._wait_scl_high()
+        self.master_scl = 0
+        await Timer(self.period_ns // 2, unit="ns")
+        self.master_sda = 1
+        return val
+
+
+@cocotb.test()
+async def test_i2c_slave_address_match_and_auto_ack(dut):
+    """Task 21A: Hardware I2C slave matches 7-bit address 0x50 and asserts autonomous ACK."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Program:
+    #   PINMAP 4, 4, 1, 2      (SDA=Pin4, SCL=Pin1)
+    #   CFG_OD 0x12            (Pin4, Pin1 open-drain)
+    #   I2C_SLAVE_CFG 0x50, STRETCH=0
+    # wait_match:
+    #   JMP I2C_MATCH, on_match
+    #   JMP wait_match
+    # on_match:
+    #   SET 2, 1, 0            (Assert Pin2 flag on address match)
+    # halt:
+    #   JMP halt
+    asm_source = """
+    PINMAP 4, 4, 1, 2
+    CFG_OD 0x12
+    SET 2, 0, 0
+    I2C_SLAVE_CFG 0x50, STRETCH=0
+wait_match:
+    JMP I2C_MATCH, on_match
+    JMP wait_match
+on_match:
+    SET 2, 1, 0
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    master = I2CMasterModel(dut, sda_pin=4, scl_pin=1, period_ns=200)
+    await master.start()
+    await load_program_direct(dut, prog)
+
+    await ClockCycles(dut.i_clk, 20)
+
+    # Master sends START and matching slave address 0x50 with Write (0xA0)
+    await master.send_start()
+    ack = await master.write_byte((0x50 << 1) | 0)
+    assert ack is True, "Expected Slave to assert ACK on matching address 0x50!"
+    dut._log.info("Master received ACK from hardware I2C slave!")
+
+    # Verify address match condition and microcode jump
+    for _ in range(50):
+        await RisingEdge(dut.i_clk)
+        if int(dut.i2c_addr_match.value) == 1 and ((int(dut.o_gpio.value) >> 2) & 1) == 1:
+            break
+    else:
+        assert False, "Timeout: microcode did not detect I2C_MATCH or assert Pin2!"
+
+    # Master sends STOP
+    await master.send_stop()
+    await ClockCycles(dut.i_clk, 10)
+    assert int(dut.i2c_bus_active.value) == 0, "Expected i2c_bus_active == 0 after STOP condition!"
+    master.stop()
+    dut._log.info("Test 21A: Hardware I2C slave address match and autonomous ACK verified!")
+
+
+@cocotb.test()
+async def test_i2c_slave_address_nack_on_mismatch(dut):
+    """Task 21B: Hardware I2C slave ignores mismatched address 0x55 leaving SDA floating (NACK)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    asm_source = """
+    PINMAP 4, 4, 1, 2
+    CFG_OD 0x12
+    SET 2, 0, 0
+    I2C_SLAVE_CFG 0x50, STRETCH=0
+wait_match:
+    JMP I2C_MATCH, on_match
+    JMP wait_match
+on_match:
+    SET 2, 1, 0
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    master = I2CMasterModel(dut, sda_pin=4, scl_pin=1, period_ns=200)
+    await master.start()
+    await load_program_direct(dut, prog)
+
+    await ClockCycles(dut.i_clk, 20)
+
+    # Master sends START and mismatching slave address 0x55 with Write (0xAA)
+    await master.send_start()
+    ack = await master.write_byte((0x55 << 1) | 0)
+    assert ack is False, "Expected Master to receive NACK (SDA left floating) on address mismatch!"
+    dut._log.info("Master correctly observed NACK on mismatched address 0x55!")
+
+    await ClockCycles(dut.i_clk, 20)
+    assert int(dut.i2c_addr_match.value) == 0, "i2c_addr_match should not assert on mismatch!"
+    assert ((int(dut.o_gpio.value) >> 2) & 1) == 0, "Microcode should not reach on_match handler!"
+
+    await master.send_stop()
+    master.stop()
+    dut._log.info("Test 21B: Hardware I2C slave address mismatch NACK verified!")
+
+
+@cocotb.test()
+async def test_i2c_slave_write_receive_flow(dut):
+    """Task 21C: Master writes byte 0x3C to slave; slave receives with IN SLAVE and auto-ACKs."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Program:
+    #   PINMAP 4, 4, 1, 2
+    #   CFG_OD 0x12
+    #   SET 2, 0, 0
+    #   I2C_SLAVE_CFG 0x50, STRETCH=0
+    # wait_match:
+    #   JMP I2C_WRITE, do_recv
+    #   JMP wait_match
+    # do_recv:
+    #   IN SLAVE
+    #   PUSH
+    #   SET 2, 1, 0
+    # halt:
+    #   JMP halt
+    asm_source = """
+    PINMAP 4, 4, 1, 2
+    CFG_OD 0x12
+    SET 2, 0, 0
+    I2C_SLAVE_CFG 0x50, STRETCH=0
+wait_match:
+    JMP I2C_WRITE, do_recv
+    JMP wait_match
+do_recv:
+    IN SLAVE
+    PUSH
+    SET 2, 1, 0
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    master = I2CMasterModel(dut, sda_pin=4, scl_pin=1, period_ns=200)
+    await master.start()
+    await load_program_direct(dut, prog)
+
+    await ClockCycles(dut.i_clk, 20)
+
+    # 1. Master sends Address 0x50 + Write (0xA0) -> ACK
+    await master.send_start()
+    ack_addr = await master.write_byte((0x50 << 1) | 0)
+    assert ack_addr is True, "Slave must ACK address 0x50"
+
+    pushed_bytes = []
+    async def monitor_push():
+        while True:
+            await RisingEdge(dut.i_clk)
+            if int(dut.o_rx_push.value) == 1:
+                pushed_bytes.append(int(dut.o_data.value))
+    push_mon = cocotb.start_soon(monitor_push())
+
+    # 2. Master writes payload byte 0x3C -> Slave receives via IN SLAVE and ACKs on 9th clock
+    ack_data = await master.write_byte(0x3C)
+    assert ack_data is True, "Slave must ACK received data byte 0x3C via IN SLAVE"
+    dut._log.info("Master wrote 0x3C and received ACK from slave!")
+
+    await master.send_stop()
+
+    # Wait for microcode to PUSH received byte to FIFO
+    for _ in range(50):
+        await RisingEdge(dut.i_clk)
+        if len(pushed_bytes) > 0:
+            break
+    else:
+        assert False, "Timeout: o_rx_push did not assert after PUSH!"
+
+    push_mon.cancel()
+    rx_byte = pushed_bytes[0]
+    assert rx_byte == 0x3C, f"Expected FIFO received byte 0x3C, got 0x{rx_byte:02X}"
+    master.stop()
+    dut._log.info(f"Test 21C: I2C Slave write receive flow verified! (Received 0x{rx_byte:02X})")
+
+
+@cocotb.test()
+async def test_i2c_slave_read_transmit_and_clock_stretch(dut):
+    """Task 21D: Master reads byte from slave; slave stretches clock until data ready and sends 0xBE."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Program:
+    #   PINMAP 4, 4, 1, 2
+    #   CFG_OD 0x12
+    #   SET 2, 0, 0
+    #   I2C_SLAVE_CFG 0x50, STRETCH=1
+    # wait_match:
+    #   JMP I2C_READ, do_send
+    #   JMP wait_match
+    # do_send:
+    #   MOV acc, 0xBE
+    #   MOV OSR, acc
+    #   I2C_RELEASE_SCL
+    #   OUT SLAVE
+    #   SET 2, 1, 0
+    # halt:
+    #   JMP halt
+    asm_source = """
+    PINMAP 4, 4, 1, 2
+    CFG_OD 0x12
+    SET 2, 0, 0
+    I2C_SLAVE_CFG 0x50, STRETCH=1
+wait_match:
+    JMP I2C_READ, do_send
+    JMP wait_match
+do_send:
+    MOV acc, 0xBE
+    MOV OSR, acc
+    I2C_RELEASE_SCL
+    OUT SLAVE
+    SET 2, 1, 0
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    master = I2CMasterModel(dut, sda_pin=4, scl_pin=1, period_ns=200)
+    await master.start()
+    await load_program_direct(dut, prog)
+
+    await ClockCycles(dut.i_clk, 20)
+
+    # 1. Master sends Address 0x50 + Read (0xA1) -> ACK
+    await master.send_start()
+    ack_addr = await master.write_byte((0x50 << 1) | 1)
+    assert ack_addr is True, "Slave must ACK address 0x50 on Read request"
+
+    # Slave enters clock stretch, then microcode loads 0xBE, releases SCL, and executes OUT SLAVE
+    read_data = await master.read_byte(ack=False)
+    assert read_data == 0xBE, f"Expected Master to receive 0xBE from slave, got 0x{read_data:02X}"
+    dut._log.info(f"Master successfully read 0x{read_data:02X} from slave after clock stretching release!")
+
+    await master.send_stop()
+    master.stop()
+    dut._log.info("Test 21D: I2C Slave clock stretching and OUT SLAVE transmission PASSED!")
+
+
+
 
 

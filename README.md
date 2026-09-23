@@ -16,7 +16,7 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 ## Key Innovations
 
 * **Deterministic 16-bit ISA**: Single-cycle execution with hardware sidecar delays (0-31 cycles)
-* **Autonomous Stream Accelerators**: On-the-fly NRZI, Bit-Stuffing (USB/CAN), Manchester encoding, and multi-polynomial CRC (CRC-5/8/16/32 Ethernet FCS)
+* **Autonomous Stream Accelerators**: On-the-fly NRZI, Bit-Stuffing (USB/CAN), Manchester encoding, multi-polynomial CRC (CRC-5/8/16/32 Ethernet FCS), and dedicated hardware I2C / SMBus slave engine with autonomous address matching and clock stretching
 * **Wire-Speed MitM and Glitch Injection**: Dynamic rule-based byte replacement and sub-cycle fault triggering
 * **Retro and Creative Physical Protocols**: Native support for N64/GameCube Joybus, NES/SNES gamepads, NeoPixel LED strips, and 1-bit chiptune audio DAC
 * **Unified 8-Bit Bidirectional GPIO Bus**: Dynamic role mapping (`PINMAP`) and per-pin open-drain configuration (`CFG_OD`) allowing arbitrary protocol routing across GPIOs 0..7
@@ -45,6 +45,7 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 * [Task 18 — Asymmetric Single-Wire & Retro Physical Protocol Accelerators](task18.md)
 * [Task 19 — Autonomous Manchester / Biphase Mark Stream Accelerator](task19.md)
 * [Task 20 — Hardware CRC-32 (Ethernet FCS) & CRC-5 Engine](task20.md)
+* [Task 21 — Dedicated Hardware I2C / SMBus Slave Engine](task21.md)
 
 ## Usage
 

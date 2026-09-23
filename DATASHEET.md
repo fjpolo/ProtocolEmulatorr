@@ -1,13 +1,13 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.2 (Architecture Release — Tasks 01 through 20)  
+**Document Revision**: 1.3 (Architecture Release — Tasks 01 through 21)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
 
 ---
 
 ## 1. Device Overview & Key Features
 
-The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable physical-layer communications processor designed to replace dedicated fixed-function protocol controllers (UART, SPI, I2C, 1-Wire, USB 1.1, CAN 2.0, WS2812B, NES/SNES Gamepad, 10BASE-T Ethernet, S/PDIF, DALI) with a unified, high-speed ASIC architecture.
+The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable physical-layer communications processor designed to replace dedicated fixed-function protocol controllers (UART, SPI, I2C Master/Slave, SMBus, 1-Wire, USB 1.1, CAN 2.0, WS2812B, NES/SNES Gamepad, 10BASE-T Ethernet, S/PDIF, DALI) with a unified, high-speed ASIC architecture.
 
 ```
                            +---------------------------------------+
@@ -18,12 +18,14 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
                            | [Micro-ALU]         [SERDES Engine]   |          - Push-Pull / OD
                            | [32-bit CRC Engine] [Pulse Engine]    |          - Dynamic PINMAP
                            | [Stream Stuffer]    [NRZI Modulator]  |          - Manchester / BMC
+                           | [I2C Slave Engine]  [Clock Stretch]   |          - Open-Drain I2C
                            +---------------------------------------+
 ```
 
 ### Key Architectural Specifications
 - **Deterministic Zero-Jitter Execution Engine**: Microcode instructions execute in single clock cycles with precision cycle-accurate sidecar delays (up to 5,110 cycles per bit or runtime dynamic baud divisor).
 - **128-Word Instruction Memory (IMEM)**: Dual-port, runtime-reconfigurable memory divided into 4 selectable 32-word banks (`BANK 0` through `BANK 3`) with in-band or Wishbone programming.
+- **Dedicated Hardware I2C / SMBus Slave Engine**: Autonomous background SCL/SDA edge & framing detection (START, Repeated START, STOP), hardware 7-bit address comparator, automatic ACK assertion (leaving SDA floating on mismatch), hardware clock stretching holding SCL low until released, and microcode slave data transfers (`IN SLAVE`, `OUT SLAVE`).
 - **8-Bit Unified Bidirectional GPIO Bus**: Any protocol role (`TX`, `RX`, `SCK`, `CS`) dynamically mappable to any GPIO pin (`PINMAP`) with per-pin open-drain control (`CFG_OD`).
 - **Single-Cycle 8-Bit Micro-ALU**: 16 arithmetic, logical, and bitwise operations (`ADD`, `ADC`, `SUB`, `SBB`, `AND`, `OR`, `XOR`, `NOT`, `NEG`, `SHL`, `SHR`, `ROL`, `ROR`, `SWAP`, `MOV`, `CLR`) with hardware `Zero` and `Carry` flags.
 - **Hardware Subroutine Stack**: 4-deep call stack (`CALL`, `RET`) with 2-bit saturating pointer for modular protocol routines.
@@ -43,7 +45,7 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
 - **Asymmetric Single-Wire & Retro Physical Accelerators**:
   - **Single-Wire Pulse Serializer**: 2-phase asymmetric pulse generator with configurable active/rest periods for **WS2812B NeoPixel** (800 kHz NRZ) and **Nintendo N64 / GameCube Joybus** (250 kHz open-drain).
   - **Retro Gamepad Host Engine**: Autonomous 4-phase sequence generating latch pulses, clock bursts, and synchronous sampling for **NES (8-bit)** and **SNES (16-bit)** controllers.
-- **Host System Interconnect**: Pipelined **Wishbone B4 Slave Wrapper** with dual parameterized synchronous FIFOs (TX/RX) and hardware status flags.
+- **Host System Interconnect**: Pipelined **Wishbone B4 Slave Wrapper** with dual parameterized synchronous FIFOs (TX/RX) and hardware status flags (`ADDR_STATUS[30]` for real-time I2C address match detection).
 
 ---
 
@@ -271,9 +273,19 @@ graph TD
 | `call_stack[0..3]` | 7 bits each | `7'd0` | LIFO storage for return program counter addresses. |
 | `lc0` | 8 bits | `8'h00` | Primary hardware loop counter for `DJNZ LC0`. |
 | `lc1` | 8 bits | `8'h00` | Secondary hardware loop counter for `DJNZ LC1`. |
-| `crc_reg` | 16 bits | `16'h0000` | Running CRC accumulator register. |
-| `crc_seed` | 16 bits | `16'h0000` | Initial polynomial seed register. |
-| `crc_poly` | 2 bits | `2'b00` | Polynomial selector: `00`=CRC8-Dallas, `01`=CRC8-SMBus, `10`=CRC16-CCITT, `11`=CRC16-Modbus. |
+| `crc_reg` | 32 bits | `32'h00000000` | Running CRC accumulator register (CRC-8, CRC-16, CRC-32, CRC-5). |
+| `crc_seed` | 32 bits | `32'h00000000` | Initial polynomial seed register. |
+| `crc_poly` | 3 bits | `3'b000` | Polynomial selector: `000`=CRC8-Dallas, `001`=CRC8-SMBus, `010`=CRC16-CCITT, `011`=CRC16-Modbus, `100`=CRC32-Ethernet, `101`=CRC5-USB. |
+| `i2c_slave_en` | 1 bit | `1'b0` | Dedicated hardware I2C/SMBus slave engine enable. |
+| `i2c_slave_addr` | 7 bits | `7'd0` | Programmable 7-bit slave address for hardware matching. |
+| `i2c_stretch_en` | 1 bit | `1'b0` | SCL hardware clock stretching enable. |
+| `i2c_addr_match` | 1 bit | `1'b0` | Hardware address match flag (also exposed in Wishbone Status bit 30). |
+| `i2c_rw_bit` | 1 bit | `1'b0` | Latched direction bit of matching address (`0`=Write, `1`=Read). |
+| `i2c_start_flag` | 1 bit | `1'b0` | Sticky bus START / Repeated START condition flag. |
+| `i2c_stop_flag` | 1 bit | `1'b0` | Sticky bus STOP condition flag. |
+| `i2c_bus_active` | 1 bit | `1'b0` | Bus busy status between START and STOP conditions. |
+| `i2c_master_ack` | 1 bit | `1'b0` | Sampled Master ACK response (`1`=ACK / low, `0`=NACK / high). |
+| `i2c_stretch_hold` | 1 bit | `1'b0` | Active SCL clock stretch pull-down status. |
 | `tx_pin` | 3 bits | `3'd0` | GPIO index assigned to Protocol TX / MOSI / SDA output. |
 | `rx_pin` | 3 bits | `3'd0` | GPIO index assigned to Protocol RX / MISO / SDA input. |
 | `sck_pin` | 3 bits | `3'd1` | GPIO index assigned to Protocol SCK / SCL clock output. |
@@ -299,12 +311,13 @@ The ProtocolEmulator provides a standard 32-bit pipelined Wishbone B4 slave inte
 
 | Offset Address | Register Name | Access | Width | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| **`0x00`** | `WB_REG_TX_DATA` | W | 8 bits | Push byte into hardware TX FIFO. |
-| **`0x04`** | `WB_REG_RX_DATA` | R | 8 bits | Pop byte from hardware RX FIFO. |
-| **`0x08`** | `WB_REG_FIFO_STATUS`| R | 8 bits | FIFO status: `[0]`=TX Empty, `[1]`=TX Full, `[2]`=RX Empty, `[3]`=RX Full. |
+| **`0x00`** | `WB_REG_DATA` | R/W | 8 bits | Write to push into TX FIFO; read to pop from RX FIFO. |
+| **`0x04`** | `WB_REG_STATUS` | R | 32 bits | Top-level status register:<br>`[31]`: Interrupt (`o_irq`)<br>`[30]`: **I2C Slave Address Match** (`i2c_addr_match`)<br>`[29]`: CRC Residue Zero (`crc_reg == 0`)<br>`[28:24]`: Core Program Counter (`pc[4:0]`)<br>`[23:16]`: RX FIFO Level<br>`[15:8]`: TX FIFO Level<br>`[7:0]`: FIFO status flags (Empty/Full/AFull/AEmpty). |
+| **`0x08`** | `WB_REG_CTRL` | R/W | 8 bits | Core control: `[0]`=Soft Reset, `[1]`=Halt/Program Mode, `[2]`=TX Flush, `[3]`=RX Flush, `[4..6]`=IRQ Enable masks. |
 | **`0x0C`** | `WB_REG_BAUD_DIV` | R/W | 16 bits | Runtime baud divisor prescaler register. |
-| **`0x10`** | `WB_REG_CORE_CTRL` | R/W | 8 bits | Core control: `[0]`=Core Enable, `[1]`=IMEM Programming Mode. |
-| **`0x80 – 0xFF`**| `WB_IMEM_APERTURE` | R/W | 16 bits | Direct access to 128 microcode memory words (Words 0..127). |
+| **`0x10`** | `WB_REG_GPIO` | R/W | 32 bits | GPIO pin readback, output level, and output enable read/write. |
+| **`0x14`** | `WB_REG_IMEM_BANK` | R/W | 8 bits | Microcode memory bank select register (`[1:0]` = active bank 0..3). |
+| **`0x80 – 0xFF`**| `WB_IMEM_APERTURE` | R/W | 16 bits | Direct access to 128 microcode memory words (Words 0..127 across banks). |
 
 ---
 
@@ -326,7 +339,9 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
 | :---: | :--- | :--- | :--- |
 | **`0x0`** | `NOP` | `NOP [delay]` | No operation. Pauses core for `[delay]` clock cycles. |
 | **`0x1`** | `OUT` | `OUT [tx], <count> [, delay]` | Serialize `<count>` bits from OSR to `tx_pin`. (Auto-SCK / 1W / Pulse). |
+| | | `OUT SLAVE` | Transmit 8 bits from OSR MSB-first in I2C slave mode, sample master ACK. |
 | **`0x2`** | `IN` | `IN [rx], <count> [, delay]` | Deserialize `<count>` bits from `rx_pin` into ISR. (Auto-SCK / 1W / Gamepad). |
+| | | `IN SLAVE` | Receive 8 bits in I2C slave mode on SCL rise, auto-ACK on 9th SCL. |
 | **`0x3`** | `SET` | `SET <pin>, <val> [, delay]` | Set selected GPIO pin output level to `<val>` (`0` or `1`). |
 | **`0x4`** | `WAIT` | `WAIT <pin>, <val> [, delay]`| Block core execution until GPIO pin matches `<val>`, then delay. |
 | **`0x5`** | `PINMAP` | `PINMAP TX, RX, SCK, CS` | Dynamically assign pin indices (0..7) to protocol roles. |
@@ -336,7 +351,7 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
 | | | `PULL_LC <lc>` | Latch host input data `i_data` into loop counter. |
 | | | `PUSH_LC <lc>` | Copy loop counter value to output register `o_data`. |
 | | | `MOV_LC <dst>, <src>` | Transfer count value between `LC0` and `LC1`. |
-| **`0x8`** | `JMP` | `JMP [cond,] <target>` | Jump to `<target>` (Always, Z, NZ, C, NC, FIFO flags, CRC_OK, CRC_ERR, STUFF_ERR, MANCH_ERR). |
+| **`0x8`** | `JMP` | `JMP [cond,] <target>` | Jump to `<target>` (Standard: Always, Z, NZ, C, NC, FIFO flags, CRC_OK, CRC_ERR, STUFF_ERR, MANCH_ERR; Extended: I2C_MATCH, I2C_START, I2C_STOP, I2C_READ, I2C_WRITE, I2C_ACK, I2C_NACK, I2C_BUS_ACTIVE). |
 | **`0x9`** | `PULL` | `PULL [BLOCK]` | Transfer byte from TX FIFO (`i_data`) into OSR. |
 | **`0xA`** | `PUSH` | `PUSH [BLOCK]` | Transfer byte from ISR into RX FIFO (`o_data`). |
 | **`0xB`** | `ALU` | `ALU <op> [, <operand>]` | Execute single-cycle arithmetic/logical operation on Accumulator. |
@@ -344,44 +359,64 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
 | | `RET` | `RET` | Pop return address from hardware stack and resume execution. |
 | **`0xD`** | `BANK` | `BANK <0..3>` | Switch active 32-word IMEM execution bank (Banks 0..3). |
 | **`0xE`** | `CRC` | `CRC <subop> [, <param>]`| Control 32-bit hardware CRC engine (INIT, BYTE, READ_B0..B3, RESET). |
-| **`0xF`** | `ASSIST`| `ASSIST <subop> [, <cfg>]`| Control stream accelerators (NRZI, Bit-Stuffer, Pulse, Gamepad). |
+| **`0xF`** | `ASSIST`| `ASSIST <subop> [, <cfg>]`| Control stream accelerators (NRZI, Bit-Stuffer, Pulse, Gamepad, I2C Slave). |
 
 ---
 
 ### Detailed Opcode Specifications
 
 #### Opcode `0x1` — `OUT` (Multi-Protocol Serializer)
-- **Format**: `16'b0001_MM_S_CCCC_DDDDDDDD`
-  - `MM`: Serializer Mode:
-    - `00`: Standard Asynchronous Serializer / Pulse Serializer
-    - `01`: Synchronous SPI Mode (`OUT SCK`) — auto-toggles `sck_pin`
-    - `10`: 1-Wire Mode (`OUT 1W`) — generates 11x bit slots (Write 0 / Write 1)
-    - `11`: Synchronous I2C Mode (`OUT SDA`) — auto-toggles `sck_pin` (SCL)
+- **Format**: `16'b0001_MMM_S_CCCC_DDDDDDDD`
+  - `MMM`: Serializer Mode:
+    - `000`: Standard Asynchronous Serializer / Pulse Serializer
+    - `001`: Synchronous SPI Mode (`OUT SCK`) — auto-toggles `sck_pin`
+    - `010`: 1-Wire Mode (`OUT 1W`) — generates 11x bit slots (Write 0 / Write 1)
+    - `011`: Synchronous I2C Mode (`OUT SDA`) — auto-toggles `sck_pin` (SCL)
+    - `111`: **Dedicated I2C Slave Mode** (`OUT SLAVE`):
+      - Shifts out 8 data bits from OSR MSB-first on SCL falling edges.
+      - Samples Master ACK/NACK into `i2c_master_ack` on the 9th SCL rising edge.
+      - If clock stretching is enabled and master ACKed (`i2c_master_ack == 1`), automatically pulls SCL low upon completing the transfer until microcode issues `I2C_RELEASE_SCL` or another `OUT SLAVE`.
   - `S`: 1-Wire bit slot mode (`0` = 8-bit byte, `1` = 1-bit slot for ROM search)
   - `CCCC`: Bit count (0 = 8 bits, 1..7 = 1..7 bits)
   - `DDDDDDDD`: Sidecar bit duration delay. Special sentinel `9'h1FF` selects `i_baud_div[8:0]`.
 
 #### Opcode `0x2` — `IN` (Multi-Protocol Deserializer)
-- **Format**: `16'b0010_MM_S_CCCC_DDDDDDDD`
+- **Format**: `16'b0010_MMM_S_CCCC_DDDDDDDD`
   - If `pulse_mode == 2'b10`: Autonomous **NES/SNES Gamepad Host Mode**. Emits `t_latch` pulse on `cs_pin`, bursts 8 or 16 clock cycles on `sck_pin`, and shifts buttons into `isr` and `pad_shift_reg`.
-  - `MM = 01`: Synchronous SPI Master Read (`IN SCK`).
-  - `MM = 10`: 1-Wire Master Read (`IN 1W`).
-  - `MM = 11`: Synchronous I2C Master Read (`IN SDA`).
+  - `MMM = 001`: Synchronous SPI Master Read (`IN SCK`).
+  - `MMM = 010`: 1-Wire Master Read (`IN 1W`).
+  - `MMM = 011`: Synchronous I2C Master Read (`IN SDA`).
+  - `MMM = 111`: **Dedicated I2C Slave Mode** (`IN SLAVE`):
+    - Synchronously deserializes 8 data bits from `tx_pin` (SDA) on SCL rising edges into `isr`.
+    - Automatically drives SDA low (ACK) on the 9th SCL cycle.
+    - If clock stretching is enabled, asserts `i2c_stretch_hold` on the falling edge of the 9th SCL clock.
+    - Latches byte into `o_data <= isr` and advances PC upon completion.
 
 #### Opcode `0x8` — `JMP` (Conditional & Flag Branching)
-- **Format**: `16'b1000_CCCC_0_AAAAAAA`
-  - `AAAAAAA`: 7-bit branch target address (0..127).
-  - `CCCC`: Condition Code:
-    - `4'h0`: Unconditional (`JMP <addr>`)
-    - `4'h1`: Zero (`JMP Z, <addr>`)
-    - `4'h2`: Not Zero (`JMP NZ, <addr>`)
-    - `4'h3`: Carry (`JMP C, <addr>`)
-    - `4'h4`: Not Carry (`JMP NC, <addr>`)
-    - `4'h5`: TX FIFO Not Full (`JMP TX_READY, <addr>`)
-    - `4'h6`: RX FIFO Not Empty (`JMP RX_VALID, <addr>`)
-    - `4'h7`: TX FIFO Empty (`JMP TX_EMPTY, <addr>`)
-    - `4'h8`: RX FIFO Full (`JMP RX_FULL, <addr>`)
-    - `4'hF`: Framing or Stream Violation (`JMP STUFF_ERR, <addr>` or `JMP MANCH_ERR, <addr>`)
+- **Format**:
+  - **Standard Branch** (`instr[7] == 0`): `16'b1000_CCCC_0_AAAAAAA`
+    - `AAAAAAA`: 7-bit branch target address (0..127).
+    - `CCCC`: Condition Code:
+      - `4'h0`: Unconditional (`JMP <addr>`)
+      - `4'h1`: Zero (`JMP Z, <addr>`)
+      - `4'h2`: Not Zero (`JMP NZ, <addr>`)
+      - `4'h3`: Carry (`JMP C, <addr>`)
+      - `4'h4`: Not Carry (`JMP NC, <addr>`)
+      - `4'h5`: TX FIFO Not Full (`JMP TX_READY, <addr>`)
+      - `4'h6`: RX FIFO Not Empty (`JMP RX_VALID, <addr>`)
+      - `4'h7`: TX FIFO Empty (`JMP TX_EMPTY, <addr>`)
+      - `4'h8`: RX FIFO Full (`JMP RX_FULL, <addr>`)
+      - `4'hF`: Framing or Stream Violation (`JMP STUFF_ERR, <addr>` or `JMP MANCH_ERR, <addr>`)
+  - **Extended I2C Slave Conditions** (`instr[7] == 1`): `16'b1000_0_CCC_1_AAAAAAA`
+    - `instr[6:4]` (`CCC`): Extended Condition Code:
+      - `3'b000` (`0x0`): `JMP I2C_MATCH, <addr>` (or `I2C_ADDR_MATCH`) — Branch if 7-bit slave address matched.
+      - `3'b001` (`0x1`): `JMP I2C_START, <addr>` — Branch if I2C START or repeated START condition occurred.
+      - `3'b010` (`0x2`): `JMP I2C_STOP, <addr>` — Branch if I2C STOP condition occurred.
+      - `3'b011` (`0x3`): `JMP I2C_READ, <addr>` — Branch if matched direction bit is Read (`R/W == 1`).
+      - `3'b100` (`0x4`): `JMP I2C_WRITE, <addr>` — Branch if matched direction bit is Write (`R/W == 0`).
+      - `3'b101` (`0x5`): `JMP I2C_ACK, <addr>` — Branch if master acknowledged last byte (`i2c_master_ack == 1`).
+      - `3'b110` (`0x6`): `JMP I2C_NACK, <addr>` — Branch if master negative-acknowledged (`i2c_master_ack == 0`).
+      - `3'b111` (`0x7`): `JMP I2C_BUS_ACTIVE, <addr>` — Branch if bus is currently between START and STOP.
 
 #### Opcode `0xB` — `ALU` (8-Bit Arithmetic & Logic Unit)
 - **Format**: `16'b1011_CCCC_DDDDDDDD`
@@ -422,16 +457,23 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
       - `instr[0] = 0`: `CRC_READ_B2` — copies `crc_reg[23:16]` to `osr` and `o_data`.
       - `instr[0] = 1`: `CRC_READ_B3` — copies `crc_reg[31:24]` to `osr` and `o_data`.
 
-#### Opcode `0xF` — `ASSIST` (Hardware Physical Stream Accelerators)
+#### Opcode `0xF` — `ASSIST` (Hardware Physical Stream Accelerators & I2C Slave)
 - **Format**: `16'b1111_SS_XXXXXXXXXX`
-  - `SS = 00`: `ASSIST CFG`
-    - `instr[4] = 0`: NRZI & Bit-Stuffing Configuration (`NRZI=<0|1>, STUFF=<0|USB|CAN> [, INIT=<0|1>]`)
-    - `instr[4] = 1`: Manchester Accelerator Configuration (`MANCH=<0|1>, MODE=<0|1|2> [, INIT=<0|1>]`)
-    - High-level syntax: `ASSIST MANCH, <IEEE | THOMAS | BMC>`
-  - `SS = 01`: `ASSIST RESET` (Clears bit-stuff counters, `stuff_error`, `manch_error`, and phase trackers)
-  - `SS = 10`: `ASSIST READ [, PAD_HIGH]`
-    - `instr[9] = 0`: Read status into `acc`: `{stuff_error, manch_error, manch_mode[1:0], manch_en, stuff_mode[1:0], nrzi_en}`
-    - `instr[9] = 1`: Read upper byte of 16-bit SNES gamepad (`pad_shift_reg[15:8]`) into `acc`
+  - `SS = 00`:
+    - `instr[9:8] = 00`: `ASSIST CFG`
+      - `instr[4] = 0`: NRZI & Bit-Stuffing Configuration (`NRZI=<0|1>, STUFF=<0|USB|CAN> [, INIT=<0|1>]`)
+      - `instr[4] = 1`: Manchester Accelerator Configuration (`MANCH=<0|1>, MODE=<0|1|2> [, INIT=<0|1>]`)
+      - High-level syntax: `ASSIST MANCH, <IEEE | THOMAS | BMC>`
+    - `instr[9:8] = 01`: `I2C_RELEASE_SCL` — Explicitly releases hardware clock stretch hold (`i2c_stretch_hold <= 0`).
+    - `instr[9:8] = 10`: `I2C_SLAVE_DISABLE` — Disables hardware I2C slave engine (`i2c_slave_en <= 0`).
+  - `SS = 01`:
+    - `instr[9] = 0`: `ASSIST RESET` (Clears bit-stuff counters, `stuff_error`, `manch_error`, and phase trackers)
+    - `instr[9] = 1`: `I2C_SLAVE_CFG <addr7> [, stretch=0|1]` — Configures 7-bit slave address `instr[6:0]` and clock stretch enable `instr[7]`.
+  - `SS = 10`: `ASSIST READ`
+    - `instr[9:8] = 00`: Read status into `acc`: `{stuff_error, manch_error, manch_mode[1:0], manch_en, stuff_mode[1:0], nrzi_en}`
+    - `instr[9:8] = 01`: Read upper byte of 16-bit SNES gamepad (`pad_shift_reg[15:8]`) into `acc`
+    - `instr[9:8] = 10`: `ASSIST READ I2C` — Read I2C status into `acc`: `{2'b00, i2c_bus_active, i2c_master_ack, i2c_rw_bit, i2c_addr_match, i2c_stop_flag, i2c_start_flag}`
+    - `instr[9:8] = 11`: `ASSIST READ ADDR` — Read received 7-bit slave address `i2c_rx_addr[6:0]` into `acc[6:0]`
   - `SS = 11`: Task 18 Pulse & Retro Gamepad Configurations:
     - `instr[9:8] = 00`: `ASSIST PULSE_CFG [, NEOPIXEL | JOYBUS]`
     - `instr[9:8] = 01`: `ASSIST GAMEPAD_CFG, <NES | SNES> [, LATCH=<cycles>]`
@@ -472,6 +514,23 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
   - For $10\,\text{Mbit/s}$ Ethernet at $50\,\text{MHz}$: Bit period = $100\,\text{ns}$ (5 cycles), half-bit = $50\,\text{ns}$ (2–3 cycles).
   - For $1.2\,\text{kbit/s}$ DALI at $50\,\text{MHz}$: Bit period = $833.33\,\mu\text{s}$, half-bit = $416.67\,\mu\text{s}$ (20,833 cycles).
 - **Code Violation Detection**: Flatline across center transition flags `manch_error` in hardware and triggers zero-overhead `JMP MANCH_ERR` branch.
+
+### 5. Dedicated Hardware I2C / SMBus Slave Engine
+- **Bus Type**: 2-wire open-drain (`tx_pin` = SDA, `sck_pin` = SCL) with external $1.5\,\text{k}\Omega - 4.7\,\text{k}\Omega$ pull-up resistors to $V_{DDIO}$.
+- **Speed Grades**: Standard-mode ($100\,\text{kHz}$), Fast-mode ($400\,\text{kHz}$), Fast-mode Plus ($1.0\,\text{MHz}$).
+- **Autonomous Hardware Operation**:
+  - Hardware state machine continuously monitors START / STOP / Repeated-START framing independent of core PC.
+  - Deserializes 7-bit slave address and 1-bit R/W flag.
+  - Compares with programmed `i2c_slave_addr[6:0]`:
+    - **Match**: Automatically drives SDA low (ACK) during 9th SCL pulse, latches `i2c_addr_match = 1`, and optionally asserts clock stretch (`i2c_stretch_hold = 1`) on the 9th falling edge.
+    - **Mismatch**: Floats SDA high (NACK), resets match flag, and ignores incoming payload until next START condition.
+- **Hardware Clock Stretching**:
+  - Configured by `stretch=1` in `I2C_SLAVE_CFG`.
+  - Holds SCL low autonomously to pace slow microcode routines.
+  - Microcode releases clock stretch by executing `I2C_RELEASE_SCL` or by issuing the next byte transfer (`OUT SLAVE`).
+  - Automatically suppresses clock stretching if external master NACKs on read (`i2c_master_ack == 0`).
+- **Wishbone Integration**:
+  - Status register bit 30 (`WB_REG_STATUS[30]`) reflects real-time `i2c_addr_match`, enabling interrupt or polled DMA servicing.
 
 ---
 
