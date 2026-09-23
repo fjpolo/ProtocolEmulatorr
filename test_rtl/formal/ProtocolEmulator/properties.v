@@ -52,7 +52,7 @@
                     imem[0][15:12] == 4'h8 || imem[0][15:12] == 4'h9 ||
                     imem[0][15:12] == 4'hA || imem[0][15:12] == 4'hB ||
                     imem[0][15:12] == 4'hC || imem[0][15:12] == 4'hD ||
-                    imem[0][15:12] == 4'hE);
+                    imem[0][15:12] == 4'hE || imem[0][15:12] == 4'hF);
             // Bound target address to valid IMEM range (0..31)
             `ASSUME(imem[0][6:0] <= 7'd127);
         end
@@ -99,6 +99,9 @@
             `ASSERT(call_stack[1] == 7'd0);
             `ASSERT(call_stack[2] == 7'd0);
             `ASSERT(call_stack[3] == 7'd0);
+            `ASSERT(assist_nrzi_en == 1'b0);
+            `ASSERT(assist_stuff_mode == 2'b00);
+            `ASSERT(stuff_error == 1'b0);
         end
     end
 
@@ -233,8 +236,12 @@
                             end
                         end else begin
                             `ASSERT(delay_cnt == $past(eff_delay));
-                            // Normal asynchronous UART mode
-                            if ($past(rx_bit_cnt) == 4'd0) begin
+                            // Normal asynchronous UART mode with stream bit-destuffing
+                            if (($past(assist_stuff_mode) == 2'b01 && $past(rx_stuff_cnt) == 3'd6) ||
+                                ($past(assist_stuff_mode) == 2'b10 && $past(rx_stuff_cnt) == 3'd5)) begin
+                                `ASSERT(pc == $past(pc));
+                                `ASSERT(rx_bit_cnt == $past(rx_bit_cnt));
+                            end else if ($past(rx_bit_cnt) == 4'd0) begin
                                 `ASSERT(pc == ($past(in_count_init) == 4'd0 ? $past(pc) + 7'd1 : $past(pc)));
                             end else if ($past(rx_bit_cnt) == 4'd1) begin
                                 `ASSERT(rx_bit_cnt == 4'd0);
@@ -381,6 +388,7 @@
                             4'hC: `ASSERT(pc == ($past(acc[7]) ? $past(target) : $past(pc) + 7'd1));
                             4'hD: `ASSERT(pc == (!$past(acc[7]) ? $past(target) : $past(pc) + 7'd1));
                             4'hE: `ASSERT(pc == (($past(crc_reg) != 16'h0000) ? $past(target) : $past(pc) + 7'd1));
+                            4'hF: `ASSERT(pc == ($past(stuff_error) ? $past(target) : $past(pc) + 7'd1));
                             default: `ASSERT(pc == $past(target));
                         endcase
                     end
@@ -393,6 +401,10 @@
                         end
                     end
                     4'hE: begin // CRC: Hardware CRC Generator & Checksum Accelerator
+                        `ASSERT(delay_cnt == 16'd0);
+                        `ASSERT(pc == $past(pc) + 7'd1);
+                    end
+                    4'hF: begin // ASSIST: Autonomous Stream Accelerators
                         `ASSERT(delay_cnt == 16'd0);
                         `ASSERT(pc == $past(pc) + 7'd1);
                     end

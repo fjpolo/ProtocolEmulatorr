@@ -63,6 +63,10 @@ OPCODES = {
     "CRC_READ_HIGH": 0xE,
     "CRC_READ_H":    0xE,
     "CRC_RESET":     0xE,
+    "ASSIST":        0xF,  # Autonomous Stream Accelerators (NRZI & Bit-Stuffing)
+    "ASSIST_CFG":    0xF,
+    "ASSIST_RESET":  0xF,
+    "ASSIST_READ":   0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -465,6 +469,7 @@ class OmnibusAssembler:
                     "NEG": 12, "NEGATIVE": 12, "SIGN": 12, "MINUS": 12,
                     "POS": 13, "POSITIVE": 13, "PLUS": 13,
                     "CRC_ERR": 14, "CRC_BAD": 14, "CRC_ERROR": 14,
+                    "STUFF_ERR": 15, "STUFF_ERROR": 15, "STUFF_BAD": 15,
                 }
                 if len(tokens) >= 3:
                     cond_name = tokens[1].strip().upper()
@@ -714,6 +719,80 @@ class OmnibusAssembler:
                             word = (0xB << 12) | (0 << 11) | (5 << 8) | imm8
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
+
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ"):
+                # Sub-operations:
+                # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
+                # 2'b01: ASSIST RESET
+                # 2'b10: ASSIST READ
+                STUFF_MAP = {
+                    "OFF": 0, "NONE": 0, "0": 0, "DISABLE": 0, "BYPASS": 0,
+                    "USB": 1, "USB1": 1, "USB11": 1, "1": 1, "6ONES": 1,
+                    "CAN": 2, "CAN2": 2, "2": 2, "5BITS": 2,
+                }
+                NRZI_MAP = {
+                    "OFF": 0, "0": 0, "DISABLE": 0, "NRZ": 0, "NONE": 0,
+                    "ON": 1, "1": 1, "ENABLE": 1, "NRZI": 1,
+                }
+
+                if op == "ASSIST":
+                    if len(tokens) < 2:
+                        raise AssemblerError(f"Line {line_num}: ASSIST requires sub-operation (CFG, RESET, READ)")
+                    sub_cmd = tokens[1].strip().upper()
+                    arg_tokens = tokens[2:]
+                else:
+                    sub_cmd = op[7:]  # Strip 'ASSIST_'
+                    arg_tokens = tokens[1:]
+
+                if sub_cmd == "CFG":
+                    # Forms:
+                    #   ASSIST CFG, NRZI=1, STUFF=USB
+                    #   ASSIST CFG, 1, USB
+                    #   ASSIST CFG, NRZI, USB
+                    #   ASSIST CFG, NRZI, USB, INIT=1
+                    nrzi_val = 0
+                    stuff_val = 0
+                    init_en = 0
+                    init_val = 1
+
+                    for a in arg_tokens:
+                        item = a.strip().upper()
+                        if "=" in item:
+                            k, v = item.split("=", 1)
+                            k, v = k.strip(), v.strip()
+                            if k == "NRZI":
+                                nrzi_val = NRZI_MAP[v] if v in NRZI_MAP else (1 if eval_arg(v) else 0)
+                            elif k in ("STUFF", "MODE"):
+                                stuff_val = STUFF_MAP[v] if v in STUFF_MAP else (eval_arg(v) & 3)
+                            elif k in ("INIT", "LEVEL", "STATE"):
+                                init_en = 1
+                                init_val = 1 if (v in ("1", "HIGH", "J") or (eval_arg(v) != 0 if v.isdigit() else 0)) else 0
+                        elif item in ("NRZI", "ENABLE_NRZI"):
+                            nrzi_val = 1
+                        elif item in ("NRZ", "NO_NRZI", "DISABLE_NRZI"):
+                            nrzi_val = 0
+                        elif item in STUFF_MAP:
+                            stuff_val = STUFF_MAP[item]
+                        else:
+                            try:
+                                v_int = eval_arg(item)
+                                if nrzi_val == 0:
+                                    nrzi_val = 1 if v_int else 0
+                                else:
+                                    stuff_val = v_int & 3
+                            except Exception:
+                                pass
+
+                    word = (0xF << 12) | (0 << 10) | (nrzi_val << 9) | (stuff_val << 7) | (init_en << 6) | (init_val << 5)
+
+                elif sub_cmd == "RESET":
+                    word = (0xF << 12) | (1 << 10)
+
+                elif sub_cmd in ("READ", "STATUS"):
+                    word = (0xF << 12) | (2 << 10)
+
+                else:
+                    raise AssemblerError(f"Line {line_num}: Unknown ASSIST sub-operation '{sub_cmd}'")
 
             assembled.append((addr, word, line))
 

@@ -86,6 +86,17 @@ module ProtocolEmulator(
     reg        zero_flag;        // Zero flag: set if last ALU result == 8'h00
     reg        carry_flag;       // Carry/Borrow flag: set on arithmetic overflow/borrow or bit shift
 
+    // Autonomous Stream Accelerators State: NRZI & Hardware Bit-Stuffing / De-stuffing
+    reg        assist_nrzi_en;      // Enable NRZI encoding on TX and decoding on RX
+    reg [1:0]  assist_stuff_mode;   // 00=Off, 01=USB (6 ones -> stuff 0), 10=CAN (5 identical -> stuff complement)
+    reg        nrzi_tx_state;       // NRZI current physical line output level (default 1'b1, idle J-state for USB)
+    reg        nrzi_rx_prev;        // NRZI previous physical line input level for transition detection
+    reg [2:0]  tx_stuff_cnt;        // TX consecutive bit run counter
+    reg [2:0]  rx_stuff_cnt;        // RX consecutive bit run counter
+    reg        tx_last_bit;         // TX previous bit transmitted (for CAN 5 identical bits)
+    reg        rx_last_bit;         // RX previous decoded bit (for CAN 5 identical bits)
+    reg        stuff_error;         // Sticky bit-stuff error flag on RX
+
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
     reg [2:0]  rx_pin;          // Pin index for IN deserializer / default WAIT (default 0)
@@ -298,6 +309,20 @@ module ProtocolEmulator(
     //                 3'b101: CRC_READ_HIGH (latches crc_reg[15:8] to OSR & o_data)
     //                 3'b110: CRC_RESET     (reloads configured seed into crc_reg)
     //
+    // 0xF | ASSIST sub_op, [operands]
+    //       [15:12] = 4'hF
+    //       [11:10] = sub_op:
+    //                 2'b00: ASSIST CFG, nrzi_en, stuff_mode, [init_val]
+    //                        [9]   = nrzi_en    (1=enable NRZI toggle-on-0)
+    //                        [8:7] = stuff_mode (00=off, 01=USB 6-ones, 10=CAN 5-identical)
+    //                        [6]   = init_en    (1=re-init NRZI line state from [5])
+    //                        [5]   = init_val   (0 or 1, default 1'b1 for USB idle J-state)
+    //                 2'b01: ASSIST RESET
+    //                        Clears run counters, stuff_error flag, and resets NRZI states.
+    //                 2'b10: ASSIST READ
+    //                        Reads {stuff_error, assist_nrzi_en, assist_stuff_mode, 1'b0, tx_stuff_cnt} into acc.
+    //                        Sets zero_flag <= !stuff_error, carry_flag <= stuff_error.
+    //
     // =========================================================================
     // Microcode RAM (128 words x 16 bits = 4 banks of 32 words)
     // =========================================================================
@@ -398,6 +423,10 @@ module ProtocolEmulator(
         end
     end
     wire [7:0] gpio_in = gpio_sync_1;
+
+    // Stream Accelerator RX Decoding: NRZI transition detector
+    wire nrzi_rx_bit = (gpio_in[rx_pin] == nrzi_rx_prev) ? 1'b1 : 1'b0;
+    wire dec_rx_bit  = assist_nrzi_en ? nrzi_rx_bit : gpio_in[rx_pin];
 
     // -------------------------------------------------------------------------
     // Hardware CRC Generator Combinational Functions (Parallel 8-bit XOR Tree)
@@ -537,6 +566,15 @@ module ProtocolEmulator(
             carry_flag    <= 1'b0;
             o_tx_pop      <= 1'b0;
             o_rx_push     <= 1'b0;
+            assist_nrzi_en    <= 1'b0;
+            assist_stuff_mode <= 2'b00;
+            nrzi_tx_state     <= 1'b1;
+            nrzi_rx_prev      <= 1'b1;
+            tx_stuff_cnt      <= 3'd0;
+            rx_stuff_cnt      <= 3'd0;
+            tx_last_bit       <= 1'b1;
+            rx_last_bit       <= 1'b1;
+            stuff_error       <= 1'b0;
         end else begin
             // Default: clear single-cycle pop/push strobes
             o_tx_pop  <= 1'b0;
@@ -686,19 +724,65 @@ module ProtocolEmulator(
                             end
                         end else begin
                             // -------------------------------------------------------
-                            // Normal IN mode (instr[11:10]=00): LSB-first UART deserializer
+                            // Normal IN mode (instr[11:10]=00): LSB-first Deserializer
+                            // Features Autonomous Stream Accelerators:
+                            //   - Hardware NRZI Decoding (transition=0, no-transition=1)
+                            //   - Hardware Bit-Destuffing (strips USB 6-ones '0', CAN 5-bits)
                             // -------------------------------------------------------
-                            isr       <= {gpio_in[rx_pin], isr[7:1]};
-                            delay_cnt <= eff_delay;
-                            if (rx_bit_cnt == 4'd0) begin
-                                rx_bit_cnt <= in_count_init;
-                                pc         <= (in_count_init == 4'd0) ? pc + 7'd1 : pc;
-                            end else if (rx_bit_cnt == 4'd1) begin
-                                rx_bit_cnt <= 4'd0;
-                                pc         <= pc + 7'd1;
+                            if (assist_nrzi_en) begin
+                                nrzi_rx_prev <= gpio_in[rx_pin];
+                            end
+
+                            if (assist_stuff_mode == 2'b01 && rx_stuff_cnt == 3'd6) begin
+                                // USB Bit-Destuffing: next bit must be '0' (stuff bit) and is discarded
+                                if (dec_rx_bit == 1'b0) begin
+                                    rx_stuff_cnt <= 3'd0;
+                                end else begin
+                                    stuff_error  <= 1'b1; // Illegal 7th consecutive '1'
+                                    rx_stuff_cnt <= 3'd0;
+                                end
+                                delay_cnt <= eff_delay;
+                                pc        <= pc; // Do not shift ISR, do not decrement rx_bit_cnt
+                            end else if (assist_stuff_mode == 2'b10 && rx_stuff_cnt == 3'd5) begin
+                                // CAN Bit-Destuffing: next bit must be inverted bit and is discarded
+                                if (dec_rx_bit == ~rx_last_bit) begin
+                                    rx_last_bit  <= dec_rx_bit;
+                                    rx_stuff_cnt <= 3'd1;
+                                end else begin
+                                    stuff_error  <= 1'b1; // Illegal 6th identical bit
+                                    rx_stuff_cnt <= 3'd0;
+                                end
+                                delay_cnt <= eff_delay;
+                                pc        <= pc;
                             end else begin
-                                rx_bit_cnt <= rx_bit_cnt - 4'd1;
-                                pc         <= pc;
+                                // Valid payload data bit: shift into ISR
+                                isr <= {dec_rx_bit, isr[7:1]};
+
+                                if (assist_stuff_mode == 2'b01) begin
+                                    rx_stuff_cnt <= dec_rx_bit ? (rx_stuff_cnt + 3'd1) : 3'd0;
+                                end else if (assist_stuff_mode == 2'b10) begin
+                                    if (rx_bit_cnt == 4'd0 && rx_stuff_cnt == 3'd0) begin
+                                        rx_last_bit  <= dec_rx_bit;
+                                        rx_stuff_cnt <= 3'd1;
+                                    end else if (dec_rx_bit == rx_last_bit) begin
+                                        rx_stuff_cnt <= rx_stuff_cnt + 3'd1;
+                                    end else begin
+                                        rx_last_bit  <= dec_rx_bit;
+                                        rx_stuff_cnt <= 3'd1;
+                                    end
+                                end
+
+                                delay_cnt <= eff_delay;
+                                if (rx_bit_cnt == 4'd0) begin
+                                    rx_bit_cnt <= in_count_init;
+                                    pc         <= (in_count_init == 4'd0) ? pc + 7'd1 : pc;
+                                end else if (rx_bit_cnt == 4'd1) begin
+                                    rx_bit_cnt <= 4'd0;
+                                    pc         <= pc + 7'd1;
+                                end else begin
+                                    rx_bit_cnt <= rx_bit_cnt - 4'd1;
+                                    pc         <= pc;
+                                end
                             end
                         end
                     end
@@ -819,22 +903,86 @@ module ProtocolEmulator(
                             end
                         end else begin
                             // -------------------------------------------------------
-                            // Normal OUT mode (instr[11:10]=00): LSB-first UART serializer
-                            // Drives tx_pin with OSR[0]
+                            // Normal OUT mode (instr[11:10]=00): LSB-first Serializer
+                            // Features Autonomous Stream Accelerators:
+                            //   - Hardware Bit-Stuffing (USB 6 ones, CAN 5 identical)
+                            //   - Hardware NRZI Encoding (Toggle on 0, Hold on 1)
                             // -------------------------------------------------------
-                            gpio_out_reg[tx_pin] <= osr[0];
-                            gpio_oe_reg[tx_pin]  <= 1'b1;
-                            osr                  <= {1'b0, osr[7:1]};
-                            delay_cnt            <= eff_delay;
-                            if (bit_cnt == 4'd0) begin
-                                bit_cnt <= 4'd7;
-                                pc      <= pc;
-                            end else if (bit_cnt == 4'd1) begin
-                                bit_cnt <= 4'd0;
-                                pc      <= pc + 7'd1;
+                            if (assist_stuff_mode == 2'b01 && tx_stuff_cnt == 3'd6) begin
+                                // USB Bit-Stuffing: Insert '0' after 6 consecutive 1s
+                                if (assist_nrzi_en) begin
+                                    nrzi_tx_state        <= ~nrzi_tx_state;
+                                    gpio_out_reg[tx_pin] <= ~nrzi_tx_state;
+                                end else begin
+                                    gpio_out_reg[tx_pin] <= 1'b0;
+                                end
+                                gpio_oe_reg[tx_pin]  <= 1'b1;
+                                delay_cnt            <= eff_delay;
+                                tx_stuff_cnt         <= 3'd0;
+                                // Hold OSR, bit_cnt, and PC
+                                osr                  <= osr;
+                                bit_cnt              <= bit_cnt;
+                                pc                   <= pc;
+                            end else if (assist_stuff_mode == 2'b10 && tx_stuff_cnt == 3'd5) begin
+                                // CAN Bit-Stuffing: Insert inverted bit after 5 identical bits
+                                if (assist_nrzi_en) begin
+                                    if (~tx_last_bit == 1'b0) begin
+                                        nrzi_tx_state        <= ~nrzi_tx_state;
+                                        gpio_out_reg[tx_pin] <= ~nrzi_tx_state;
+                                    end else begin
+                                        gpio_out_reg[tx_pin] <= nrzi_tx_state;
+                                    end
+                                end else begin
+                                    gpio_out_reg[tx_pin] <= ~tx_last_bit;
+                                end
+                                gpio_oe_reg[tx_pin]  <= 1'b1;
+                                delay_cnt            <= eff_delay;
+                                tx_last_bit          <= ~tx_last_bit;
+                                tx_stuff_cnt         <= 3'd1;
+                                osr                  <= osr;
+                                bit_cnt              <= bit_cnt;
+                                pc                   <= pc;
                             end else begin
-                                bit_cnt <= bit_cnt - 4'd1;
-                                pc      <= pc;
+                                // Normal payload bit transmission from osr[0]
+                                if (assist_nrzi_en) begin
+                                    if (osr[0] == 1'b0) begin
+                                        nrzi_tx_state        <= ~nrzi_tx_state;
+                                        gpio_out_reg[tx_pin] <= ~nrzi_tx_state;
+                                    end else begin
+                                        gpio_out_reg[tx_pin] <= nrzi_tx_state;
+                                    end
+                                end else begin
+                                    gpio_out_reg[tx_pin] <= osr[0];
+                                end
+                                gpio_oe_reg[tx_pin]  <= 1'b1;
+
+                                // Update consecutive run counter
+                                if (assist_stuff_mode == 2'b01) begin
+                                    tx_stuff_cnt <= osr[0] ? (tx_stuff_cnt + 3'd1) : 3'd0;
+                                end else if (assist_stuff_mode == 2'b10) begin
+                                    if (bit_cnt == 4'd0 && tx_stuff_cnt == 3'd0) begin
+                                        tx_last_bit  <= osr[0];
+                                        tx_stuff_cnt <= 3'd1;
+                                    end else if (osr[0] == tx_last_bit) begin
+                                        tx_stuff_cnt <= tx_stuff_cnt + 3'd1;
+                                    end else begin
+                                        tx_last_bit  <= osr[0];
+                                        tx_stuff_cnt <= 3'd1;
+                                    end
+                                end
+
+                                osr       <= {1'b0, osr[7:1]};
+                                delay_cnt <= eff_delay;
+                                if (bit_cnt == 4'd0) begin
+                                    bit_cnt <= 4'd7;
+                                    pc      <= pc;
+                                end else if (bit_cnt == 4'd1) begin
+                                    bit_cnt <= 4'd0;
+                                    pc      <= pc + 7'd1;
+                                end else begin
+                                    bit_cnt <= bit_cnt - 4'd1;
+                                    pc      <= pc;
+                                end
                             end
                         end
                     end
@@ -969,6 +1117,7 @@ module ProtocolEmulator(
                             4'hC: pc <= acc[7] ? target : pc + 7'd1;         // JMP NEG / SIGN
                             4'hD: pc <= !acc[7] ? target : pc + 7'd1;        // JMP POS
                             4'hE: pc <= (crc_reg != 16'h0000) ? target : pc + 7'd1;// JMP CRC_ERR
+                            4'hF: pc <= stuff_error ? target : pc + 7'd1;    // JMP STUFF_ERR
                             default: pc <= target;
                         endcase
                     end
@@ -1210,6 +1359,40 @@ module ProtocolEmulator(
                         sp        <= (sp == 2'd0) ? 2'd0 : sp - 2'd1;
                         pc        <= (sp == 2'd0) ? 7'd0 : call_stack[sp - 2'd1];
                         delay_cnt <= 16'd0;
+                    end
+
+                    4'hF: begin // ASSIST: Autonomous Stream Accelerators (NRZI & Bit-Stuffing)
+                        delay_cnt <= 16'd0;
+                        case (instr[11:10])
+                            2'b00: begin // ASSIST CFG, nrzi_en, stuff_mode, [init_val]
+                                assist_nrzi_en    <= instr[9];
+                                assist_stuff_mode <= instr[8:7];
+                                if (instr[6]) begin // re-init line state if bit 6 set
+                                    nrzi_tx_state <= instr[5];
+                                    nrzi_rx_prev  <= instr[5];
+                                end
+                                pc <= pc + 7'd1;
+                            end
+                            2'b01: begin // ASSIST RESET (clear counters, error flag, reset NRZI state)
+                                tx_stuff_cnt  <= 3'd0;
+                                rx_stuff_cnt  <= 3'd0;
+                                stuff_error   <= 1'b0;
+                                nrzi_tx_state <= 1'b1;
+                                nrzi_rx_prev  <= 1'b1;
+                                tx_last_bit   <= 1'b1;
+                                rx_last_bit   <= 1'b1;
+                                pc <= pc + 7'd1;
+                            end
+                            2'b10: begin // ASSIST READ (read status into acc)
+                                acc        <= {stuff_error, assist_nrzi_en, assist_stuff_mode, 1'b0, tx_stuff_cnt};
+                                zero_flag  <= (stuff_error == 1'b0);
+                                carry_flag <= stuff_error;
+                                pc <= pc + 7'd1;
+                            end
+                            default: begin
+                                pc <= pc + 7'd1;
+                            end
+                        endcase
                     end
 
                     default: begin
