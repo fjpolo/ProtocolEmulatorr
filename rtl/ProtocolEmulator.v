@@ -76,10 +76,10 @@ module ProtocolEmulator(
     reg [7:0]  lc0;              // Loop counter 0
     reg [7:0]  lc1;              // Loop counter 1
 
-    // Hardware CRC Generator & Checksum Accelerator State
-    reg [15:0] crc_reg;          // 16-bit CRC accumulator
-    reg [15:0] crc_seed;         // Initial/reload seed value
-    reg [1:0]  crc_poly;         // Active polynomial: 0=Dallas CRC-8, 1=SMBus CRC-8, 2=CCITT CRC-16, 3=Modbus CRC-16
+    // Hardware CRC Generator & Checksum Accelerator State (Supports 5b, 8b, 16b, 32b)
+    reg [31:0] crc_reg;          // 32-bit CRC accumulator
+    reg [31:0] crc_seed;         // 32-bit initial/reload seed value
+    reg [2:0]  crc_poly;         // Active polynomial: 0=Dallas, 1=SMBus, 2=CCITT, 3=Modbus, 4=Ethernet CRC-32, 5=USB CRC-5
 
     // 8-bit Micro-ALU State & Condition Flags
     reg [7:0]  acc;              // 8-bit Accumulator register
@@ -459,9 +459,9 @@ module ProtocolEmulator(
     // -------------------------------------------------------------------------
     // Hardware CRC Generator Combinational Functions (Parallel 8-bit XOR Tree)
     // -------------------------------------------------------------------------
-    function [15:0] fn_crc8_dallas;
+    function [31:0] fn_crc8_dallas;
         input [7:0]  data;
-        input [15:0] current_crc;
+        input [31:0] current_crc;
         reg   [7:0]  c;
         reg          fb;
         integer      i;
@@ -471,13 +471,13 @@ module ProtocolEmulator(
                 fb = c[0] ^ data[i];
                 c  = (c >> 1) ^ (fb ? 8'h8C : 8'h00);
             end
-            fn_crc8_dallas = {8'h00, c};
+            fn_crc8_dallas = {24'h000000, c};
         end
     endfunction
 
-    function [15:0] fn_crc8_smbus;
+    function [31:0] fn_crc8_smbus;
         input [7:0]  data;
-        input [15:0] current_crc;
+        input [31:0] current_crc;
         reg   [7:0]  c;
         integer      i;
         begin
@@ -488,56 +488,94 @@ module ProtocolEmulator(
                 else
                     c = (c << 1);
             end
-            fn_crc8_smbus = {8'h00, c};
+            fn_crc8_smbus = {24'h000000, c};
         end
     endfunction
 
-    function [15:0] fn_crc16_ccitt;
+    function [31:0] fn_crc16_ccitt;
         input [7:0]  data;
-        input [15:0] current_crc;
+        input [31:0] current_crc;
         reg   [15:0] c;
         integer      i;
         begin
-            c = current_crc ^ {data, 8'h00};
+            c = current_crc[15:0] ^ {data, 8'h00};
             for (i = 0; i < 8; i = i + 1) begin
                 if (c[15])
                     c = (c << 1) ^ 16'h1021;
                 else
                     c = (c << 1);
             end
-            fn_crc16_ccitt = c;
+            fn_crc16_ccitt = {16'h0000, c};
         end
     endfunction
 
-    function [15:0] fn_crc16_modbus;
+    function [31:0] fn_crc16_modbus;
         input [7:0]  data;
-        input [15:0] current_crc;
+        input [31:0] current_crc;
         reg   [15:0] c;
         integer      i;
         begin
-            c = current_crc ^ {8'h00, data};
+            c = current_crc[15:0] ^ {8'h00, data};
             for (i = 0; i < 8; i = i + 1) begin
                 if (c[0])
                     c = (c >> 1) ^ 16'hA001;
                 else
                     c = (c >> 1);
             end
-            fn_crc16_modbus = c;
+            fn_crc16_modbus = {16'h0000, c};
+        end
+    endfunction
+
+    function [31:0] fn_crc32_eth;
+        input [7:0]  data;
+        input [31:0] current_crc;
+        reg   [31:0] c;
+        integer      i;
+        begin
+            c = current_crc ^ {24'd0, data};
+            for (i = 0; i < 8; i = i + 1) begin
+                if (c[0])
+                    c = (c >> 1) ^ 32'hEDB88320;
+                else
+                    c = (c >> 1);
+            end
+            fn_crc32_eth = c;
+        end
+    endfunction
+
+    function [31:0] fn_crc5_usb;
+        input [7:0]  data;
+        input [31:0] current_crc;
+        reg   [4:0]  c;
+        reg          fb;
+        integer      i;
+        begin
+            c = current_crc[4:0];
+            for (i = 0; i < 8; i = i + 1) begin
+                fb = c[0] ^ data[i];
+                c  = (c >> 1) ^ (fb ? 5'h14 : 5'h00);
+            end
+            fn_crc5_usb = {27'd0, c};
         end
     endfunction
 
     wire [7:0] crc_in_byte = (instr[10:9] == 2'b01) ? osr :
                              (instr[10:9] == 2'b10) ? isr : i_data;
 
-    wire [15:0] next_crc_dallas = fn_crc8_dallas(crc_in_byte, crc_reg);
-    wire [15:0] next_crc_smbus  = fn_crc8_smbus(crc_in_byte, crc_reg);
-    wire [15:0] next_crc_ccitt  = fn_crc16_ccitt(crc_in_byte, crc_reg);
-    wire [15:0] next_crc_modbus = fn_crc16_modbus(crc_in_byte, crc_reg);
+    wire [31:0] next_crc_dallas = fn_crc8_dallas(crc_in_byte, crc_reg);
+    wire [31:0] next_crc_smbus  = fn_crc8_smbus(crc_in_byte, crc_reg);
+    wire [31:0] next_crc_ccitt  = fn_crc16_ccitt(crc_in_byte, crc_reg);
+    wire [31:0] next_crc_modbus = fn_crc16_modbus(crc_in_byte, crc_reg);
+    wire [31:0] next_crc_eth    = fn_crc32_eth(crc_in_byte, crc_reg);
+    wire [31:0] next_crc_usb5   = fn_crc5_usb(crc_in_byte, crc_reg);
 
-    wire [15:0] next_crc = (crc_poly == 2'b00) ? next_crc_dallas :
-                           (crc_poly == 2'b01) ? next_crc_smbus  :
-                           (crc_poly == 2'b10) ? next_crc_ccitt  :
-                                                 next_crc_modbus;
+    wire [31:0] next_crc = (crc_poly == 3'b000) ? next_crc_dallas :
+                           (crc_poly == 3'b001) ? next_crc_smbus  :
+                           (crc_poly == 3'b010) ? next_crc_ccitt  :
+                           (crc_poly == 3'b011) ? next_crc_modbus :
+                           (crc_poly == 3'b100) ? next_crc_eth    :
+                           (crc_poly == 3'b101) ? next_crc_usb5   :
+                                                  next_crc_dallas;
 
     // -------------------------------------------------------------------------
     // 8-bit Micro-ALU Combinatorial Logic
@@ -586,9 +624,9 @@ module ProtocolEmulator(
             active_bank   <= 2'b00;
             lc0           <= 8'd0;
             lc1           <= 8'd0;
-            crc_reg       <= 16'd0;
-            crc_seed      <= 16'd0;
-            crc_poly      <= 2'd0;
+            crc_reg       <= 32'd0;
+            crc_seed      <= 32'd0;
+            crc_poly      <= 3'd0;
             acc           <= 8'h00;
             zero_flag     <= 1'b0;
             carry_flag    <= 1'b0;
@@ -1338,14 +1376,14 @@ module ProtocolEmulator(
                             4'h4: pc <= !i_rx_full ? target : pc + 7'd1;     // JMP RX_READY, target
                             4'h5: pc <= gpio_in[rx_pin] ? target : pc + 7'd1;// JMP PIN_HI,   target
                             4'h6: pc <= !gpio_in[rx_pin] ? target : pc + 7'd1;// JMP PIN_LO,  target
-                            4'h7: pc <= (crc_reg == 16'h0000) ? target : pc + 7'd1;// JMP CRC_OK, target
+                            4'h7: pc <= (crc_reg == 32'h00000000) ? target : pc + 7'd1;// JMP CRC_OK, target
                             4'h8: pc <= zero_flag ? target : pc + 7'd1;      // JMP ZERO / EQ
                             4'h9: pc <= !zero_flag ? target : pc + 7'd1;     // JMP NOT_ZERO / NE
                             4'hA: pc <= carry_flag ? target : pc + 7'd1;     // JMP CARRY / ULT
                             4'hB: pc <= !carry_flag ? target : pc + 7'd1;    // JMP NOT_CARRY / UGE
                             4'hC: pc <= acc[7] ? target : pc + 7'd1;         // JMP NEG / SIGN
                             4'hD: pc <= !acc[7] ? target : pc + 7'd1;        // JMP POS
-                            4'hE: pc <= (crc_reg != 16'h0000) ? target : pc + 7'd1;// JMP CRC_ERR
+                            4'hE: pc <= (crc_reg != 32'h00000000) ? target : pc + 7'd1;// JMP CRC_ERR
                             4'hF: pc <= (stuff_error | manch_error) ? target : pc + 7'd1; // JMP STUFF_ERR / MANCH_ERR
                             default: pc <= target;
                         endcase
@@ -1355,30 +1393,63 @@ module ProtocolEmulator(
                         delay_cnt <= 16'd0;
                         case (instr[11:9])
                             3'b000: begin // CRC_INIT poly, seed
-                                crc_poly <= instr[8:7];
-                                case (instr[6:5])
-                                    2'b01: begin
-                                        crc_seed <= 16'h0000;
-                                        crc_reg  <= 16'h0000;
-                                    end
-                                    2'b10,
-                                    2'b11: begin
-                                        crc_seed <= 16'hFFFF;
-                                        crc_reg  <= 16'hFFFF;
-                                    end
-                                    default: begin // 2'b00: default seed for poly
-                                        case (instr[8:7])
-                                            2'b11: begin
-                                                crc_seed <= 16'hFFFF; // Modbus default 0xFFFF
-                                                crc_reg  <= 16'hFFFF;
-                                            end
-                                            default: begin
-                                                crc_seed <= 16'h0000; // Dallas, SMBus, CCITT default 0x0000
-                                                crc_reg  <= 16'h0000;
-                                            end
-                                        endcase
-                                    end
-                                endcase
+                                if (instr[3]) begin
+                                    // Extended polynomials (poly >= 4)
+                                    crc_poly <= {1'b1, instr[2:1]};
+                                    case (instr[5:4])
+                                        2'b01: begin
+                                            crc_seed <= 32'h00000000;
+                                            crc_reg  <= 32'h00000000;
+                                        end
+                                        2'b10,
+                                        2'b11: begin
+                                            crc_seed <= 32'hFFFFFFFF;
+                                            crc_reg  <= 32'hFFFFFFFF;
+                                        end
+                                        default: begin // 2'b00: default seed for extended poly
+                                            case (instr[2:1])
+                                                2'b00: begin // Poly 4: Ethernet CRC-32 default 0xFFFFFFFF
+                                                    crc_seed <= 32'hFFFFFFFF;
+                                                    crc_reg  <= 32'hFFFFFFFF;
+                                                end
+                                                2'b01: begin // Poly 5: USB CRC-5 default 0x0000001F
+                                                    crc_seed <= 32'h0000001F;
+                                                    crc_reg  <= 32'h0000001F;
+                                                end
+                                                default: begin
+                                                    crc_seed <= 32'h00000000;
+                                                    crc_reg  <= 32'h00000000;
+                                                end
+                                            endcase
+                                        end
+                                    endcase
+                                end else begin
+                                    // Standard legacy polynomials (poly 0..3: Dallas, SMBus, CCITT, Modbus)
+                                    crc_poly <= {1'b0, instr[8:7]};
+                                    case (instr[6:5])
+                                        2'b01: begin
+                                            crc_seed <= 32'h00000000;
+                                            crc_reg  <= 32'h00000000;
+                                        end
+                                        2'b10,
+                                        2'b11: begin
+                                            crc_seed <= 32'h0000FFFF;
+                                            crc_reg  <= 32'h0000FFFF;
+                                        end
+                                        default: begin // 2'b00: default seed for legacy poly
+                                            case (instr[8:7])
+                                                2'b11: begin // Modbus default 0xFFFF
+                                                    crc_seed <= 32'h0000FFFF;
+                                                    crc_reg  <= 32'h0000FFFF;
+                                                end
+                                                default: begin // Dallas, SMBus, CCITT default 0x0000
+                                                    crc_seed <= 32'h00000000;
+                                                    crc_reg  <= 32'h00000000;
+                                                end
+                                            endcase
+                                        end
+                                    endcase
+                                end
                                 pc <= pc + 7'd1;
                             end
                             3'b001,
@@ -1387,12 +1458,12 @@ module ProtocolEmulator(
                                 crc_reg <= next_crc;
                                 pc      <= pc + 7'd1;
                             end
-                            3'b100: begin // CRC_READ_LOW: copy crc_reg[7:0] to OSR & o_data
+                            3'b100: begin // CRC_READ_LOW / CRC_READ_B0: copy crc_reg[7:0] to OSR & o_data
                                 osr    <= crc_reg[7:0];
                                 o_data <= crc_reg[7:0];
                                 pc     <= pc + 7'd1;
                             end
-                            3'b101: begin // CRC_READ_HIGH: copy crc_reg[15:8] to OSR & o_data
+                            3'b101: begin // CRC_READ_HIGH / CRC_READ_B1: copy crc_reg[15:8] to OSR & o_data
                                 osr    <= crc_reg[15:8];
                                 o_data <= crc_reg[15:8];
                                 pc     <= pc + 7'd1;
@@ -1401,7 +1472,16 @@ module ProtocolEmulator(
                                 crc_reg <= crc_seed;
                                 pc      <= pc + 7'd1;
                             end
-                            default: begin
+                            3'b111: begin // CRC_READ_EXT: Byte 2 or Byte 3
+                                if (instr[0] == 1'b0) begin
+                                    // CRC_READ_B2: copy crc_reg[23:16] to OSR & o_data
+                                    osr    <= crc_reg[23:16];
+                                    o_data <= crc_reg[23:16];
+                                end else begin
+                                    // CRC_READ_B3: copy crc_reg[31:24] to OSR & o_data
+                                    osr    <= crc_reg[31:24];
+                                    o_data <= crc_reg[31:24];
+                                end
                                 pc <= pc + 7'd1;
                             end
                         endcase

@@ -3255,5 +3255,319 @@ violation_handled:
     dut._log.info("Test 19D: Manchester violation detection & JMP MANCH_ERR branch PASSED!")
 
 
+# =============================================================================
+# Task 20: Hardware CRC-32 (Ethernet FCS) & CRC-5 (USB Token) Engine Tests
+# =============================================================================
+
+@cocotb.test()
+async def test_crc32_ethernet_calculation(dut):
+    """Task 20A: Hardware CRC-32 (IEEE 802.3 Ethernet FCS, poly 0xEDB88320) calculation and 4-byte readout."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    async def feed_fifo(byte_list):
+        for b in byte_list:
+            dut.i_data.value = b
+            dut.i_tx_valid.value = 1
+            while True:
+                await RisingEdge(dut.i_clk)
+                if int(dut.o_tx_pop.value) == 1:
+                    break
+        dut.i_tx_valid.value = 0
+
+    asm_source = """
+    CRC_INIT ETHERNET
+    SET_LC LC0, 9
+loop:
+    PULL BLOCK
+    CRC_BYTE OSR
+    DJNZ LC0, loop
+    CRC_READ_B0
+    CRC_READ_B1
+    CRC_READ_B2
+    CRC_READ_B3
+    CRC_RESET
+    CRC_READ_B3
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    await load_program_direct(dut, prog)
+    test_vec = [ord(c) for c in "123456789"] # [0x31..0x39]
+    feed_task = cocotb.start_soon(feed_fifo(test_vec))
+
+    b0, b1, b2, b3 = None, None, None, None
+    reset_b3 = None
+
+    for _ in range(200):
+        await RisingEdge(dut.i_clk)
+        pc_val = int(dut.pc.value)
+        if pc_val == 6 and b0 is None:
+            b0 = int(dut.o_data.value)
+        elif pc_val == 7 and b1 is None:
+            b1 = int(dut.o_data.value)
+        elif pc_val == 8 and b2 is None:
+            b2 = int(dut.o_data.value)
+        elif pc_val == 9 and b3 is None:
+            b3 = int(dut.o_data.value)
+        elif pc_val == 11 and reset_b3 is None:
+            reset_b3 = int(dut.o_data.value)
+            break
+    else:
+        feed_task.cancel()
+        assert False, f"Timeout in test_crc32_ethernet_calculation (PC={int(dut.pc.value)})"
+
+    feed_task.cancel()
+
+    dut._log.info(f"CRC-32 Bytes read: B0=0x{b0:02X}, B1=0x{b1:02X}, B2=0x{b2:02X}, B3=0x{b3:02X}")
+    raw_crc = (b3 << 24) | (b2 << 16) | (b1 << 8) | b0
+    dut._log.info(f"Raw CRC-32 register: 0x{raw_crc:08X} (expected: 0x340BC6D9)")
+    final_fcs = raw_crc ^ 0xFFFFFFFF
+    dut._log.info(f"Final Inverted FCS: 0x{final_fcs:08X} (expected: 0xCBF43926)")
+
+    assert b0 == 0xD9, f"B0 mismatch: expected 0xD9, got 0x{b0:02X}"
+    assert b1 == 0xC6, f"B1 mismatch: expected 0xC6, got 0x{b1:02X}"
+    assert b2 == 0x0B, f"B2 mismatch: expected 0x0B, got 0x{b2:02X}"
+    assert b3 == 0x34, f"B3 mismatch: expected 0x34, got 0x{b3:02X}"
+    assert raw_crc == 0x340BC6D9, f"Raw CRC mismatch: 0x{raw_crc:08X}"
+    assert final_fcs == 0xCBF43926, f"Final FCS mismatch: 0x{final_fcs:08X}"
+
+    # Verify CRC_RESET restored 0xFFFFFFFF seed (B3 should be 0xFF)
+    assert reset_b3 == 0xFF, f"CRC_RESET check failed: expected 0xFF, got 0x{reset_b3:02X}"
+    dut._log.info("Test 20A: Hardware CRC-32 Ethernet Calculation & Readout PASSED!")
+
+
+@cocotb.test()
+async def test_crc32_ethernet_residue_check(dut):
+    """Task 20B: Hardware CRC-32 zero residue check and JMP CRC_OK / CRC_ERR branching."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    async def feed_fifo(byte_list):
+        for b in byte_list:
+            dut.i_data.value = b
+            dut.i_tx_valid.value = 1
+            while True:
+                await RisingEdge(dut.i_clk)
+                if int(dut.o_tx_pop.value) == 1:
+                    break
+        dut.i_tx_valid.value = 0
+
+    asm_source = """
+    CRC_INIT ETHERNET
+    SET_LC LC0, 13
+rx_loop:
+    PULL BLOCK
+    CRC_BYTE OSR
+    DJNZ LC0, rx_loop
+    JMP CRC_OK, valid_packet
+    SET 1, 0, 0
+fail_halt:
+    JMP fail_halt
+valid_packet:
+    SET 1, 1, 0
+success_halt:
+    JMP success_halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    # Sub-test 1: Valid Packet ("123456789" + [0xD9, 0xC6, 0x0B, 0x34])
+    await load_program_direct(dut, prog)
+    valid_vec = [ord(c) for c in "123456789"] + [0xD9, 0xC6, 0x0B, 0x34]
+    task1 = cocotb.start_soon(feed_fifo(valid_vec))
+
+    for _ in range(300):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 9:
+            break
+    else:
+        task1.cancel()
+        assert False, f"Timeout on valid CRC-32 packet (PC={int(dut.pc.value)})"
+
+    task1.cancel()
+    assert int(dut.crc_reg.value) == 0, f"Expected zero residue in crc_reg, got 0x{int(dut.crc_reg.value):08X}"
+    pin1_val = (int(dut.o_gpio.value) >> 1) & 1
+    assert pin1_val == 1, f"Expected Pin 1 == 1 (CRC valid), got {pin1_val}"
+    dut._log.info("Valid Ethernet packet residue verified: crc_reg == 0 and JMP CRC_OK jumped!")
+
+    # Sub-test 2: Corrupted Packet ("123456789" + [0xD9, 0xC6, 0x0B, 0xFF])
+    await load_program_direct(dut, prog)
+    corrupt_vec = [ord(c) for c in "123456789"] + [0xD9, 0xC6, 0x0B, 0xFF]
+    task2 = cocotb.start_soon(feed_fifo(corrupt_vec))
+
+    for _ in range(300):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 7:
+            break
+    else:
+        task2.cancel()
+        assert False, f"Timeout on corrupt CRC-32 packet (PC={int(dut.pc.value)})"
+
+    task2.cancel()
+    assert int(dut.crc_reg.value) != 0, "Expected non-zero residue for corrupted packet"
+    pin1_val = (int(dut.o_gpio.value) >> 1) & 1
+    assert pin1_val == 0, f"Expected Pin 1 == 0 (CRC corrupted), got {pin1_val}"
+    dut._log.info("Corrupted Ethernet packet residue verified: JMP CRC_OK fell through to failure branch!")
+    dut._log.info("Test 20B: Hardware CRC-32 Ethernet Residue & JMP Branching PASSED!")
+
+
+@cocotb.test()
+async def test_crc5_usb_token_calculation(dut):
+    """Task 20C: Hardware CRC-5 (USB 1.1 Token, poly 0x14, seed 0x1F) calculation and reset."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    async def feed_fifo(byte_list):
+        for b in byte_list:
+            dut.i_data.value = b
+            dut.i_tx_valid.value = 1
+            while True:
+                await RisingEdge(dut.i_clk)
+                if int(dut.o_tx_pop.value) == 1:
+                    break
+        dut.i_tx_valid.value = 0
+
+    asm_source = """
+    CRC_INIT USB5
+    PULL BLOCK
+    CRC_BYTE OSR
+    PULL BLOCK
+    CRC_BYTE OSR
+    CRC_READ_B0
+    CRC_RESET
+    CRC_READ_B0
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    await load_program_direct(dut, prog)
+    # Feed test token bytes [0x01, 0x00]
+    feed_task = cocotb.start_soon(feed_fifo([0x01, 0x00]))
+
+    crc5_val = None
+    reset_val = None
+
+    for _ in range(100):
+        await RisingEdge(dut.i_clk)
+        pc_val = int(dut.pc.value)
+        if pc_val == 6 and crc5_val is None:
+            crc5_val = int(dut.o_data.value) & 0x1F
+        elif pc_val == 8 and reset_val is None:
+            reset_val = int(dut.o_data.value) & 0x1F
+            break
+    else:
+        feed_task.cancel()
+        assert False, f"Timeout in test_crc5_usb_token_calculation (PC={int(dut.pc.value)})"
+
+    feed_task.cancel()
+    dut._log.info(f"CRC-5 calculated: 0x{crc5_val:02X} (expected: 0x16)")
+    assert crc5_val == 0x16, f"CRC-5 mismatch: expected 0x16, got 0x{crc5_val:02X}"
+    assert reset_val == 0x1F, f"CRC-5 reset mismatch: expected 0x1F, got 0x{reset_val:02X}"
+    dut._log.info("Test 20C: Hardware CRC-5 USB Token Calculation PASSED!")
+
+
+@cocotb.test()
+async def test_ethernet_packet_fcs_integration(dut):
+    """Task 20D: Complete 10BASE-T Ethernet packet transmission with hardware FCS generation and verification."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    async def feed_fifo(byte_list):
+        for b in byte_list:
+            dut.i_data.value = b
+            dut.i_tx_valid.value = 1
+            while True:
+                await RisingEdge(dut.i_clk)
+                if int(dut.o_tx_pop.value) == 1:
+                    break
+        dut.i_tx_valid.value = 0
+
+    # Test complete frame flow:
+    # 1. Transmitter: Calculate FCS over 18 frame bytes and read out B0, B1, B2, B3
+    # 2. Receiver: Feed 18 frame bytes + the 4 captured FCS bytes, verifying zero residue & JMP CRC_OK
+    asm_source = """
+    ; --- Part 1: Transmit frame & read out 4 FCS bytes ---
+    CRC_INIT ETHERNET
+    SET_LC LC0, 18
+tx_frame:
+    PULL BLOCK
+    CRC_BYTE OSR
+    DJNZ LC0, tx_frame
+    CRC_READ_B0
+    CRC_READ_B1
+    CRC_READ_B2
+    CRC_READ_B3
+    ; --- Part 2: Receive 22 bytes (18 data + 4 FCS) and verify residue ---
+    CRC_INIT ETHERNET
+    SET_LC LC0, 22
+rx_frame:
+    PULL BLOCK
+    CRC_BYTE OSR
+    DJNZ LC0, rx_frame
+    JMP CRC_OK, fcs_verified
+    SET 1, 0, 0
+fail_loop:
+    JMP fail_loop
+fcs_verified:
+    SET 1, 1, 0
+pass_loop:
+    JMP pass_loop
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    await load_program_direct(dut, prog)
+    frame_bytes = [0xFF]*6 + [0x02, 0x12, 0x34, 0x56, 0x78, 0x9A] + [0x08, 0x00] + [0xDE, 0xAD, 0xBE, 0xEF]
+    feed_task1 = cocotb.start_soon(feed_fifo(frame_bytes))
+
+    # Capture B0, B1, B2, B3 when PC reaches 6, 7, 8, 9
+    b0, b1, b2, b3 = None, None, None, None
+    for _ in range(300):
+        await RisingEdge(dut.i_clk)
+        pc_val = int(dut.pc.value)
+        if pc_val == 6 and b0 is None:
+            b0 = int(dut.o_data.value)
+        elif pc_val == 7 and b1 is None:
+            b1 = int(dut.o_data.value)
+        elif pc_val == 8 and b2 is None:
+            b2 = int(dut.o_data.value)
+        elif pc_val == 9 and b3 is None:
+            b3 = int(dut.o_data.value)
+            break
+    else:
+        feed_task1.cancel()
+        assert False, f"Timeout capturing FCS bytes in Part 1 (PC={int(dut.pc.value)})"
+
+    feed_task1.cancel()
+    dut._log.info(f"Captured Generated FCS bytes: B0=0x{b0:02X}, B1=0x{b1:02X}, B2=0x{b2:02X}, B3=0x{b3:02X}")
+    assert b0 == 0xA0 and b1 == 0xC0 and b2 == 0x11 and b3 == 0xFD, f"FCS mismatch: [0x{b0:02X}, 0x{b1:02X}, 0x{b2:02X}, 0x{b3:02X}]"
+
+    # Now feed the complete 22-byte received packet (frame + [b0, b1, b2, b3]) into Part 2
+    feed_task2 = cocotb.start_soon(feed_fifo(frame_bytes + [b0, b1, b2, b3]))
+
+    for _ in range(400):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 18:
+            break
+    else:
+        feed_task2.cancel()
+        assert False, f"Timeout in Part 2 residue verification (PC={int(dut.pc.value)})"
+
+    feed_task2.cancel()
+    assert int(dut.crc_reg.value) == 0, f"Expected 0 residue after receiving frame + FCS, got 0x{int(dut.crc_reg.value):08X}"
+    pin1_val = (int(dut.o_gpio.value) >> 1) & 1
+    assert pin1_val == 1, f"Expected Pin 1 == 1 (FCS self-verification passed), got {pin1_val}"
+    dut._log.info("Test 20D: Complete Ethernet Packet FCS Integration & Verification PASSED!")
+
+
 
 

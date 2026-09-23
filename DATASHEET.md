@@ -1,6 +1,6 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.1 (Architecture Release — Tasks 01 through 19)  
+**Document Revision**: 1.2 (Architecture Release — Tasks 01 through 20)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
 
 ---
@@ -16,7 +16,7 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
     [Host System] <======> | [Wishbone B4 Slave]   [128-word IMEM] | <======> [Physical Pins]
     (Wishbone / FIFO)      | [Synchronous Dual FIFO]  (4 Banks)    |          (8-bit Unified GPIO)
                            | [Micro-ALU]         [SERDES Engine]   |          - Push-Pull / OD
-                           | [CRC Accelerator]   [Pulse Engine]    |          - Dynamic PINMAP
+                           | [32-bit CRC Engine] [Pulse Engine]    |          - Dynamic PINMAP
                            | [Stream Stuffer]    [NRZI Modulator]  |          - Manchester / BMC
                            +---------------------------------------+
 ```
@@ -28,7 +28,14 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
 - **Single-Cycle 8-Bit Micro-ALU**: 16 arithmetic, logical, and bitwise operations (`ADD`, `ADC`, `SUB`, `SBB`, `AND`, `OR`, `XOR`, `NOT`, `NEG`, `SHL`, `SHR`, `ROL`, `ROR`, `SWAP`, `MOV`, `CLR`) with hardware `Zero` and `Carry` flags.
 - **Hardware Subroutine Stack**: 4-deep call stack (`CALL`, `RET`) with 2-bit saturating pointer for modular protocol routines.
 - **Zero-Overhead Loop Counters**: Dual independent 8-bit counters (`LC0`, `LC1`) with decrement-and-jump-if-not-zero (`DJNZ`) and register exchange instructions.
-- **Hardware Multi-Polynomial CRC Generator**: Single-cycle parallel 8-bit XOR tree supporting CRC-8 Dallas/1-Wire ($x^8 + x^5 + x^4 + 1$), CRC-8 SMBus ($x^8 + x^2 + x^1 + 1$), CRC-16 CCITT ($x^{16} + x^{12} + x^5 + 1$), and CRC-16 Modbus ($x^{16} + x^{15} + x^2 + 1$).
+- **32-Bit Hardware Multi-Polynomial CRC Engine**: Single-cycle parallel 8-bit XOR tree supporting:
+  - **CRC-32 (IEEE 802.3 10BASE-T Ethernet FCS / ZIP / PNG)**: Reflected polynomial `0xEDB88320`, seed `0xFFFFFFFF`.
+  - **CRC-5 (USB 1.1 Token Packets)**: Reflected polynomial `0x14` ($x^5 + x^2 + 1$), seed `0x1F`.
+  - **CRC-16 Modbus RTU / IBM**: Reflected polynomial `0xA001`, seed `0xFFFF`.
+  - **CRC-16 CCITT / XMODEM**: Normal polynomial `0x1021`, seed `0x0000`.
+  - **CRC-8 SMBus / I2C PEC**: Normal polynomial `0x07`, seed `0x00`.
+  - **CRC-8 Dallas / 1-Wire**: Reflected polynomial `0x8C`, seed `0x00`.
+  - Includes 4-byte readout (`CRC_READ_B0`, `B1`, `B2`, `B3`) and zero-overhead hardware residue verification (`JMP CRC_OK`, `JMP CRC_ERR`).
 - **Autonomous Stream Accelerators**:
   - **Manchester & Biphase Mark Code (BMC) Engine**: Autonomous two-phase serializer/deserializer with half-bit delay scaling for **IEEE 802.3 10BASE-T Ethernet**, **Thomas convention**, and **BMC / FM1 (S/PDIF, DALI, MIL-STD-1553)**. Features continuous center-transition code violation detection (`manch_error`) and zero-overhead conditional branch (`JMP MANCH_ERR`).
   - **NRZI Modulator/Demodulator**: Hardware toggle-on-zero / hold-on-one encoder and single-cycle combinational edge detector.
@@ -329,14 +336,14 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
 | | | `PULL_LC <lc>` | Latch host input data `i_data` into loop counter. |
 | | | `PUSH_LC <lc>` | Copy loop counter value to output register `o_data`. |
 | | | `MOV_LC <dst>, <src>` | Transfer count value between `LC0` and `LC1`. |
-| **`0x8`** | `JMP` | `JMP [cond,] <target>` | Jump to `<target>` (Always, Z, NZ, C, NC, FIFO flags, STUFF_ERR). |
+| **`0x8`** | `JMP` | `JMP [cond,] <target>` | Jump to `<target>` (Always, Z, NZ, C, NC, FIFO flags, CRC_OK, CRC_ERR, STUFF_ERR, MANCH_ERR). |
 | **`0x9`** | `PULL` | `PULL [BLOCK]` | Transfer byte from TX FIFO (`i_data`) into OSR. |
 | **`0xA`** | `PUSH` | `PUSH [BLOCK]` | Transfer byte from ISR into RX FIFO (`o_data`). |
 | **`0xB`** | `ALU` | `ALU <op> [, <operand>]` | Execute single-cycle arithmetic/logical operation on Accumulator. |
 | **`0xC`** | `CALL` | `CALL <target>` | Push return address to hardware stack and branch to `<target>`. |
 | | `RET` | `RET` | Pop return address from hardware stack and resume execution. |
 | **`0xD`** | `BANK` | `BANK <0..3>` | Switch active 32-word IMEM execution bank (Banks 0..3). |
-| **`0xE`** | `CRC` | `CRC <subop> [, <param>]`| Control hardware CRC generator (CFG, FEED, READ_LO, READ_HI). |
+| **`0xE`** | `CRC` | `CRC <subop> [, <param>]`| Control 32-bit hardware CRC engine (INIT, BYTE, READ_B0..B3, RESET). |
 | **`0xF`** | `ASSIST`| `ASSIST <subop> [, <cfg>]`| Control stream accelerators (NRZI, Bit-Stuffer, Pulse, Gamepad). |
 
 ---
@@ -398,6 +405,22 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
     - `instr[7:0] = 0x02`: `MOV acc, isr`
     - `instr[7:0] = 0x03`: `MOV isr, acc`
   - `CCCC = 0xF`: `CLR acc` (Clear accumulator and flags)
+
+#### Opcode `0xE` — `CRC` (32-Bit Multi-Polynomial Hardware CRC Engine)
+- **Format**: `16'b1110_SSS_AAAAAAAAA`
+  - `SSS`: CRC Sub-operation:
+    - `3'b000`: `CRC_INIT <poly>, <seed>`:
+      - `instr[3] = 0` (Legacy polynomials): `instr[8:7]` selects Dallas CRC-8 (`00`), SMBus CRC-8 (`01`), CCITT CRC-16 (`10`), Modbus CRC-16 (`11`). `instr[6:5]` selects default (`00`), zero (`01`), or `0xFFFF` (`10`).
+      - `instr[3] = 1` (Extended polynomials): `instr[2:1]` selects Ethernet CRC-32 (`00`, reflected `0xEDB88320`, default seed `0xFFFFFFFF`) or USB Token CRC-5 (`01`, reflected `0x14`, default seed `0x0000001F`). `instr[5:4]` selects default (`00`), zero (`01`), or ones (`10`).
+    - `3'b001`: `CRC_BYTE OSR` — feeds `osr[7:0]` into CRC accelerator in a single clock cycle.
+    - `3'b010`: `CRC_BYTE ISR` — feeds `isr[7:0]` into CRC accelerator in a single clock cycle.
+    - `3'b011`: `CRC_BYTE DATA` — feeds TX FIFO byte (`i_data[7:0]`) into CRC accelerator.
+    - `3'b100`: `CRC_READ_B0` / `CRC_READ_LOW` — copies `crc_reg[7:0]` to `osr` and `o_data`.
+    - `3'b101`: `CRC_READ_B1` / `CRC_READ_HIGH` — copies `crc_reg[15:8]` to `osr` and `o_data`.
+    - `3'b110`: `CRC_RESET` — restores `crc_reg <= crc_seed`.
+    - `3'b111`: Extended 4-Byte Readout:
+      - `instr[0] = 0`: `CRC_READ_B2` — copies `crc_reg[23:16]` to `osr` and `o_data`.
+      - `instr[0] = 1`: `CRC_READ_B3` — copies `crc_reg[31:24]` to `osr` and `o_data`.
 
 #### Opcode `0xF` — `ASSIST` (Hardware Physical Stream Accelerators)
 - **Format**: `16'b1111_SS_XXXXXXXXXX`
