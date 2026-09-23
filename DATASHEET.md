@@ -1,13 +1,13 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.3 (Architecture Release — Tasks 01 through 21)  
+**Document Revision**: 1.4 (Architecture Release — Tasks 01 through 22)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
 
 ---
 
 ## 1. Device Overview & Key Features
 
-The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable physical-layer communications processor designed to replace dedicated fixed-function protocol controllers (UART, SPI, I2C Master/Slave, SMBus, 1-Wire, USB 1.1, CAN 2.0, WS2812B, NES/SNES Gamepad, 10BASE-T Ethernet, S/PDIF, DALI) with a unified, high-speed ASIC architecture.
+The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable physical-layer communications processor designed to replace dedicated fixed-function protocol controllers (UART, SPI, I2C Master/Slave, SMBus, 1-Wire, USB 1.1, CAN 2.0, WS2812B, NES/SNES Gamepad, 10BASE-T Ethernet, S/PDIF, DALI, 1-Bit Delta-Sigma Audio DAC) with a unified, high-speed ASIC architecture.
 
 ```
                            +---------------------------------------+
@@ -19,11 +19,13 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
                            | [32-bit CRC Engine] [Pulse Engine]    |          - Dynamic PINMAP
                            | [Stream Stuffer]    [NRZI Modulator]  |          - Manchester / BMC
                            | [I2C Slave Engine]  [Clock Stretch]   |          - Open-Drain I2C
+                           | [Delta-Sigma DAC]   [4-Voice APU]     |          - PDM / BTL Audio
                            +---------------------------------------+
 ```
 
 ### Key Architectural Specifications
 - **Deterministic Zero-Jitter Execution Engine**: Microcode instructions execute in single clock cycles with precision cycle-accurate sidecar delays (up to 5,110 cycles per bit or runtime dynamic baud divisor).
+- **1-Bit Delta-Sigma Audio DAC & 4-Voice Chiptune APU Synthesizer**: 50 MHz 1st-order Delta-Sigma ($\Sigma$-$\Delta$) PDM modulator with $OSR = 1250\times$, single-ended and differential BTL outputs on GPIO pins, 4 polyphonic synthesizer voices (Pulse 1, Pulse 2 with 4 duty cycles, 16-step Triangle, 15-bit/7-bit Galois LFSR Noise), saturation-clamped mixer ($V \le 255$), autonomous hardware sound effects (`BEEP`, `BLIP`, `ERROR`, `COIN`, `LASER`, `SIREN`, `NOISE`), and single-cycle PCM streaming (`OUT AUDIO`).
 - **128-Word Instruction Memory (IMEM)**: Dual-port, runtime-reconfigurable memory divided into 4 selectable 32-word banks (`BANK 0` through `BANK 3`) with in-band or Wishbone programming.
 - **Dedicated Hardware I2C / SMBus Slave Engine**: Autonomous background SCL/SDA edge & framing detection (START, Repeated START, STOP), hardware 7-bit address comparator, automatic ACK assertion (leaving SDA floating on mismatch), hardware clock stretching holding SCL low until released, and microcode slave data transfers (`IN SLAVE`, `OUT SLAVE`).
 - **8-Bit Unified Bidirectional GPIO Bus**: Any protocol role (`TX`, `RX`, `SCK`, `CS`) dynamically mappable to any GPIO pin (`PINMAP`) with per-pin open-drain control (`CFG_OD`).
@@ -317,6 +319,7 @@ The ProtocolEmulator provides a standard 32-bit pipelined Wishbone B4 slave inte
 | **`0x0C`** | `WB_REG_BAUD_DIV` | R/W | 16 bits | Runtime baud divisor prescaler register. |
 | **`0x10`** | `WB_REG_GPIO` | R/W | 32 bits | GPIO pin readback, output level, and output enable read/write. |
 | **`0x14`** | `WB_REG_IMEM_BANK` | R/W | 8 bits | Microcode memory bank select register (`[1:0]` = active bank 0..3). |
+| **`0x18`** | `WB_REG_AUDIO` | R/W | 32 bits | Audio DAC & Chiptune Synthesizer control & telemetry:<br>`[0]`: `audio_en`<br>`[2:1]`: `audio_mode` (0=Off, 1=PCM, 2=Synth)<br>`[5:3]`: `audio_pin` (GPIO 0..7)<br>`[6]`: `audio_diff` (BTL complementary enable)<br>`[14:7]`: `audio_sample` (8-bit PCM sample)<br>`[18:15]`: `audio_preset` (Active preset ID)<br>`[31]`: `pdm_bit` (Instantaneous 1-bit PDM output monitor). |
 | **`0x80 – 0xFF`**| `WB_IMEM_APERTURE` | R/W | 16 bits | Direct access to 128 microcode memory words (Words 0..127 across banks). |
 
 ---
@@ -340,8 +343,10 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
 | **`0x0`** | `NOP` | `NOP [delay]` | No operation. Pauses core for `[delay]` clock cycles. |
 | **`0x1`** | `OUT` | `OUT [tx], <count> [, delay]` | Serialize `<count>` bits from OSR to `tx_pin`. (Auto-SCK / 1W / Pulse). |
 | | | `OUT SLAVE` | Transmit 8 bits from OSR MSB-first in I2C slave mode, sample master ACK. |
+| | | `OUT AUDIO` | Single-cycle direct PCM sample load from OSR into Delta-Sigma audio DAC. |
 | **`0x2`** | `IN` | `IN [rx], <count> [, delay]` | Deserialize `<count>` bits from `rx_pin` into ISR. (Auto-SCK / 1W / Gamepad). |
 | | | `IN SLAVE` | Receive 8 bits in I2C slave mode on SCL rise, auto-ACK on 9th SCL. |
+| | | `IN AUDIO` | Single-cycle capture of current audio sample from DAC into ISR and `o_data`. |
 | **`0x3`** | `SET` | `SET <pin>, <val> [, delay]` | Set selected GPIO pin output level to `<val>` (`0` or `1`). |
 | **`0x4`** | `WAIT` | `WAIT <pin>, <val> [, delay]`| Block core execution until GPIO pin matches `<val>`, then delay. |
 | **`0x5`** | `PINMAP` | `PINMAP TX, RX, SCK, CS` | Dynamically assign pin indices (0..7) to protocol roles. |
@@ -466,6 +471,15 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
       - High-level syntax: `ASSIST MANCH, <IEEE | THOMAS | BMC>`
     - `instr[9:8] = 01`: `I2C_RELEASE_SCL` — Explicitly releases hardware clock stretch hold (`i2c_stretch_hold <= 0`).
     - `instr[9:8] = 10`: `I2C_SLAVE_DISABLE` — Disables hardware I2C slave engine (`i2c_slave_en <= 0`).
+    - `instr[8:7] = 11`: Task 22 Delta-Sigma Audio DAC & Chiptune Synthesizer Sub-Operations (`instr[6:4]`):
+      - `3'b000` (`0x0`): `AUDIO_CFG <mode> [, PIN=<pin>] [, DIFF=<0|1>]` — Configure mode (`OFF`, `PCM`, `SYNTH`), target pin (0..7), and BTL differential output.
+      - `3'b001` (`0x1`): `AUDIO_VOL <vol>` — Set volume (0..15) for all 4 APU voices.
+      - `3'b010` (`0x2`): `AUDIO_SAMPLE` — Load 8-bit sample from `acc` into `audio_sample`.
+      - `3'b011` (`0x3`): `AUDIO_DUTY <v0_duty>, <v1_duty>` — Configure Pulse 1 / Pulse 2 duty cycles.
+      - `3'b100` (`0x4`): `AUDIO_NOTE_LO <voice>` — Load low 8 bits of frequency divider from `acc` into voice (0..3).
+      - `3'b101` (`0x5`): `AUDIO_NOTE_HI <voice>` — Load high 8 bits of frequency divider from `acc` into voice (0..3).
+      - `3'b110` (`0x6`): `AUDIO_PLAY <preset>` — Trigger autonomous hardware sound effect preset (`BEEP`, `BLIP`, `ERROR`, `COIN`, `LASER`, `SIREN`, `NOISE`).
+      - `3'b111` (`0x7`): `AUDIO_STOP` — Halt sound effect preset and silence voices.
   - `SS = 01`:
     - `instr[9] = 0`: `ASSIST RESET` (Clears bit-stuff counters, `stuff_error`, `manch_error`, and phase trackers)
     - `instr[9] = 1`: `I2C_SLAVE_CFG <addr7> [, stretch=0|1]` — Configures 7-bit slave address `instr[6:0]` and clock stretch enable `instr[7]`.
@@ -531,6 +545,21 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
   - Automatically suppresses clock stretching if external master NACKs on read (`i2c_master_ack == 0`).
 - **Wishbone Integration**:
   - Status register bit 30 (`WB_REG_STATUS[30]`) reflects real-time `i2c_addr_match`, enabling interrupt or polled DMA servicing.
+
+### 6. 1-Bit Delta-Sigma Audio DAC & 4-Voice Chiptune PDM Engine
+- **Modulator Architecture**: 1st-order Delta-Sigma ($\Sigma$-$\Delta$) Pulse Density Modulation running at $f_{clk} = 50\,\text{MHz}$.
+  - Oversampling ratio ($OSR$): $1250\times$ over $40\,\text{kHz}$ audio bandwidth.
+  - Linear 8-bit dynamic range with first-order high-pass quantization noise shaping.
+- **Audio Output Modes**:
+  - **Single-Ended PDM**: Direct output on selected GPIO pin (`audio_pin`), requiring only a simple external passive RC low-pass filter ($R \approx 1\,\text{k}\Omega$, $C \approx 10\,\text{nF}$, $f_c \approx 16\,\text{kHz}$).
+  - **Differential Bridge-Tied Load (BTL)**: Generates complementary inverted PDM bitstream on `audio_pin ^ 1` (`audio_diff = 1`), doubling effective peak-to-peak output voltage (4x audio power) and eliminating DC bias across speakers.
+- **4-Voice Polyphonic Chiptune APU Synthesizer**:
+  - **Pulse Voices 0 & 1**: 16-bit programmable period divider ($f_{out} = \frac{f_{clk}}{16 \cdot (\text{period} + 1)}$), 4 selectable duty cycles (12.5%, 25%, 50%, 75%), 4-bit independent volume control (0..15).
+  - **Triangle Voice 2**: 16-step smooth triangle wave generator with 4-bit volume control.
+  - **Noise Voice 3**: 15-bit Galois pseudo-random LFSR with switchable 15-bit (white noise) and 7-bit (metallic periodic noise) modes and 4-bit volume control.
+  - **Digital Mixer**: Real-time saturation-clamped summation ($V_0 + V_1 + V_2 + V_3 \le 255$).
+- **Autonomous Hardware Sound Effects**: Built-in multi-step preset sequencer for instant sound generation without microcode polling (`BEEP`, `BLIP`, `ERROR`, `COIN`, `LASER`, `SIREN`, `NOISE`).
+- **Direct PCM Streaming**: Single-cycle `OUT AUDIO` sample transfer from OSR directly to DAC for high-speed host PCM sample playback.
 
 ---
 

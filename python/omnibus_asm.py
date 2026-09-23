@@ -78,6 +78,14 @@ OPCODES = {
     "I2C_SLAVE_CFG":     0xF,  # Task 21: Dedicated Hardware I2C Slave Engine
     "I2C_RELEASE_SCL":   0xF,
     "I2C_SLAVE_DISABLE": 0xF,
+    "AUDIO_CFG":         0xF,  # Task 22: 1-Bit Delta-Sigma Audio DAC & Chiptune Synthesizer
+    "AUDIO_VOL":         0xF,
+    "AUDIO_SAMPLE":      0xF,
+    "AUDIO_DUTY":        0xF,
+    "AUDIO_NOTE_LO":     0xF,
+    "AUDIO_NOTE_HI":     0xF,
+    "AUDIO_PLAY":        0xF,
+    "AUDIO_STOP":        0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -238,7 +246,9 @@ class OmnibusAssembler:
                             return 3
                         return 0
 
-                    if len(tokens) >= 2 and tokens[1].strip().upper() in ("SLAVE", "I2C_SLAVE"):
+                    if len(tokens) >= 2 and tokens[1].strip().upper() in ("AUDIO", "DAC", "PDM"):
+                        word = (opcode_val << 12) | (0x1F << 7)
+                    elif len(tokens) >= 2 and tokens[1].strip().upper() in ("SLAVE", "I2C_SLAVE"):
                         # IN SLAVE [, NACK] [, delay]
                         # [11:9] = 3'b111 (7)
                         # [8] = NACK (1 if NACK, 0 if ACK)
@@ -282,6 +292,7 @@ class OmnibusAssembler:
                     #   OUT 1W, 1, delay    (mode=2, 1-bit 1-Wire Write for Search ROM)
                     #   OUT 1W, 8, delay    (mode=2, 8-bit 1-Wire Write)
                     #   OUT SDA, delay      (mode=3, 8-bit MSB-first I2C + auto-SCL toggle)
+                    #   OUT AUDIO           (5'b11111 << 7, Hardware Audio DAC sample load)
                     #   OUT SLAVE, delay    (mode=7, Hardware I2C Slave Transmit)
                     def _out_mode(s):
                         s = s.strip().upper()
@@ -293,7 +304,9 @@ class OmnibusAssembler:
                             return 3
                         return 0
 
-                    if len(tokens) >= 2 and tokens[1].strip().upper() in ("SLAVE", "I2C_SLAVE"):
+                    if len(tokens) >= 2 and tokens[1].strip().upper() in ("AUDIO", "DAC", "PDM"):
+                        word = (opcode_val << 12) | (0x1F << 7)
+                    elif len(tokens) >= 2 and tokens[1].strip().upper() in ("SLAVE", "I2C_SLAVE"):
                         delay = eval_arg(tokens[2]) & 0x1FF if len(tokens) >= 3 else 0
                         word = (opcode_val << 12) | (7 << 9) | (delay & 0x1FF)
                     elif len(tokens) >= 4 and _out_mode(tokens[1]) == 2:
@@ -778,7 +791,7 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
-            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE"):
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP"):
                 # Sub-operations:
                 # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
                 # 2'b01: ASSIST RESET
@@ -1044,6 +1057,92 @@ class OmnibusAssembler:
                 elif sub_cmd in ("PULSE_TIME1", "TIME1", "PULSETIME1"):
                     cycles = eval_arg(arg_tokens[0]) if arg_tokens else 0
                     word = (0xF << 12) | (3 << 10) | (3 << 8) | (cycles & 0xFF)
+
+                elif sub_cmd in ("AUDIO_CFG", "AUDIO"):
+                    # AUDIO_CFG <mode> [, PIN=<pin>] [, DIFF=<0|1>]
+                    # mode: OFF=0, PCM=1, SYNTH=2, DIFF/HYBRID=3
+                    amode = 1  # default PCM
+                    apin = 2   # default cs_pin/2
+                    adiff = 0
+                    for a in arg_tokens:
+                        item = a.strip().upper()
+                        if "=" in item:
+                            k, v = item.split("=", 1)
+                            k, v = k.strip(), v.strip()
+                            if k in ("MODE", "TYPE"):
+                                if v in ("OFF", "0", "DISABLE"):
+                                    amode = 0
+                                elif v in ("PCM", "DAC", "1"):
+                                    amode = 1
+                                elif v in ("SYNTH", "APU", "CHIPTUNE", "2"):
+                                    amode = 2
+                                elif v in ("DIFF", "HYBRID", "3"):
+                                    amode = 3
+                            elif k in ("PIN", "GPIO"):
+                                apin = eval_arg(v) & 7
+                            elif k in ("DIFF", "BTL"):
+                                adiff = 1 if eval_arg(v) else 0
+                        else:
+                            if item in ("OFF", "DISABLE"):
+                                amode = 0
+                            elif item in ("PCM", "DAC"):
+                                amode = 1
+                            elif item in ("SYNTH", "APU", "CHIPTUNE"):
+                                amode = 2
+                            elif item in ("DIFF", "HYBRID"):
+                                amode = 3
+                            elif item in ("DIFF_OUT", "DIFFERENTIAL"):
+                                adiff = 1
+                            else:
+                                try:
+                                    amode = eval_arg(item) & 3
+                                except Exception:
+                                    pass
+                    if adiff:
+                        amode = 3
+                    pin_hi = (apin >> 2) & 1
+                    pin_lo = apin & 3
+                    word = (0xF << 12) | (0 << 10) | (pin_hi << 9) | (3 << 7) | (0 << 4) | (pin_lo << 2) | (amode & 3)
+
+                elif sub_cmd in ("AUDIO_VOL", "VOL"):
+                    vol = eval_arg(arg_tokens[0]) & 0xF if arg_tokens else 12
+                    word = (0xF << 12) | (0 << 10) | (3 << 7) | (1 << 4) | (vol & 0xF)
+
+                elif sub_cmd in ("AUDIO_SAMPLE", "SAMPLE"):
+                    word = (0xF << 12) | (0 << 10) | (3 << 7) | (2 << 4)
+
+                elif sub_cmd in ("AUDIO_DUTY", "DUTY"):
+                    d0 = eval_arg(arg_tokens[0]) & 3 if len(arg_tokens) >= 1 else 2
+                    d1 = eval_arg(arg_tokens[1]) & 3 if len(arg_tokens) >= 2 else d0
+                    word = (0xF << 12) | (0 << 10) | (3 << 7) | (3 << 4) | ((d0 & 3) << 2) | (d1 & 3)
+
+                elif sub_cmd in ("AUDIO_NOTE_LO", "NOTE_LO"):
+                    voice = eval_arg(arg_tokens[0]) & 3 if arg_tokens else 0
+                    word = (0xF << 12) | (0 << 10) | (3 << 7) | (4 << 4) | (voice & 3)
+
+                elif sub_cmd in ("AUDIO_NOTE_HI", "NOTE_HI"):
+                    voice = eval_arg(arg_tokens[0]) & 3 if arg_tokens else 0
+                    word = (0xF << 12) | (0 << 10) | (3 << 7) | (5 << 4) | (voice & 3)
+
+                elif sub_cmd in ("AUDIO_PLAY", "PLAY"):
+                    PRESET_MAP = {
+                        "OFF": 0, "NONE": 0, "0": 0,
+                        "BEEP": 1, "1": 1,
+                        "BLIP": 2, "2": 2,
+                        "ERROR": 3, "3": 3,
+                        "COIN": 4, "4": 4,
+                        "LASER": 5, "5": 5,
+                        "SIREN": 6, "6": 6,
+                        "NOISE": 7, "7": 7,
+                    }
+                    preset = 1
+                    if arg_tokens:
+                        p_str = arg_tokens[0].strip().upper()
+                        preset = PRESET_MAP.get(p_str, eval_arg(p_str) & 0xF if p_str.isdigit() else 1)
+                    word = (0xF << 12) | (0 << 10) | (3 << 7) | (6 << 4) | (preset & 0xF)
+
+                elif sub_cmd in ("AUDIO_STOP", "STOP_AUDIO"):
+                    word = (0xF << 12) | (0 << 10) | (3 << 7) | (7 << 4)
 
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ASSIST sub-operation '{sub_cmd}'")
