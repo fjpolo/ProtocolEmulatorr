@@ -62,6 +62,10 @@ OPCODES = {
     "CRC_READ_L":    0xE,
     "CRC_READ_HIGH": 0xE,
     "CRC_READ_H":    0xE,
+    "CRC_READ_B0":   0xE,
+    "CRC_READ_B1":   0xE,
+    "CRC_READ_B2":   0xE,
+    "CRC_READ_B3":   0xE,
     "CRC_RESET":     0xE,
     "ASSIST":        0xF,  # Autonomous Stream Accelerators (NRZI & Bit-Stuffing)
     "ASSIST_CFG":    0xF,
@@ -514,25 +518,30 @@ class OmnibusAssembler:
                 # RET — no operands
                 word = opcode_val << 12
 
-            elif op in ("CRC", "CRC_INIT", "CRC_BYTE", "CRC_READ_LOW", "CRC_READ_L", "CRC_READ_HIGH", "CRC_READ_H", "CRC_RESET"):
+            elif op in ("CRC", "CRC_INIT", "CRC_BYTE", "CRC_READ_LOW", "CRC_READ_L", "CRC_READ_HIGH", "CRC_READ_H",
+                        "CRC_READ_B0", "CRC_READ_B1", "CRC_READ_B2", "CRC_READ_B3", "CRC_RESET"):
                 # Sub-operations:
                 # 3'b000: CRC_INIT poly, [seed]
                 # 3'b001: CRC_BYTE OSR
                 # 3'b010: CRC_BYTE ISR
                 # 3'b011: CRC_BYTE DATA
-                # 3'b100: CRC_READ_LOW
-                # 3'b101: CRC_READ_HIGH
+                # 3'b100: CRC_READ_LOW / CRC_READ_B0
+                # 3'b101: CRC_READ_HIGH / CRC_READ_B1
                 # 3'b110: CRC_RESET
+                # 3'b111: CRC_READ_B2 (bit 0=0) / CRC_READ_B3 (bit 0=1)
                 POLY_MAP = {
                     "DALLAS": 0, "1WIRE": 0, "ONEWIRE": 0, "CRC8_DALLAS": 0, "0": 0,
                     "SMBUS": 1, "I2C": 1, "PEC": 1, "CRC8_SMBUS": 1, "1": 1,
                     "CCITT": 2, "XMODEM": 2, "CRC16_CCITT": 2, "2": 2,
                     "MODBUS": 3, "IBM": 3, "USB": 3, "CRC16_MODBUS": 3, "3": 3,
+                    "ETHERNET": 4, "ETH": 4, "CRC32": 4, "CRC-32": 4, "CRC32_ETH": 4, "4": 4,
+                    "USB5": 5, "CRC5": 5, "CRC-5": 5, "CRC5_USB": 5, "5": 5,
                 }
                 SEED_MAP = {
                     "DEFAULT": 0, "AUTO": 0,
                     "0": 1, "0X0000": 1, "0X0": 1, "0X00": 1, "ZERO": 1,
                     "0xFFFF": 2, "65535": 2, "ONES": 2, "-1": 2,
+                    "0XFFFFFFFF": 2, "4294967295": 2,
                 }
                 SRC_MAP = {
                     "OSR": 1,
@@ -551,7 +560,7 @@ class OmnibusAssembler:
 
                 if sub_cmd == "INIT":
                     if len(arg_tokens) < 1:
-                        raise AssemblerError(f"Line {line_num}: CRC_INIT requires polynomial argument (DALLAS, SMBUS, CCITT, MODBUS)")
+                        raise AssemblerError(f"Line {line_num}: CRC_INIT requires polynomial argument (DALLAS, SMBUS, CCITT, MODBUS, ETHERNET, USB5)")
                     poly_str = arg_tokens[0].strip().upper()
                     if poly_str not in POLY_MAP:
                         raise AssemblerError(f"Line {line_num}: Unknown CRC polynomial '{arg_tokens[0]}'")
@@ -564,7 +573,13 @@ class OmnibusAssembler:
                         else:
                             seed_val = eval_arg(seed_str)
                             seed = 1 if seed_val == 0 else 2
-                    word = (0xE << 12) | (0 << 9) | (poly << 7) | (seed << 5)
+
+                    if poly >= 4:
+                        # Extended polynomial: bit 3 = 1, bits 2:1 = poly - 4, bits 5:4 = seed
+                        word = (0xE << 12) | (0 << 9) | ((seed & 3) << 4) | (1 << 3) | (((poly - 4) & 3) << 1)
+                    else:
+                        # Legacy polynomial: bit 3 = 0, bits 8:7 = poly, bits 6:5 = seed
+                        word = (0xE << 12) | (0 << 9) | (poly << 7) | (seed << 5)
 
                 elif sub_cmd == "BYTE":
                     if len(arg_tokens) < 1:
@@ -575,25 +590,35 @@ class OmnibusAssembler:
                     src = SRC_MAP[src_str]
                     word = (0xE << 12) | (src << 9)
 
-                elif sub_cmd in ("READ_LOW", "READ_L", "READLOW"):
+                elif sub_cmd in ("READ_LOW", "READ_L", "READLOW", "READ_B0", "B0"):
                     word = (0xE << 12) | (4 << 9)
 
-                elif sub_cmd in ("READ_HIGH", "READ_H", "READHIGH"):
+                elif sub_cmd in ("READ_HIGH", "READ_H", "READHIGH", "READ_B1", "B1"):
                     word = (0xE << 12) | (5 << 9)
+
+                elif sub_cmd in ("READ_B2", "B2"):
+                    word = (0xE << 12) | (7 << 9) | 0
+
+                elif sub_cmd in ("READ_B3", "B3"):
+                    word = (0xE << 12) | (7 << 9) | 1
 
                 elif sub_cmd == "RESET":
                     word = (0xE << 12) | (6 << 9)
 
                 elif sub_cmd == "READ":
                     if len(arg_tokens) < 1:
-                        raise AssemblerError(f"Line {line_num}: CRC READ requires LOW or HIGH")
+                        raise AssemblerError(f"Line {line_num}: CRC READ requires byte identifier (LOW, HIGH, B0, B1, B2, B3)")
                     target_part = arg_tokens[0].strip().upper()
-                    if target_part in ("LOW", "L"):
+                    if target_part in ("LOW", "L", "B0", "BYTE0", "0"):
                         word = (0xE << 12) | (4 << 9)
-                    elif target_part in ("HIGH", "H"):
+                    elif target_part in ("HIGH", "H", "B1", "BYTE1", "1"):
                         word = (0xE << 12) | (5 << 9)
+                    elif target_part in ("B2", "BYTE2", "2"):
+                        word = (0xE << 12) | (7 << 9) | 0
+                    elif target_part in ("B3", "BYTE3", "3"):
+                        word = (0xE << 12) | (7 << 9) | 1
                     else:
-                        raise AssemblerError(f"Line {line_num}: CRC READ requires LOW or HIGH, got '{arg_tokens[0]}'")
+                        raise AssemblerError(f"Line {line_num}: CRC READ requires LOW, HIGH, B0, B1, B2, or B3, got '{arg_tokens[0]}'")
 
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown CRC command '{sub_cmd}'")

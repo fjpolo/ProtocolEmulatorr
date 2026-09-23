@@ -192,7 +192,7 @@ module OmniBus_Wishbone #(
     wire [31:0] reg_status = {
         o_irq,                                      // [31] IRQ state
         !reg_prog_en,                               // [30] Core Running
-        core.crc_reg == 16'd0,                      // [29] CRC Residue == 0
+        core.crc_reg == 32'd0,                      // [29] CRC Residue == 0
         core.pc,                                    // [28:24] Core PC
         {(8-$clog2(FIFO_DEPTH)-1){1'b0}}, rx_fifo_level, // [23:16] RX FIFO Level
         {(8-$clog2(FIFO_DEPTH)-1){1'b0}}, tx_fifo_level, // [15:8]  TX FIFO Level
