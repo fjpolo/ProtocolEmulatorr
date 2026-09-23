@@ -1,13 +1,13 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.0 (Architecture Release — Tasks 01 through 18)  
+**Document Revision**: 1.1 (Architecture Release — Tasks 01 through 19)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
 
 ---
 
 ## 1. Device Overview & Key Features
 
-The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable physical-layer communications processor designed to replace dedicated fixed-function protocol controllers (UART, SPI, I2C, 1-Wire, USB 1.1, CAN 2.0, WS2812B, NES/SNES Gamepad) with a unified, high-speed ASIC architecture.
+The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable physical-layer communications processor designed to replace dedicated fixed-function protocol controllers (UART, SPI, I2C, 1-Wire, USB 1.1, CAN 2.0, WS2812B, NES/SNES Gamepad, 10BASE-T Ethernet, S/PDIF, DALI) with a unified, high-speed ASIC architecture.
 
 ```
                            +---------------------------------------+
@@ -17,7 +17,7 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
     (Wishbone / FIFO)      | [Synchronous Dual FIFO]  (4 Banks)    |          (8-bit Unified GPIO)
                            | [Micro-ALU]         [SERDES Engine]   |          - Push-Pull / OD
                            | [CRC Accelerator]   [Pulse Engine]    |          - Dynamic PINMAP
-                           | [Stream Stuffer]    [NRZI Modulator]  |
+                           | [Stream Stuffer]    [NRZI Modulator]  |          - Manchester / BMC
                            +---------------------------------------+
 ```
 
@@ -30,6 +30,7 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
 - **Zero-Overhead Loop Counters**: Dual independent 8-bit counters (`LC0`, `LC1`) with decrement-and-jump-if-not-zero (`DJNZ`) and register exchange instructions.
 - **Hardware Multi-Polynomial CRC Generator**: Single-cycle parallel 8-bit XOR tree supporting CRC-8 Dallas/1-Wire ($x^8 + x^5 + x^4 + 1$), CRC-8 SMBus ($x^8 + x^2 + x^1 + 1$), CRC-16 CCITT ($x^{16} + x^{12} + x^5 + 1$), and CRC-16 Modbus ($x^{16} + x^{15} + x^2 + 1$).
 - **Autonomous Stream Accelerators**:
+  - **Manchester & Biphase Mark Code (BMC) Engine**: Autonomous two-phase serializer/deserializer with half-bit delay scaling for **IEEE 802.3 10BASE-T Ethernet**, **Thomas convention**, and **BMC / FM1 (S/PDIF, DALI, MIL-STD-1553)**. Features continuous center-transition code violation detection (`manch_error`) and zero-overhead conditional branch (`JMP MANCH_ERR`).
   - **NRZI Modulator/Demodulator**: Hardware toggle-on-zero / hold-on-one encoder and single-cycle combinational edge detector.
   - **Hardware Bit-Stuffer / De-Stuffer**: Autonomous insertion and stripping of complementary bits for **USB 1.1** (stuff on 6 ones) and **CAN 2.0** (stuff on 5 identical bits) with hardware framing error latch (`stuff_error`) and conditional branch (`JMP STUFF_ERR`).
 - **Asymmetric Single-Wire & Retro Physical Accelerators**:
@@ -373,7 +374,7 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
     - `4'h6`: RX FIFO Not Empty (`JMP RX_VALID, <addr>`)
     - `4'h7`: TX FIFO Empty (`JMP TX_EMPTY, <addr>`)
     - `4'h8`: RX FIFO Full (`JMP RX_FULL, <addr>`)
-    - `4'hF`: Bit-Stuffing Framing Violation (`JMP STUFF_ERR, <addr>`)
+    - `4'hF`: Framing or Stream Violation (`JMP STUFF_ERR, <addr>` or `JMP MANCH_ERR, <addr>`)
 
 #### Opcode `0xB` — `ALU` (8-Bit Arithmetic & Logic Unit)
 - **Format**: `16'b1011_CCCC_DDDDDDDD`
@@ -400,10 +401,13 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
 
 #### Opcode `0xF` — `ASSIST` (Hardware Physical Stream Accelerators)
 - **Format**: `16'b1111_SS_XXXXXXXXXX`
-  - `SS = 00`: `ASSIST CFG, NRZI=<0|1>, STUFF=<0|USB|CAN> [, INIT=<0|1>]`
-  - `SS = 01`: `ASSIST RESET` (Clears bit-stuff counters and `stuff_error` flag)
+  - `SS = 00`: `ASSIST CFG`
+    - `instr[4] = 0`: NRZI & Bit-Stuffing Configuration (`NRZI=<0|1>, STUFF=<0|USB|CAN> [, INIT=<0|1>]`)
+    - `instr[4] = 1`: Manchester Accelerator Configuration (`MANCH=<0|1>, MODE=<0|1|2> [, INIT=<0|1>]`)
+    - High-level syntax: `ASSIST MANCH, <IEEE | THOMAS | BMC>`
+  - `SS = 01`: `ASSIST RESET` (Clears bit-stuff counters, `stuff_error`, `manch_error`, and phase trackers)
   - `SS = 10`: `ASSIST READ [, PAD_HIGH]`
-    - `instr[9] = 0`: Read status into `acc`: `{stuff_error, nrzi_en, stuff_mode[1:0], 1'b0, tx_stuff_cnt[2:0]}`
+    - `instr[9] = 0`: Read status into `acc`: `{stuff_error, manch_error, manch_mode[1:0], manch_en, stuff_mode[1:0], nrzi_en}`
     - `instr[9] = 1`: Read upper byte of 16-bit SNES gamepad (`pad_shift_reg[15:8]`) into `acc`
   - `SS = 11`: Task 18 Pulse & Retro Gamepad Configurations:
     - `instr[9:8] = 00`: `ASSIST PULSE_CFG [, NEOPIXEL | JOYBUS]`
@@ -435,6 +439,16 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
 - **Data Capture**:
   - NES (8 bits): A, B, SELECT, START, UP, DOWN, LEFT, RIGHT $\rightarrow$ latched in `isr`.
   - SNES (16 bits): Lower byte $\rightarrow$ `isr`, Upper byte $\rightarrow$ `pad_shift_reg[15:8]` (read via `ASSIST READ, PAD_HIGH`).
+
+### 4. 10BASE-T Ethernet & Biphase Mark Code (BMC) Stream Profile
+- **Encoding Formats**:
+  - **IEEE 802.3 10BASE-T Ethernet**: Logic 0 = Low $\to$ High, Logic 1 = High $\to$ Low. Mid-bit transition mandatory.
+  - **Thomas Convention**: Logic 0 = High $\to$ Low, Logic 1 = Low $\to$ High.
+  - **Biphase Mark Code (BMC / FM1)**: Always toggle at boundary. Toggle at center if and only if bit is `'1'`. Used in **S/PDIF** and **DALI**.
+- **Timing Resolution**: Configured via `eff_hdelay = eff_delay >> 1`.
+  - For $10\,\text{Mbit/s}$ Ethernet at $50\,\text{MHz}$: Bit period = $100\,\text{ns}$ (5 cycles), half-bit = $50\,\text{ns}$ (2–3 cycles).
+  - For $1.2\,\text{kbit/s}$ DALI at $50\,\text{MHz}$: Bit period = $833.33\,\mu\text{s}$, half-bit = $416.67\,\mu\text{s}$ (20,833 cycles).
+- **Code Violation Detection**: Flatline across center transition flags `manch_error` in hardware and triggers zero-overhead `JMP MANCH_ERR` branch.
 
 ---
 

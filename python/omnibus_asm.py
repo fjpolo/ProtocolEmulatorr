@@ -474,6 +474,7 @@ class OmnibusAssembler:
                     "POS": 13, "POSITIVE": 13, "PLUS": 13,
                     "CRC_ERR": 14, "CRC_BAD": 14, "CRC_ERROR": 14,
                     "STUFF_ERR": 15, "STUFF_ERROR": 15, "STUFF_BAD": 15,
+                    "MANCH_ERR": 15, "MANCH_ERROR": 15, "MANCH_VIOLATION": 15, "STREAM_ERR": 15,
                 }
                 if len(tokens) >= 3:
                     cond_name = tokens[1].strip().upper()
@@ -766,6 +767,10 @@ class OmnibusAssembler:
                     stuff_val = 0
                     init_en = 0
                     init_val = 1
+                    manch_cfg_en = 0
+                    manch_en = 0
+                    manch_mode = 0
+                    manch_state = 0
 
                     for a in arg_tokens:
                         item = a.strip().upper()
@@ -779,12 +784,39 @@ class OmnibusAssembler:
                             elif k in ("INIT", "LEVEL", "STATE"):
                                 init_en = 1
                                 init_val = 1 if (v in ("1", "HIGH", "J") or (eval_arg(v) != 0 if v.isdigit() else 0)) else 0
+                            elif k in ("MANCH", "MANCHESTER"):
+                                manch_cfg_en = 1
+                                manch_en = 0 if v in ("0", "OFF", "DISABLE") else 1
+                            elif k in ("MANCH_MODE", "MANCH_TYPE"):
+                                manch_cfg_en = 1
+                                manch_en = 1
+                                if v in ("THOMAS", "INVERTED", "1"):
+                                    manch_mode = 1
+                                elif v in ("BMC", "BIPHASE", "DALI", "2"):
+                                    manch_mode = 2
+                                else:
+                                    manch_mode = 0
                         elif item in ("NRZI", "ENABLE_NRZI"):
                             nrzi_val = 1
                         elif item in ("NRZ", "NO_NRZI", "DISABLE_NRZI"):
                             nrzi_val = 0
                         elif item in STUFF_MAP:
                             stuff_val = STUFF_MAP[item]
+                        elif item in ("MANCH", "MANCHESTER", "ENABLE_MANCH"):
+                            manch_cfg_en = 1
+                            manch_en = 1
+                        elif item in ("IEEE", "10BASET", "ETHERNET"):
+                            manch_cfg_en = 1
+                            manch_en = 1
+                            manch_mode = 0
+                        elif item in ("THOMAS", "INVERTED_MANCH"):
+                            manch_cfg_en = 1
+                            manch_en = 1
+                            manch_mode = 1
+                        elif item in ("BMC", "BIPHASE", "BIPHASE_MARK"):
+                            manch_cfg_en = 1
+                            manch_en = 1
+                            manch_mode = 2
                         else:
                             try:
                                 v_int = eval_arg(item)
@@ -795,7 +827,39 @@ class OmnibusAssembler:
                             except Exception:
                                 pass
 
-                    word = (0xF << 12) | (0 << 10) | (nrzi_val << 9) | (stuff_val << 7) | (init_en << 6) | (init_val << 5)
+                    word = (0xF << 12) | (0 << 10) | (nrzi_val << 9) | (stuff_val << 7) | (init_en << 6) | (init_val << 5) | (manch_cfg_en << 4) | (manch_en << 3) | (manch_mode << 1) | manch_state
+
+                elif sub_cmd in ("MANCH_CFG", "MANCH", "MANCHESTER"):
+                    # ASSIST MANCH_CFG, <IEEE / THOMAS / BMC> [, EN=1/0]
+                    manch_en = 1
+                    manch_mode = 0
+                    manch_state = 0
+                    for a in arg_tokens:
+                        item = a.strip().upper()
+                        if "=" in item:
+                            k, v = item.split("=", 1)
+                            k, v = k.strip(), v.strip()
+                            if k in ("EN", "ENABLE"):
+                                manch_en = 0 if v in ("0", "OFF", "DISABLE") else 1
+                            elif k in ("MODE", "TYPE"):
+                                if v in ("THOMAS", "INVERTED", "1"):
+                                    manch_mode = 1
+                                elif v in ("BMC", "BIPHASE", "DALI", "2"):
+                                    manch_mode = 2
+                                else:
+                                    manch_mode = 0
+                            elif k in ("STATE", "INIT"):
+                                manch_state = 1 if v in ("1", "HIGH") else 0
+                        else:
+                            if item in ("THOMAS", "INVERTED"):
+                                manch_mode = 1
+                            elif item in ("BMC", "BIPHASE", "DALI"):
+                                manch_mode = 2
+                            elif item in ("IEEE", "10BASET", "ETHERNET"):
+                                manch_mode = 0
+                            elif item in ("OFF", "DISABLE"):
+                                manch_en = 0
+                    word = (0xF << 12) | (0 << 10) | (1 << 4) | (manch_en << 3) | (manch_mode << 1) | manch_state
 
                 elif sub_cmd == "RESET":
                     word = (0xF << 12) | (1 << 10)

@@ -112,6 +112,15 @@ module ProtocolEmulator(
     reg [15:0] pad_shift_reg;       // 16-bit shift register for NES/SNES multi-byte reads/emulation
     reg [7:0]  pulse_rx_cnt;        // Measured duration of active pulse during RX
 
+    // Autonomous Manchester & Biphase Mark Stream Accelerators State (Task 19)
+    reg        assist_manch_en;     // 1=Enable Manchester / BMC acceleration
+    reg [1:0]  assist_manch_mode;   // 00=IEEE 802.3 (10BASE-T), 01=Thomas (Inverted), 10=BMC (Biphase Mark)
+    reg        manch_tx_phase;      // 0=First half-bit, 1=Second half-bit
+    reg        manch_tx_state;      // Line level state tracker for BMC mode
+    reg        manch_rx_phase;      // 0=First half-bit sample, 1=Second half-bit sample & decode
+    reg        manch_rx_sample1;    // First half-bit sampled value
+    reg        manch_error;         // Latched error flag for Manchester code violation
+
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
     reg [2:0]  rx_pin;          // Pin index for IN deserializer / default WAIT (default 0)
@@ -414,6 +423,7 @@ module ProtocolEmulator(
     // 1-Wire multi-pulse derived delays (10x and 9x short pulse duration)
     wire [15:0] eff_delay_10x = (eff_delay << 3) + (eff_delay << 1);
     wire [15:0] eff_delay_9x  = (eff_delay << 3) + eff_delay;
+    wire [15:0] eff_hdelay    = (eff_delay >> 1);
 
     // -------------------------------------------------------------------------
     // 2-stage input synchronizer for all 8 GPIO pins
@@ -606,6 +616,13 @@ module ProtocolEmulator(
             pad_snes_16b      <= 1'b0;
             pad_shift_reg     <= 16'd0;
             pulse_rx_cnt      <= 8'd0;
+            assist_manch_en   <= 1'b0;
+            assist_manch_mode <= 2'b00;
+            manch_tx_phase    <= 1'b0;
+            manch_tx_state    <= 1'b0;
+            manch_rx_phase    <= 1'b0;
+            manch_rx_sample1  <= 1'b0;
+            manch_error       <= 1'b0;
         end else begin
             // Default: clear single-cycle pop/push strobes
             o_tx_pop  <= 1'b0;
@@ -810,7 +827,52 @@ module ProtocolEmulator(
                                 nrzi_rx_prev <= gpio_in[rx_pin];
                             end
 
-                            if (assist_stuff_mode == 2'b01 && rx_stuff_cnt == 3'd6) begin
+                            if (assist_manch_en) begin
+                                // ---------------------------------------------------
+                                // Autonomous Manchester / BMC Deserializer (Task 19)
+                                // Phase 0: Sample first half-bit (eff_hdelay)
+                                // Phase 1: Sample second half-bit & decode bit
+                                // ---------------------------------------------------
+                                if (manch_rx_phase == 1'b0) begin
+                                    manch_rx_sample1 <= gpio_in[rx_pin];
+                                    delay_cnt        <= eff_hdelay;
+                                    manch_rx_phase   <= 1'b1;
+                                    pc               <= pc;
+                                end else begin
+                                    // Phase 1: Second half sample & decode
+                                    delay_cnt      <= eff_hdelay;
+                                    manch_rx_phase <= 1'b0;
+
+                                    // Manchester code violation check:
+                                    // In IEEE or Thomas, level MUST transition at center (sample1 != sample2)
+                                    if (assist_manch_mode != 2'b10 && (manch_rx_sample1 == gpio_in[rx_pin])) begin
+                                        manch_error <= 1'b1;
+                                    end
+
+                                    // Bit recovery
+                                    if (assist_manch_mode == 2'b10) begin
+                                        // BMC: mid-bit transition indicates bit 1, steady indicates bit 0
+                                        isr <= {(manch_rx_sample1 != gpio_in[rx_pin]), isr[7:1]};
+                                    end else if (assist_manch_mode == 2'b01) begin
+                                        // Thomas: 1=Low/High, 0=High/Low
+                                        isr <= {~manch_rx_sample1, isr[7:1]};
+                                    end else begin
+                                        // IEEE 802.3: 0=Low/High, 1=High/Low
+                                        isr <= {manch_rx_sample1, isr[7:1]};
+                                    end
+
+                                    if (rx_bit_cnt == 4'd0) begin
+                                        rx_bit_cnt <= in_count_init;
+                                        pc         <= (in_count_init == 4'd0) ? pc + 7'd1 : pc;
+                                    end else if (rx_bit_cnt == 4'd1) begin
+                                        rx_bit_cnt <= 4'd0;
+                                        pc         <= pc + 7'd1;
+                                    end else begin
+                                        rx_bit_cnt <= rx_bit_cnt - 4'd1;
+                                        pc         <= pc;
+                                    end
+                                end
+                            end else if (assist_stuff_mode == 2'b01 && rx_stuff_cnt == 3'd6) begin
                                 // USB Bit-Destuffing: next bit must be '0' (stuff bit) and is discarded
                                 if (dec_rx_bit == 1'b0) begin
                                     rx_stuff_cnt <= 3'd0;
@@ -1009,6 +1071,60 @@ module ProtocolEmulator(
                                         osr <= {osr[6:0], 1'b0};
                                     else
                                         osr <= {1'b0, osr[7:1]};
+
+                                    if (bit_cnt == 4'd0) begin
+                                        bit_cnt <= 4'd7;
+                                        pc      <= pc;
+                                    end else if (bit_cnt == 4'd1) begin
+                                        bit_cnt <= 4'd0;
+                                        pc      <= pc + 7'd1;
+                                    end else begin
+                                        bit_cnt <= bit_cnt - 4'd1;
+                                        pc      <= pc;
+                                    end
+                                end
+                            end else if (assist_manch_en) begin
+                                // ---------------------------------------------------
+                                // Autonomous Manchester / BMC Serializer (Task 19)
+                                // Phase 0: First half-bit duration (eff_hdelay)
+                                // Phase 1: Second half-bit duration (eff_hdelay)
+                                // ---------------------------------------------------
+                                if (manch_tx_phase == 1'b0) begin
+                                    // Phase 0: First half-bit
+                                    if (assist_manch_mode == 2'b10) begin
+                                        // BMC mode: toggle boundary state
+                                        gpio_out_reg[tx_pin] <= ~manch_tx_state;
+                                        manch_tx_state       <= ~manch_tx_state;
+                                    end else if (assist_manch_mode == 2'b01) begin
+                                        // Thomas convention: 0=High/Low, 1=Low/High
+                                        gpio_out_reg[tx_pin] <= ~osr[0];
+                                    end else begin
+                                        // IEEE 802.3 10BASE-T: 0=Low/High, 1=High/Low
+                                        gpio_out_reg[tx_pin] <= osr[0];
+                                    end
+                                    gpio_oe_reg[tx_pin] <= 1'b1;
+                                    delay_cnt           <= eff_hdelay;
+                                    manch_tx_phase      <= 1'b1;
+                                    pc                  <= pc;
+                                end else begin
+                                    // Phase 1: Second half-bit
+                                    if (assist_manch_mode == 2'b10) begin
+                                        // BMC mode: toggle at mid-bit if data bit is '1'
+                                        if (osr[0]) begin
+                                            gpio_out_reg[tx_pin] <= ~manch_tx_state;
+                                            manch_tx_state       <= ~manch_tx_state;
+                                        end else begin
+                                            gpio_out_reg[tx_pin] <= manch_tx_state;
+                                        end
+                                    end else if (assist_manch_mode == 2'b01) begin
+                                        gpio_out_reg[tx_pin] <= osr[0];
+                                    end else begin
+                                        gpio_out_reg[tx_pin] <= ~osr[0];
+                                    end
+                                    gpio_oe_reg[tx_pin] <= 1'b1;
+                                    delay_cnt           <= eff_hdelay;
+                                    manch_tx_phase      <= 1'b0;
+                                    osr                 <= {1'b0, osr[7:1]};
 
                                     if (bit_cnt == 4'd0) begin
                                         bit_cnt <= 4'd7;
@@ -1230,7 +1346,7 @@ module ProtocolEmulator(
                             4'hC: pc <= acc[7] ? target : pc + 7'd1;         // JMP NEG / SIGN
                             4'hD: pc <= !acc[7] ? target : pc + 7'd1;        // JMP POS
                             4'hE: pc <= (crc_reg != 16'h0000) ? target : pc + 7'd1;// JMP CRC_ERR
-                            4'hF: pc <= stuff_error ? target : pc + 7'd1;    // JMP STUFF_ERR
+                            4'hF: pc <= (stuff_error | manch_error) ? target : pc + 7'd1; // JMP STUFF_ERR / MANCH_ERR
                             default: pc <= target;
                         endcase
                     end
@@ -1477,23 +1593,32 @@ module ProtocolEmulator(
                     4'hF: begin // ASSIST: Autonomous Stream Accelerators (NRZI & Bit-Stuffing)
                         delay_cnt <= 16'd0;
                         case (instr[11:10])
-                            2'b00: begin // ASSIST CFG, nrzi_en, stuff_mode, [init_val]
+                            2'b00: begin // ASSIST CFG, nrzi_en, stuff_mode, [init_val], [manch_cfg]
                                 assist_nrzi_en    <= instr[9];
                                 assist_stuff_mode <= instr[8:7];
                                 if (instr[6]) begin // re-init line state if bit 6 set
                                     nrzi_tx_state <= instr[5];
                                     nrzi_rx_prev  <= instr[5];
                                 end
+                                if (instr[4]) begin // Manchester CFG: instr[3]=en, instr[2:1]=mode, instr[0]=state
+                                    assist_manch_en   <= instr[3];
+                                    assist_manch_mode <= instr[2:1];
+                                    manch_tx_state    <= instr[0];
+                                end
                                 pc <= pc + 7'd1;
                             end
-                            2'b01: begin // ASSIST RESET (clear counters, error flag, reset NRZI state)
-                                tx_stuff_cnt  <= 3'd0;
-                                rx_stuff_cnt  <= 3'd0;
-                                stuff_error   <= 1'b0;
-                                nrzi_tx_state <= 1'b1;
-                                nrzi_rx_prev  <= 1'b1;
-                                tx_last_bit   <= 1'b1;
-                                rx_last_bit   <= 1'b1;
+                            2'b01: begin // ASSIST RESET (clear counters, error flags, reset states)
+                                tx_stuff_cnt   <= 3'd0;
+                                rx_stuff_cnt   <= 3'd0;
+                                stuff_error    <= 1'b0;
+                                nrzi_tx_state  <= 1'b1;
+                                nrzi_rx_prev   <= 1'b1;
+                                tx_last_bit    <= 1'b1;
+                                rx_last_bit    <= 1'b1;
+                                manch_tx_phase <= 1'b0;
+                                manch_rx_phase <= 1'b0;
+                                manch_tx_state <= 1'b0;
+                                manch_error    <= 1'b0;
                                 pc <= pc + 7'd1;
                             end
                             2'b10: begin // ASSIST READ (read status into acc)
@@ -1502,9 +1627,9 @@ module ProtocolEmulator(
                                     zero_flag  <= (pad_shift_reg[15:8] == 8'h00);
                                     carry_flag <= 1'b0;
                                 end else begin
-                                    acc        <= {stuff_error, assist_nrzi_en, assist_stuff_mode, 1'b0, tx_stuff_cnt};
-                                    zero_flag  <= (stuff_error == 1'b0);
-                                    carry_flag <= stuff_error;
+                                    acc        <= {stuff_error, manch_error, assist_manch_en, assist_nrzi_en, assist_stuff_mode, tx_stuff_cnt[1:0]};
+                                    zero_flag  <= ({stuff_error, manch_error} == 2'b00);
+                                    carry_flag <= (stuff_error | manch_error);
                                 end
                                 pc <= pc + 7'd1;
                             end

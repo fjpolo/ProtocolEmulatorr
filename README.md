@@ -43,6 +43,7 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 * [Task 16 — 128-Word IMEM Expansion & 4-Bank Switching](task16.md)
 * [Task 17 — Autonomous Stream Accelerators: NRZI & Bit-Stuffer/De-stuffer](task17.md)
 * [Task 18 — Asymmetric Single-Wire & Retro Physical Protocol Accelerators](task18.md)
+* [Task 19 — Autonomous Manchester / Biphase Mark Stream Accelerator](task19.md)
 
 ## Usage
 
