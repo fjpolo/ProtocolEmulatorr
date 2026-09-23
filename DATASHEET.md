@@ -41,28 +41,142 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
 
 ## 2. ASIC Pinout & Terminal Descriptions
 
-| Pin Name | Direction | Type | Reset State | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **`i_clk`** | Input | Digital Clock | — | Master system clock (Nominal 50 MHz, max 100+ MHz standard-cell). |
-| **`i_reset_n`** | Input | Active-Low Asynch/Synch | — | Active-low system reset. Initializes all registers and halts core. |
-| **`i_prog_en`** | Input | Digital Control | Low | IMEM Programming Mode Enable. Freezes core and grants write access to IMEM. |
-| **`i_prog_addr[6:0]`** | Input | 7-bit Address | 7'd0 | Direct IMEM write address aperture (0..127 across 4 banks). |
-| **`i_prog_data[15:0]`** | Input | 16-bit Data Bus | 16'd0 | 16-bit microcode instruction word to write into IMEM. |
-| **`i_baud_div[15:0]`** | Input | 16-bit Data Bus | 16'd0 | External runtime baud rate divisor (16-bit clock prescaler). |
-| **`i_gpio[7:0]`** | Input | 8-bit Bidirectional Bus | — | Physical input pins from exterior pad ring. |
-| **`o_gpio[7:0]`** | Output | 8-bit Bidirectional Bus | 8'b1111_1101 | Physical output drivers to pad ring (Pin 0 high, Pin 1 low, Pin 2 high). |
-| **`o_gpio_oe[7:0]`** | Output | 8-bit Output Enable | 8'b0000_0111 | Tri-state output enable mask (1 = Drive, 0 = Hi-Z input). |
-| **`o_tx`** | Output | Push-Pull | 1'b1 | Dedicated legacy UART TX port (mirrors `gpio_out_reg[tx_pin]`). |
-| **`i_tx_valid`** | Input | Handshake | Low | TX FIFO write strobe / data valid flag from host. |
-| **`o_tx_ready`** | Output | Handshake | High | TX FIFO ready to accept next byte from host. |
-| **`o_rx_valid`** | Output | Handshake | Low | RX FIFO contains valid received data for host. |
-| **`i_rx_ready`** | Input | Handshake | Low | Host acknowledge / pop strobe to read next byte from RX FIFO. |
-| **`o_tx_empty`** | Output | Status Flag | High | Asserted when TX FIFO contains 0 bytes. |
-| **`o_tx_full`** | Output | Status Flag | Low | Asserted when TX FIFO is completely full. |
-| **`o_rx_empty`** | Output | Status Flag | High | Asserted when RX FIFO contains 0 bytes. |
-| **`o_rx_full`** | Output | Status Flag | Low | Asserted when RX FIFO is completely full. |
+### A. ASIC Package Pinout Diagram (QFP-48 / Standard Macro)
 
----
+The following diagram illustrates every physical IO pin of the **OmniBus ProtocolEmulator Core**:
+
+```
+                                    +-----------------------------+
+                                    |      OmniBus Core ASIC      |
+                                    |     (QFP-48 / QFN-48)       |
+                                    +-----------------------------+
+                     [Power & Clock]|                             |[Unified Bidirectional GPIO]
+                i_clk  -----------> | 1                         48| <---------> io_gpio[0] (TX / SDA / 1W)
+            i_reset_n  -----------> | 2                         47| <---------> io_gpio[1] (SCK / SCL)
+                                    | 3                         46| <---------> io_gpio[2] (CS_n / LATCH)
+                [Host Data In / Out]|                             | <---------> io_gpio[3]
+          i_data[7:0]  ===========> | 4..11                     45| <---------> io_gpio[4]
+          o_data[7:0]  <=========== | 12..19                    44| <---------> io_gpio[5]
+                                    |                             | <---------> io_gpio[6]
+              [FIFO Handshake Flags]|                             | <---------> io_gpio[7]
+           i_tx_valid  -----------> | 20                          |
+             o_tx_pop  <----------- | 21                          |[Dedicated Role Convenience]
+            i_rx_full  -----------> | 22                        40| <---------- o_tx (UART TX / MOSI)
+            o_rx_push  <----------- | 23                        39| <---------- o_spi_sck (SPI SCK)
+                                    |                           38| <---------- o_spi_cs_n (SPI CS#)
+         [Dynamic Baud Rate Divisor]|                           37| ----------> i_rx (UART RX / MISO)
+     i_baud_div[15:0] ============> | 24..27                      |
+                                    |                             |[Dual-Port IMEM Bootloader]
+                                    |                           36| ----------> i_prog_en (Core Freeze)
+                                    |                           35| ----------> i_prog_we (RAM Write Strobe)
+                                    |                           34| ==========> i_prog_addr[6:0] (0..127)
+                                    |                           33| ==========> i_prog_data[15:0] (Instr In)
+                                    |                           32| <========== o_prog_rdata[15:0] (Readback)
+                                    +-----------------------------+
+```
+
+### B. Logical IO Interconnect Diagram
+
+```mermaid
+graph LR
+    subgraph PwrClk ["Power & Clocking"]
+        i_clk["i_clk<br/>(Master Clock, 50MHz)"]
+        i_reset_n["i_reset_n<br/>(Active-Low Reset)"]
+    end
+
+    subgraph DataBus ["Host Data & FIFO Interface"]
+        i_data["i_data[7:0]<br/>(TX FIFO Data In)"]
+        o_data["o_data[7:0]<br/>(RX FIFO Data Out)"]
+        i_tx_valid["i_tx_valid<br/>(TX Data Available)"]
+        o_tx_pop["o_tx_pop<br/>(TX FIFO Pop Strobe)"]
+        i_rx_full["i_rx_full<br/>(RX FIFO Full Stall)"]
+        o_rx_push["o_rx_push<br/>(RX FIFO Push Strobe)"]
+    end
+
+    subgraph Prescaler ["Baud Prescaler"]
+        i_baud_div["i_baud_div[15:0]<br/>(16-bit Prescaler)"]
+    end
+
+    subgraph Core ["OmniBus Core Engine"]
+        ALU_CORE["Micro-ALU & SERDES<br/>128-word IMEM (4 Banks)<br/>Hardware Accelerators"]
+    end
+
+    subgraph GPIOBus ["8-Bit Unified GPIO Bus (Dynamic PINMAP)"]
+        gpio0["io_gpio[0]<br/>Default: TX / SDA / 1W"]
+        gpio1["io_gpio[1]<br/>Default: SCK / SCL"]
+        gpio2["io_gpio[2]<br/>Default: CS_n / LATCH"]
+        gpio3["io_gpio[3]<br/>Auxiliary GPIO"]
+        gpio4["io_gpio[4]<br/>Auxiliary GPIO"]
+        gpio5["io_gpio[5]<br/>Auxiliary GPIO"]
+        gpio6["io_gpio[6]<br/>Auxiliary GPIO"]
+        gpio7["io_gpio[7]<br/>Auxiliary GPIO"]
+    end
+
+    subgraph ConvPorts ["Dedicated Convenience Ports"]
+        o_tx["o_tx (Mirrors o_gpio[tx_pin])"]
+        o_spi_sck["o_spi_sck (Mirrors o_gpio[sck_pin])"]
+        o_spi_cs_n["o_spi_cs_n (Mirrors o_gpio[cs_pin])"]
+        i_rx["i_rx (Legacy RX Input)"]
+    end
+
+    subgraph Bootloader ["Runtime IMEM Programming Port"]
+        i_prog_en["i_prog_en (Freeze & Program)"]
+        i_prog_we["i_prog_we (Write Enable)"]
+        i_prog_addr["i_prog_addr[6:0] (Addr 0..127)"]
+        i_prog_data["i_prog_data[15:0] (Data In)"]
+        o_prog_rdata["o_prog_rdata[15:0] (Data Out)"]
+    end
+
+    PwrClk --> Core
+    DataBus <--> Core
+    Prescaler --> Core
+    Bootloader <--> Core
+    Core <--> GPIOBus
+    Core --> ConvPorts
+```
+
+### C. Detailed Terminal Pin Table
+
+| Terminal Name | Direction | Bus Width | IO Standard | Reset State | Detailed Functional Description |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **`i_clk`** | Input | 1 bit | LVCMOS33 | — | Primary system clock. Nominal $50\,\text{MHz}$ (standard cell maximum $>100\,\text{MHz}$). |
+| **`i_reset_n`** | Input | 1 bit | LVCMOS33 | — | Active-low asynchronous/synchronous system reset. Resets all registers, flushes pipelines, and sets `pc <= 0`. |
+| **`i_data[7:0]`** | Input | 8 bits | LVCMOS33 | — | Byte data input from host TX FIFO into execution engine (`PULL` instruction). |
+| **`o_data[7:0]`** | Output | 8 bits | LVCMOS33 | `8'h00` | Byte data output to host RX FIFO from execution engine (`PUSH` instruction). |
+| **`i_tx_valid`** | Input | 1 bit | LVCMOS33 | Low | Asserted high when `i_data` contains a valid unconsumed byte in host TX FIFO. |
+| **`o_tx_pop`** | Output | 1 bit | LVCMOS33 | Low | Single-cycle active-high pop strobe emitted when `PULL` successfully consumes a byte. |
+| **`i_rx_full`** | Input | 1 bit | LVCMOS33 | Low | Asserted high when host RX FIFO is full (blocks `PUSH [BLOCK]` instruction). |
+| **`o_rx_push`** | Output | 1 bit | LVCMOS33 | Low | Single-cycle active-high push strobe emitted when `PUSH` writes `o_data` to RX FIFO. |
+| **`i_baud_div[15:0]`** | Input | 16 bits | LVCMOS33 | — | Dynamic baud divisor. Loaded into sidecar delay counters via `$BAUD` (`9'h1FF`) or `$HBAUD` (`9'h1FE`). |
+| **`i_gpio[7:0]`** | Input | 8 bits | LVCMOS33 | — | Physical input levels from the 8 bidirectional pads. Synchronized by internal 2-stage synchronizer. |
+| **`o_gpio[7:0]`** | Output | 8 bits | LVCMOS33 | `8'hFD` | Physical output drive levels. Bit 0 defaults high (TX idle), Bit 1 low (SCK idle), Bit 2 high (CS idle). |
+| **`o_gpio_oe[7:0]`** | Output | 8 bits | LVCMOS33 | `8'h07` | Active-high output drive enables (1 = Drive level from `o_gpio`, 0 = Hi-Z tristate / input mode). |
+| **`o_tx`** | Output | 1 bit | LVCMOS33 | High | Dedicated legacy UART TX output (internally wired to `o_gpio[tx_pin]`). |
+| **`o_spi_sck`** | Output | 1 bit | LVCMOS33 | Low | Dedicated legacy SPI clock output (internally wired to `o_gpio[sck_pin]`). |
+| **`o_spi_cs_n`** | Output | 1 bit | LVCMOS33 | High | Dedicated legacy SPI chip select (internally wired to `o_gpio[cs_pin]`). |
+| **`i_rx`** | Input | 1 bit | LVCMOS33 | — | Dedicated legacy UART RX input (accessible when `rx_pin` is routed to legacy input). |
+| **`i_prog_en`** | Input | 1 bit | LVCMOS33 | Low | Programming mode enable. Freezes core execution and transfers dual-port IMEM control to programming bus. |
+| **`i_prog_we`** | Input | 1 bit | LVCMOS33 | Low | Synchronous write enable strobe for writing `i_prog_data` into IMEM at `i_prog_addr`. |
+| **`i_prog_addr[6:0]`** | Input | 7 bits | LVCMOS33 | `7'd0` | Word address (0..127) within the 128-word IMEM space (spans Banks 0..3). |
+| **`i_prog_data[15:0]`** | Input | 16 bits | LVCMOS33 | `16'd0` | 16-bit instruction word to write into IMEM. |
+| **`o_prog_rdata[15:0]`**| Output | 16 bits | LVCMOS33 | `16'd0` | 16-bit instruction word readback from IMEM at `i_prog_addr` for verification. |
+
+### D. GPIO Pin Function Multiplexing Matrix (`PINMAP`)
+
+Any of the 8 physical GPIO pins (`io_gpio[0]` through `io_gpio[7]`) can be dynamically routed to any protocol role at runtime via the `PINMAP` instruction (`PINMAP tx=<n>, rx=<n>, sck=<n>, cs=<n>`):
+
+| Pin Index | Default Role | UART Mode | SPI Master Mode | I2C Master Mode | 1-Wire Mode | NeoPixel Mode | Joybus Mode | NES/SNES Host |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`io_gpio[0]`** | `TX / MOSI` | `TXD` | `MOSI` | `SDA (OD)` | `1W_DATA (OD)`| `PULSE_OUT` | `JOY_DATA (OD)`| `DATA_IN` |
+| **`io_gpio[1]`** | `SCK / SCL` | `RTS_n` | `SCK` | `SCL (OD)` | GPIO | GPIO | GPIO | `CLOCK_OUT` |
+| **`io_gpio[2]`** | `CS_n / LATCH`| `CTS_n` | `CS_n` | GPIO | GPIO | GPIO | GPIO | `LATCH_OUT` |
+| **`io_gpio[3]`** | `RX / MISO` | `RXD` | `MISO` | GPIO | GPIO | GPIO | GPIO | GPIO |
+| **`io_gpio[4]`** | Auxiliary | GPIO | GPIO | GPIO | GPIO | GPIO | GPIO | GPIO |
+| **`io_gpio[5]`** | Auxiliary | GPIO | GPIO | GPIO | GPIO | GPIO | GPIO | GPIO |
+| **`io_gpio[6]`** | Auxiliary | GPIO | GPIO | GPIO | GPIO | GPIO | GPIO | GPIO |
+| **`io_gpio[7]`** | Auxiliary | GPIO | GPIO | GPIO | GPIO | GPIO | GPIO | GPIO |
+
+*(Note: Roles are 100% interchangeable across any pin 0..7. For example, `PINMAP tx=4, rx=5, sck=6, cs=7` remaps the entire 4-wire SPI bus to GPIOs 4–7 without modifying microcode instructions).*
 
 ## 3. Internal Block Diagram
 
