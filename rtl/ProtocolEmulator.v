@@ -141,6 +141,43 @@ module ProtocolEmulator(
     reg        scl_prev;            // Previous SCL level for edge detection
     reg        sda_prev;            // Previous SDA level for edge detection
 
+    // 1-Bit Delta-Sigma Audio DAC & 4-Voice Chiptune PDM Synthesizer State (Task 22)
+    reg        audio_en;        // 1=Enable audio engine and PDM output on audio_pin
+    reg [1:0]  audio_mode;      // 00=Off, 01=Direct PCM, 10=Chiptune APU, 11=Hybrid
+    reg [2:0]  audio_pin;       // GPIO pin index for PDM output (0..7, default cs_pin/2)
+    reg        audio_diff;      // 1=Enable differential inverted PDM output on (audio_pin ^ 1)
+    reg [7:0]  audio_sample;    // Current 8-bit DAC sample (0..255)
+    reg [8:0]  pdm_acc;         // 9-bit Delta-Sigma first-order accumulator
+    reg        pdm_bit;         // 1-bit PDM output stream bit
+
+    // 4-Voice Chiptune APU Synthesizer Registers
+    reg [15:0] v0_period;       // Voice 0 (Pulse 1) 16-bit period divider
+    reg [15:0] v0_cnt;          // Voice 0 period counter
+    reg [2:0]  v0_step;         // Voice 0 8-step duty cycle sequencer
+    reg [1:0]  v0_duty;         // Voice 0 duty cycle: 00=12.5%, 01=25%, 10=50%, 11=75%
+    reg [3:0]  v0_vol;          // Voice 0 volume (0..15)
+
+    reg [15:0] v1_period;       // Voice 1 (Pulse 2) 16-bit period divider
+    reg [15:0] v1_cnt;          // Voice 1 period counter
+    reg [2:0]  v1_step;         // Voice 1 8-step duty cycle sequencer
+    reg [1:0]  v1_duty;         // Voice 1 duty cycle: 00=12.5%, 01=25%, 10=50%, 11=75%
+    reg [3:0]  v1_vol;          // Voice 1 volume (0..15)
+
+    reg [15:0] v2_period;       // Voice 2 (Triangle) 16-bit period divider
+    reg [15:0] v2_cnt;          // Voice 2 period counter
+    reg [4:0]  v2_step;         // Voice 2 32-step triangle sequencer
+    reg [3:0]  v2_vol;          // Voice 2 volume (0..15)
+
+    reg [15:0] v3_period;       // Voice 3 (Noise) 16-bit period divider
+    reg [15:0] v3_cnt;          // Voice 3 period counter
+    reg [14:0] v3_lfsr;         // Voice 3 15-bit Galois LFSR noise generator
+    reg        v3_mode;         // Voice 3 noise mode: 0=15-bit, 1=7-bit metallic
+    reg [3:0]  v3_vol;          // Voice 3 volume (0..15)
+
+    reg [3:0]  audio_preset;    // Active sound effect preset ID (1=BEEP, 2=BLIP, 3=ERROR, 4=COIN, 5=LASER, 6=SIREN, 7=NOISE)
+    reg [19:0] preset_timer;    // Preset duration timer
+    reg [3:0]  preset_step;     // Preset progression step counter
+
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
     reg [2:0]  rx_pin;          // Pin index for IN deserializer / default WAIT (default 0)
@@ -410,6 +447,31 @@ module ProtocolEmulator(
     wire [15:0] instr   = imem[pc];
     wire [3:0]  opcode  = instr[15:12];
 
+    // -------------------------------------------------------------------------
+    // 4-Voice Chiptune APU Combinational Waveforms & Digital Mixer Logic
+    // -------------------------------------------------------------------------
+    wire v0_wave = (v0_duty == 2'b00) ? (v0_step == 3'd0) :
+                   (v0_duty == 2'b01) ? (v0_step < 3'd2) :
+                   (v0_duty == 2'b10) ? (v0_step < 3'd4) : (v0_step < 3'd6);
+    wire [5:0] v0_out = (v0_wave && v0_vol != 4'd0) ? {v0_vol, 2'b00} : 6'd0;
+
+    wire v1_wave = (v1_duty == 2'b00) ? (v1_step == 3'd0) :
+                   (v1_duty == 2'b01) ? (v1_step < 3'd2) :
+                   (v1_duty == 2'b10) ? (v1_step < 3'd4) : (v1_step < 3'd6);
+    wire [5:0] v1_out = (v1_wave && v1_vol != 4'd0) ? {v1_vol, 2'b00} : 6'd0;
+
+    wire [3:0] v2_tri = (v2_step < 5'd16) ? v2_step[3:0] : (4'd15 - v2_step[3:0]);
+    wire [5:0] v2_out = (v2_vol != 4'd0) ? {v2_tri, 2'b00} : 6'd0;
+
+    wire [5:0] v3_out = (v3_lfsr[0] && v3_vol != 4'd0) ? {v3_vol, 2'b00} : 6'd0;
+
+    wire [7:0] raw_synth_sum = (v0_out + v1_out + v2_out + v3_out);
+    wire [7:0] synth_sample  = (v0_vol == 4'd0 && v1_vol == 4'd0 && v2_vol == 4'd0 && v3_vol == 4'd0) ? 8'h80 :
+                               (raw_synth_sum > 8'd255) ? 8'hFF : raw_synth_sum;
+
+    wire [7:0] active_audio_sample = (audio_mode == 2'b10) ? synth_sample : audio_sample;
+    wire [8:0] pdm_sum             = {1'b0, pdm_acc[7:0]} + {1'b0, active_audio_sample};
+
     wire slave_sda_drive = i2c_drive_ack || (opcode == 4'h1 && instr[11:9] == 3'b111 && out_slave_phase == 2'd0 && osr[7] == 1'b0);
     wire slave_scl_drive = i2c_stretch_hold;
 
@@ -421,13 +483,19 @@ module ProtocolEmulator(
         for (p = 0; p < 8; p = p + 1) begin : gen_i2c_gpio
             wire is_tx  = (p == tx_pin);
             wire is_sck = (p == sck_pin);
+            wire is_audio_main = audio_en && (p == audio_pin);
+            wire is_audio_diff = audio_en && audio_diff && (p == (audio_pin ^ 3'd1));
 
-            assign i2c_gpio_out[p] = (is_tx && slave_sda_drive) ? 1'b0 :
+            assign i2c_gpio_out[p] = is_audio_main ? pdm_bit :
+                                     is_audio_diff ? ~pdm_bit :
+                                     (is_tx && slave_sda_drive) ? 1'b0 :
                                      (is_sck && slave_scl_drive) ? 1'b0 :
                                      (i2c_slave_en && (is_tx || is_sck)) ? 1'b1 :
                                      gpio_out_reg[p];
 
-            assign i2c_gpio_oe[p]  = (is_tx && slave_sda_drive) ? 1'b1 :
+            assign i2c_gpio_oe[p]  = is_audio_main ? 1'b1 :
+                                     is_audio_diff ? 1'b1 :
+                                     (is_tx && slave_sda_drive) ? 1'b1 :
                                      (is_sck && slave_scl_drive) ? 1'b1 :
                                      (i2c_slave_en && (is_tx || is_sck)) ? 1'b0 :
                                      gpio_oe_reg[p];
@@ -737,6 +805,35 @@ module ProtocolEmulator(
             out_slave_phase   <= 2'd0;
             scl_prev          <= 1'b1;
             sda_prev          <= 1'b1;
+            audio_en          <= 1'b0;
+            audio_mode        <= 2'b00;
+            audio_pin         <= 3'd2; // Default Pin 2 (cs_pin)
+            audio_diff        <= 1'b0;
+            audio_sample      <= 8'h80;
+            pdm_acc           <= 9'd0;
+            pdm_bit           <= 1'b0;
+            v0_period         <= 16'd0;
+            v0_cnt            <= 16'd0;
+            v0_step           <= 3'd0;
+            v0_duty           <= 2'b10; // 50% duty
+            v0_vol            <= 4'd0;
+            v1_period         <= 16'd0;
+            v1_cnt            <= 16'd0;
+            v1_step           <= 3'd0;
+            v1_duty           <= 2'b10; // 50% duty
+            v1_vol            <= 4'd0;
+            v2_period         <= 16'd0;
+            v2_cnt            <= 16'd0;
+            v2_step           <= 5'd0;
+            v2_vol            <= 4'd0;
+            v3_period         <= 16'd0;
+            v3_cnt            <= 16'd0;
+            v3_lfsr           <= 15'h7FFF;
+            v3_mode           <= 1'b0;
+            v3_vol            <= 4'd0;
+            audio_preset      <= 4'd0;
+            preset_timer      <= 20'd0;
+            preset_step       <= 4'd0;
         end else begin
             // Default: clear single-cycle pop/push strobes
             o_tx_pop  <= 1'b0;
@@ -745,6 +842,149 @@ module ProtocolEmulator(
             // Track edge transitions on SCL & SDA
             scl_prev <= i2c_scl_in;
             sda_prev <= i2c_sda_in;
+
+            // -------------------------------------------------------------
+            // 1-Bit Delta-Sigma Modulator Engine (Task 22)
+            // -------------------------------------------------------------
+            if (audio_en) begin
+                pdm_acc <= pdm_sum;
+                pdm_bit <= pdm_sum[8];
+            end else begin
+                pdm_acc <= 9'd0;
+                pdm_bit <= 1'b0;
+            end
+
+            // -------------------------------------------------------------
+            // 4-Voice Chiptune APU Oscillators & Sequencers (Task 22)
+            // -------------------------------------------------------------
+            if (audio_en && (audio_mode == 2'b10 || audio_mode == 2'b11)) begin
+                // Voice 0 (Pulse 1)
+                if (v0_period != 16'd0) begin
+                    if (v0_cnt == 16'd0) begin
+                        v0_cnt  <= v0_period;
+                        v0_step <= v0_step + 3'd1;
+                    end else begin
+                        v0_cnt  <= v0_cnt - 16'd1;
+                    end
+                end
+
+                // Voice 1 (Pulse 2)
+                if (v1_period != 16'd0) begin
+                    if (v1_cnt == 16'd0) begin
+                        v1_cnt  <= v1_period;
+                        v1_step <= v1_step + 3'd1;
+                    end else begin
+                        v1_cnt  <= v1_cnt - 16'd1;
+                    end
+                end
+
+                // Voice 2 (Triangle)
+                if (v2_period != 16'd0) begin
+                    if (v2_cnt == 16'd0) begin
+                        v2_cnt  <= v2_period;
+                        v2_step <= v2_step + 5'd1;
+                    end else begin
+                        v2_cnt  <= v2_cnt - 16'd1;
+                    end
+                end
+
+                // Voice 3 (Noise)
+                if (v3_period != 16'd0) begin
+                    if (v3_cnt == 16'd0) begin
+                        v3_cnt  <= v3_period;
+                        v3_lfsr <= {v3_lfsr[0] ^ v3_lfsr[1], v3_lfsr[14:1]};
+                        if (v3_mode) v3_lfsr[6] <= v3_lfsr[0] ^ v3_lfsr[1];
+                    end else begin
+                        v3_cnt  <= v3_cnt - 16'd1;
+                    end
+                end
+
+                // Sound Effect Preset Sequencer
+                if (audio_preset != 4'd0) begin
+                    preset_timer <= preset_timer + 20'd1;
+                    case (audio_preset)
+                        4'd1: begin // BEEP (440 Hz)
+                            v0_period <= 16'd14204;
+                            v0_vol    <= 4'd12;
+                            v0_duty   <= 2'b10;
+                            if (preset_timer >= 20'd250000) begin
+                                audio_preset <= 4'd0;
+                                v0_vol       <= 4'd0;
+                            end
+                        end
+                        4'd2: begin // BLIP (880 Hz)
+                            v0_period <= 16'd7102;
+                            v0_vol    <= 4'd14;
+                            v0_duty   <= 2'b10;
+                            if (preset_timer >= 20'd100000) begin
+                                audio_preset <= 4'd0;
+                                v0_vol       <= 4'd0;
+                            end
+                        end
+                        4'd3: begin // ERROR (Low buzzing two-tone)
+                            v0_duty <= 2'b01;
+                            if (preset_timer < 20'd150000) begin
+                                v0_period <= 16'd41666; // 150 Hz
+                                v0_vol    <= 4'd14;
+                            end else if (preset_timer < 20'd300000) begin
+                                v0_period <= 16'd56818; // 110 Hz
+                                v0_vol    <= 4'd14;
+                            end else begin
+                                audio_preset <= 4'd0;
+                                v0_vol       <= 4'd0;
+                            end
+                        end
+                        4'd4: begin // COIN (B5 987 Hz -> E6 1318 Hz)
+                            v0_duty <= 2'b10;
+                            if (preset_timer < 20'd100000) begin
+                                v0_period <= 16'd6331; // B5
+                                v0_vol    <= 4'd12;
+                            end else if (preset_timer < 20'd300000) begin
+                                v0_period <= 16'd4741; // E6
+                                v0_vol    <= 4'd14;
+                            end else begin
+                                audio_preset <= 4'd0;
+                                v0_vol       <= 4'd0;
+                            end
+                        end
+                        4'd5: begin // LASER (Downward frequency sweep)
+                            v0_duty <= 2'b00; // 12.5% narrow pulse
+                            v0_vol  <= 4'd15;
+                            if (preset_timer[9:0] == 10'd0) begin
+                                v0_period <= v0_period + 16'd400;
+                            end
+                            if (preset_timer >= 20'd200000) begin
+                                audio_preset <= 4'd0;
+                                v0_vol       <= 4'd0;
+                            end
+                        end
+                        4'd6: begin // SIREN (Alternating high/low alert)
+                            v0_duty <= 2'b10;
+                            v0_vol  <= 4'd14;
+                            if (preset_timer < 20'd150000)
+                                v0_period <= 16'd8000;
+                            else if (preset_timer < 20'd300000)
+                                v0_period <= 16'd12000;
+                            else
+                                preset_timer <= 20'd0; // Repeat until AUDIO_STOP
+                        end
+                        4'd7: begin // NOISE (Percussive crash/snare)
+                            v3_period <= 16'd300;
+                            v3_mode   <= 1'b0;
+                            if (preset_timer[13:0] == 14'd0 && v3_vol > 4'd0) begin
+                                v3_vol <= v3_vol - 4'd1;
+                            end
+                            if (preset_timer >= 20'd250000) begin
+                                audio_preset <= 4'd0;
+                                v3_vol       <= 4'd0;
+                            end
+                        end
+                        default: begin
+                            audio_preset <= 4'd0;
+                        end
+                    endcase
+                end
+            end
 
             // -------------------------------------------------------------
             // Autonomous Hardware I2C / SMBus Slave Tracker (Task 21)
@@ -819,7 +1059,16 @@ module ProtocolEmulator(
                     end
 
                     4'h2: begin // IN: Multi-cycle deserialization into ISR
-                        if (instr[11:9] == 3'b111) begin
+                        if (instr[11:7] == 5'b11111) begin
+                            // -------------------------------------------------------
+                            // Audio DAC Sample Read Mode (IN AUDIO):
+                            // Captures current audio_sample into ISR and o_data in 1 cycle.
+                            // -------------------------------------------------------
+                            isr       <= audio_sample;
+                            o_data    <= audio_sample;
+                            delay_cnt <= 16'd0;
+                            pc        <= pc + 7'd1;
+                        end else if (instr[11:9] == 3'b111) begin
                             // -------------------------------------------------------
                             // I2C Slave Receive Mode (IN SLAVE / IN I2C_SLAVE):
                             // Deserializes 8 data bits from master MSB-first into ISR
@@ -1172,7 +1421,18 @@ module ProtocolEmulator(
                     end
 
                     4'h1: begin // OUT: Multi-cycle serialization from OSR
-                        if (instr[11:9] == 3'b111) begin
+                        if (instr[11:7] == 5'b11111) begin
+                            // -------------------------------------------------------
+                            // Audio DAC Sample Load Mode (OUT AUDIO):
+                            // Immediately latches OSR into audio_sample, activates
+                            // direct PCM mode, and advances PC in 1 clock cycle.
+                            // -------------------------------------------------------
+                            audio_sample <= osr;
+                            audio_en     <= 1'b1;
+                            audio_mode   <= 2'b01; // Direct PCM mode
+                            delay_cnt    <= 16'd0;
+                            pc           <= pc + 7'd1;
+                        end else if (instr[11:9] == 3'b111) begin
                             // -------------------------------------------------------
                             // I2C Slave Transmit Mode (OUT SLAVE / OUT I2C_SLAVE):
                             // Transmits 8 data bits from OSR MSB-first to master on SCL
@@ -1908,17 +2168,76 @@ module ProtocolEmulator(
                     4'hF: begin // ASSIST: Autonomous Stream Accelerators (NRZI & Bit-Stuffing)
                         delay_cnt <= 16'd0;
                         case (instr[11:10])
-                            2'b00: begin // ASSIST CFG, nrzi_en, stuff_mode, [init_val], [manch_cfg]
-                                assist_nrzi_en    <= instr[9];
-                                assist_stuff_mode <= instr[8:7];
-                                if (instr[6]) begin // re-init line state if bit 6 set
-                                    nrzi_tx_state <= instr[5];
-                                    nrzi_rx_prev  <= instr[5];
-                                end
-                                if (instr[4]) begin // Manchester CFG: instr[3]=en, instr[2:1]=mode, instr[0]=state
-                                    assist_manch_en   <= instr[3];
-                                    assist_manch_mode <= instr[2:1];
-                                    manch_tx_state    <= instr[0];
+                            2'b00: begin // ASSIST CFG, nrzi_en, stuff_mode, [init_val], [manch_cfg], [audio_subop]
+                                if (instr[8:7] == 2'b11) begin
+                                    // -------------------------------------------------
+                                    // Audio Engine Sub-operations (Task 22)
+                                    // -------------------------------------------------
+                                    case (instr[6:4])
+                                        3'b000: begin // AUDIO_CFG: instr[1:0]=mode, instr[9]&instr[3:2]=pin, instr[3]=diff
+                                            audio_mode <= instr[1:0];
+                                            audio_en   <= (instr[1:0] != 2'b00);
+                                            audio_pin  <= {instr[9], instr[3:2]};
+                                            audio_diff <= (instr[1:0] == 2'b11);
+                                        end
+                                        3'b001: begin // AUDIO_VOL: instr[3:0]=vol
+                                            v0_vol <= instr[3:0];
+                                            v1_vol <= instr[3:0];
+                                            v2_vol <= instr[3:0];
+                                            v3_vol <= instr[3:0];
+                                        end
+                                        3'b010: begin // AUDIO_SAMPLE: load 8-bit sample from acc
+                                            audio_sample <= acc;
+                                        end
+                                        3'b011: begin // AUDIO_DUTY: instr[3:2]=v0_duty, instr[1:0]=v1_duty
+                                            v0_duty <= instr[3:2];
+                                            v1_duty <= instr[1:0];
+                                        end
+                                        3'b100: begin // AUDIO_NOTE_LO: load low 8 bits from acc into voice instr[1:0]
+                                            case (instr[1:0])
+                                                2'b00: v0_period[7:0] <= acc;
+                                                2'b01: v1_period[7:0] <= acc;
+                                                2'b10: v2_period[7:0] <= acc;
+                                                2'b11: v3_period[7:0] <= acc;
+                                            endcase
+                                        end
+                                        3'b101: begin // AUDIO_NOTE_HI: load high 8 bits from acc into voice instr[1:0]
+                                            case (instr[1:0])
+                                                2'b00: v0_period[15:8] <= acc;
+                                                2'b01: v1_period[15:8] <= acc;
+                                                2'b10: v2_period[15:8] <= acc;
+                                                2'b11: v3_period[15:8] <= acc;
+                                            endcase
+                                        end
+                                        3'b110: begin // AUDIO_PLAY <preset>: instr[3:0]=preset
+                                            audio_en     <= 1'b1;
+                                            audio_mode   <= 2'b10; // Chiptune APU mode
+                                            audio_preset <= instr[3:0];
+                                            preset_step  <= 4'd0;
+                                            preset_timer <= 20'd0;
+                                        end
+                                        3'b111: begin // AUDIO_STOP
+                                            audio_preset <= 4'd0;
+                                            v0_vol       <= 4'd0;
+                                            v1_vol       <= 4'd0;
+                                            v2_vol       <= 4'd0;
+                                            v3_vol       <= 4'd0;
+                                            audio_en     <= 1'b0;
+                                            audio_mode   <= 2'b00;
+                                        end
+                                    endcase
+                                end else begin
+                                    assist_nrzi_en    <= instr[9];
+                                    assist_stuff_mode <= instr[8:7];
+                                    if (instr[6]) begin // re-init line state if bit 6 set
+                                        nrzi_tx_state <= instr[5];
+                                        nrzi_rx_prev  <= instr[5];
+                                    end
+                                    if (instr[4]) begin // Manchester CFG: instr[3]=en, instr[2:1]=mode, instr[0]=state
+                                        assist_manch_en   <= instr[3];
+                                        assist_manch_mode <= instr[2:1];
+                                        manch_tx_state    <= instr[0];
+                                    end
                                 end
                                 pc <= pc + 7'd1;
                             end

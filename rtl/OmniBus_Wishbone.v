@@ -55,6 +55,7 @@ module OmniBus_Wishbone #(
     localparam [7:0] ADDR_BAUD      = 8'h0C;  // RW: Dynamic baud rate divisor
     localparam [7:0] ADDR_GPIO      = 8'h10;  // RO: GPIO pin readback [i_gpio, o_gpio, o_oe]
     localparam [7:0] ADDR_IMEM_BANK = 8'h14;  // RW: Active IMEM bank for programming window (0..3)
+    localparam [7:0] ADDR_AUDIO     = 8'h18;  // RW: Audio sample, mode, APU control, and telemetry
     localparam [7:0] ADDR_IMEM      = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
 
     // =========================================================================
@@ -237,6 +238,7 @@ module OmniBus_Wishbone #(
                 ADDR_BAUD:      wb_rdata_comb = {16'h0000, reg_baud};
                 ADDR_GPIO:      wb_rdata_comb = reg_gpio_read;
                 ADDR_IMEM_BANK: wb_rdata_comb = {14'd0, core.active_bank, 1'b0, core.pc, 6'd0, reg_imem_bank};
+                ADDR_AUDIO:     wb_rdata_comb = {core.audio_sample, core.audio_en, core.audio_mode, core.audio_pin, core.audio_preset, core.pdm_bit, 11'd0};
                 default:        wb_rdata_comb = 32'h00000000;
             endcase
         end

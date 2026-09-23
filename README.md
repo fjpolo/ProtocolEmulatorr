@@ -16,9 +16,9 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 ## Key Innovations
 
 * **Deterministic 16-bit ISA**: Single-cycle execution with hardware sidecar delays (0-31 cycles)
-* **Autonomous Stream Accelerators**: On-the-fly NRZI, Bit-Stuffing (USB/CAN), Manchester encoding, multi-polynomial CRC (CRC-5/8/16/32 Ethernet FCS), and dedicated hardware I2C / SMBus slave engine with autonomous address matching and clock stretching
+* **Autonomous Stream Accelerators**: On-the-fly NRZI, Bit-Stuffing (USB/CAN), Manchester encoding, multi-polynomial CRC (CRC-5/8/16/32 Ethernet FCS), dedicated hardware I2C / SMBus slave engine with autonomous address matching and clock stretching, and 1-Bit Delta-Sigma Audio DAC & Chiptune PDM Synthesizer
 * **Wire-Speed MitM and Glitch Injection**: Dynamic rule-based byte replacement and sub-cycle fault triggering
-* **Retro and Creative Physical Protocols**: Native support for N64/GameCube Joybus, NES/SNES gamepads, NeoPixel LED strips, and 1-bit chiptune audio DAC
+* **Retro and Creative Physical Protocols**: Native support for N64/GameCube Joybus, NES/SNES gamepads, NeoPixel LED strips, and 4-voice polyphonic chiptune audio APU
 * **Unified 8-Bit Bidirectional GPIO Bus**: Dynamic role mapping (`PINMAP`) and per-pin open-drain configuration (`CFG_OD`) allowing arbitrary protocol routing across GPIOs 0..7
 * **Multi-Target Prototyping**: Complete build and test flows for Sipeed Tang Console 60K, Nano 20K, and Nano 9K before CMOS5L tapeout
 
@@ -46,6 +46,7 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 * [Task 19 — Autonomous Manchester / Biphase Mark Stream Accelerator](task19.md)
 * [Task 20 — Hardware CRC-32 (Ethernet FCS) & CRC-5 Engine](task20.md)
 * [Task 21 — Dedicated Hardware I2C / SMBus Slave Engine](task21.md)
+* [Task 22 — 1-Bit Delta-Sigma Audio DAC & Chiptune PDM Synthesizer Engine](task22.md)
 
 ## Usage
 

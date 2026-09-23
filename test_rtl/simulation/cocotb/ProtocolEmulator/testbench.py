@@ -3952,6 +3952,265 @@ halt:
     dut._log.info("Test 21D: I2C Slave clock stretching and OUT SLAVE transmission PASSED!")
 
 
+# =============================================================================
+# Task 22: 1-Bit Delta-Sigma Audio DAC & Chiptune PDM Synthesizer Engine
+# =============================================================================
+
+@cocotb.test()
+async def test_audio_pdm_linear_dac(dut):
+    """Task 22A: Verifies Delta-Sigma 1-bit PDM pulse density linearity and differential output."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Microcode:
+    #   AUDIO_CFG PCM, PIN=2
+    # halt:
+    #   JMP halt
+    asm_source = """
+    AUDIO_CFG PCM, PIN=2
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+    await load_program_direct(dut, prog)
+
+    await ClockCycles(dut.i_clk, 10)
+    assert int(dut.audio_en.value) == 1, "Audio engine must be enabled by AUDIO_CFG"
+    assert int(dut.audio_pin.value) == 2, f"Audio pin must be 2, got {int(dut.audio_pin.value)}"
+
+    # Test DC Linearity across 5 sample points: 0x00, 0x40, 0x80, 0xC0, 0xFF
+    test_points = [
+        (0x00, 0, 2),        # ~0% ones
+        (0x40, 120, 136),    # ~25% ones (128 / 512)
+        (0x80, 250, 262),    # ~50% ones (256 / 512)
+        (0xC0, 376, 392),    # ~75% ones (384 / 512)
+        (0xFF, 508, 512),    # ~99.6% ones (510 / 512)
+    ]
+
+    for sample_val, min_ones, max_ones in test_points:
+        dut.audio_sample.value = sample_val
+        await ClockCycles(dut.i_clk, 5)
+
+        # Count high pulses on Pin 2 over 512 clock cycles
+        ones_count = 0
+        for _ in range(512):
+            await RisingEdge(dut.i_clk)
+            gpio_val = int(dut.o_gpio.value)
+            pin2_bit = (gpio_val >> 2) & 1
+            if pin2_bit == 1:
+                ones_count += 1
+
+        density = (ones_count / 512.0) * 100.0
+        dut._log.info(f"Sample 0x{sample_val:02X} -> {ones_count}/512 ones ({density:.1f}% density)")
+        assert min_ones <= ones_count <= max_ones, (
+            f"Sample 0x{sample_val:02X}: expected ones in range [{min_ones}, {max_ones}], got {ones_count}"
+        )
+
+    # Test Differential Output mode: AUDIO_CFG DIFF, PIN=2
+    # In differential mode, Pin 3 (2 ^ 1) must output !pdm_bit
+    dut.audio_mode.value = 3 # DIFF mode
+    dut.audio_diff.value = 1
+    await ClockCycles(dut.i_clk, 5)
+
+    diff_verified = 0
+    for _ in range(100):
+        await RisingEdge(dut.i_clk)
+        gpio_val = int(dut.o_gpio.value)
+        p2 = (gpio_val >> 2) & 1
+        p3 = (gpio_val >> 3) & 1
+        assert p3 == (1 - p2), f"Differential mismatch: Pin 2 = {p2}, Pin 3 = {p3}"
+        diff_verified += 1
+
+    dut._log.info(f"Test 22A: Delta-Sigma DAC linearity and differential BTL outputs PASSED ({diff_verified} cycles verified)!")
+
+
+@cocotb.test()
+async def test_audio_out_pcm_streaming(dut):
+    """Task 22B: Verifies single-cycle OUT AUDIO streaming from host TX FIFO to Delta-Sigma DAC."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Microcode:
+    #   AUDIO_CFG PCM, PIN=2
+    # stream_loop:
+    #   PULL BLOCK
+    #   OUT AUDIO
+    #   JMP stream_loop
+    asm_source = """
+    AUDIO_CFG PCM, PIN=2
+stream_loop:
+    PULL BLOCK
+    OUT AUDIO
+    JMP stream_loop
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    dut.i_tx_valid.value = 0
+    dut.i_data.value = 0
+    await load_program_direct(dut, prog)
+
+    await ClockCycles(dut.i_clk, 10)
+    assert int(dut.audio_en.value) == 1, "Audio engine must be enabled"
+
+    test_stream = [0x10, 0x50, 0x90, 0xD0, 0xF0]
+
+    for pcm_byte in test_stream:
+        dut.i_data.value = pcm_byte
+        dut.i_tx_valid.value = 1
+
+        # Wait for core to pop byte
+        for _ in range(50):
+            await RisingEdge(dut.i_clk)
+            if int(dut.o_tx_pop.value) == 1:
+                break
+        else:
+            assert False, f"Timeout waiting for o_tx_pop for sample 0x{pcm_byte:02X}"
+
+        dut.i_tx_valid.value = 0
+        await ClockCycles(dut.i_clk, 3)
+        assert int(dut.audio_sample.value) == pcm_byte, (
+            f"Expected audio_sample to latch 0x{pcm_byte:02X}, got 0x{int(dut.audio_sample.value):02X}"
+        )
+        dut._log.info(f"Streamed PCM sample 0x{pcm_byte:02X} into DAC successfully")
+
+    dut._log.info("Test 22B: Single-cycle OUT AUDIO streaming from FIFO PASSED!")
+
+
+@cocotb.test()
+async def test_audio_chiptune_square_tone(dut):
+    """Task 22C: Verifies 4-Voice APU synthesizer square wave generator, frequency divider, and duty cycles."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Microcode:
+    #   AUDIO_CFG SYNTH, PIN=2
+    #   AUDIO_VOL 12
+    #   AUDIO_DUTY 2, 2
+    #   MOV acc, 20
+    #   AUDIO_NOTE_LO 0
+    #   MOV acc, 0
+    #   AUDIO_NOTE_HI 0
+    # halt:
+    #   JMP halt
+    asm_source = """
+    AUDIO_CFG SYNTH, PIN=2
+    AUDIO_VOL 12
+    AUDIO_DUTY 2, 2
+    MOV acc, 20
+    AUDIO_NOTE_LO 0
+    MOV acc, 0
+    AUDIO_NOTE_HI 0
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+    await load_program_direct(dut, prog)
+
+    await ClockCycles(dut.i_clk, 30)
+
+    # Check APU registers
+    assert int(dut.audio_en.value) == 1, "Audio engine must be enabled"
+    assert int(dut.audio_mode.value) == 2, "Audio mode must be SYNTH (2)"
+    assert int(dut.v0_vol.value) == 12, f"Voice 0 volume must be 12, got {int(dut.v0_vol.value)}"
+    assert int(dut.v0_period.value) == 20, f"Voice 0 period must be 20, got {int(dut.v0_period.value)}"
+    assert int(dut.v0_duty.value) == 2, f"Voice 0 duty must be 2 (50%), got {int(dut.v0_duty.value)}"
+
+    # Observe Voice 0 square wave transitions over 2 complete cycles (8 steps * 21 cycles = 168 cycles per wave)
+    high_count = 0
+    low_count = 0
+    for _ in range(168):
+        await RisingEdge(dut.i_clk)
+        wave_bit = int(dut.v0_wave.value)
+        if wave_bit == 1:
+            high_count += 1
+        else:
+            low_count += 1
+
+    dut._log.info(f"Voice 0 50% duty waveform over 168 cycles: {high_count} HIGH, {low_count} LOW")
+    # Duty 50% means 4 steps high out of 8 steps -> ~84 high, ~84 low
+    assert 76 <= high_count <= 92, f"Expected ~84 high cycles for 50% duty, got {high_count}"
+    assert 76 <= low_count <= 92, f"Expected ~84 low cycles for 50% duty, got {low_count}"
+
+    # Now change duty to 25% (duty = 1)
+    dut.v0_duty.value = 1
+    await ClockCycles(dut.i_clk, 5)
+
+    high_count_25 = 0
+    for _ in range(168):
+        await RisingEdge(dut.i_clk)
+        if int(dut.v0_wave.value) == 1:
+            high_count_25 += 1
+
+    dut._log.info(f"Voice 0 25% duty waveform over 168 cycles: {high_count_25} HIGH")
+    # 2 steps high out of 8 steps -> ~42 high
+    assert 36 <= high_count_25 <= 48, f"Expected ~42 high cycles for 25% duty, got {high_count_25}"
+
+    dut._log.info("Test 22C: Chiptune APU square wave generator, period divider, and duty cycles PASSED!")
+
+
+@cocotb.test()
+async def test_audio_sound_effect_presets(dut):
+    """Task 22D: Verifies hardware sound effect presets (COIN, LASER, BEEP) and AUDIO_STOP."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Microcode:
+    #   AUDIO_PLAY COIN
+    # halt:
+    #   JMP halt
+    asm_source = """
+    AUDIO_PLAY COIN
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+    await load_program_direct(dut, prog)
+
+    await ClockCycles(dut.i_clk, 20)
+
+    # Check that COIN preset started
+    assert int(dut.audio_en.value) == 1, "Audio engine must be enabled by AUDIO_PLAY"
+    assert int(dut.audio_mode.value) == 2, "Audio mode must be SYNTH"
+    assert int(dut.audio_preset.value) == 4, f"Expected preset 4 (COIN), got {int(dut.audio_preset.value)}"
+    assert int(dut.v0_period.value) == 6331, f"Expected B5 period 6331, got {int(dut.v0_period.value)}"
+    assert int(dut.v0_vol.value) == 12, f"Expected volume 12, got {int(dut.v0_vol.value)}"
+
+    dut._log.info("COIN Step 0 (B5, 987 Hz) started successfully")
+
+    # Fast forward preset timer to Step 1 (> 100,000 cycles)
+    dut.preset_timer.value = 105000
+    await ClockCycles(dut.i_clk, 5)
+
+    assert int(dut.v0_period.value) == 4741, f"Expected E6 period 4741 in Step 1, got {int(dut.v0_period.value)}"
+    assert int(dut.v0_vol.value) == 14, f"Expected volume 14 in Step 1, got {int(dut.v0_vol.value)}"
+    dut._log.info("COIN Step 1 (E6, 1318 Hz) arpeggio progression verified")
+
+    # Test AUDIO_STOP command
+    stop_source = """
+    AUDIO_STOP
+halt2:
+    JMP halt2
+"""
+    instructions_stop, _ = asm.assemble(stop_source)
+    await load_program_direct(dut, [w[1] for w in instructions_stop])
+    await ClockCycles(dut.i_clk, 10)
+
+    assert int(dut.audio_en.value) == 0, "AUDIO_STOP must disable audio_en"
+    assert int(dut.audio_preset.value) == 0, "AUDIO_STOP must clear audio_preset"
+    assert int(dut.v0_vol.value) == 0, "AUDIO_STOP must zero volume"
+
+    dut._log.info("Test 22D: Hardware sound effect presets and AUDIO_STOP PASSED!")
+
+
+
 
 
 
