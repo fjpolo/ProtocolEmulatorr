@@ -2398,3 +2398,281 @@ sub_bank3:
 
     assert int(dut.acc.value) == 28, f"Expected acc=28 after cross-bank CALL/RET, got {int(dut.acc.value)}"
     dut._log.info("Test 16C: Cross-bank CALL/RET verified! (Caller Bank 0 -> Callee Bank 3 -> Return Bank 0, acc=28)")
+
+
+# =============================================================================
+# Task 17: Autonomous Stream Accelerators (NRZI & Bit-Stuffing / De-stuffing)
+# =============================================================================
+
+@cocotb.test()
+async def test_assist_nrzi_tx_rx(dut):
+    """Task 17A: Verifies NRZI encoding on TX (toggle on 0, hold on 1) and decoding on RX."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    DELAY = 4
+    # Program:
+    #   [0]: ASSIST CFG, NRZI=1, STUFF=0, INIT=1
+    #   [1]: MOV acc, 0x96     (0b1001_0110: bits 0..7 are 0,1,1,0,1,0,0,1)
+    #   [2]: MOV OSR, acc
+    #   [3]: OUT 8, 4
+    #   [4]: JMP halt
+    asm_source = f"""
+    ASSIST CFG, NRZI=1, STUFF=0, INIT=1
+    MOV acc, 0x96
+    MOV OSR, acc
+    OUT 8, {DELAY}
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    tx_bits = []
+    async def monitor_tx():
+        while int(dut.pc.value) != 3:
+            await RisingEdge(dut.i_clk)
+        while len(tx_bits) < 8:
+            await RisingEdge(dut.i_clk)
+            if int(dut.delay_cnt.value) == 2:
+                tx_bits.append(int(dut.o_tx.value))
+
+    mon = cocotb.start_soon(monitor_tx())
+    await load_program_direct(dut, prog)
+
+    for _ in range(200):
+        await RisingEdge(dut.i_clk)
+        if len(tx_bits) == 8:
+            break
+    else:
+        assert False, f"Timeout waiting for 8 NRZI bits (got {len(tx_bits)})"
+
+    mon.cancel()
+    # Expected NRZI waveform for 0x96 (LSB-first: 0, 1, 1, 0, 1, 0, 0, 1) starting from initial state 1:
+    # Bit 0 (0) -> toggle to 0
+    # Bit 1 (1) -> hold at 0
+    # Bit 2 (1) -> hold at 0
+    # Bit 3 (0) -> toggle to 1
+    # Bit 4 (1) -> hold at 1
+    # Bit 5 (0) -> toggle to 0
+    # Bit 6 (0) -> toggle to 1
+    # Bit 7 (1) -> hold at 1
+    expected_nrzi = [0, 0, 0, 1, 1, 0, 1, 1]
+    assert tx_bits == expected_nrzi, f"NRZI TX mismatch: expected {expected_nrzi}, got {tx_bits}"
+    dut._log.info(f"Test 17A: NRZI TX encoding verified! Emitted {tx_bits} for 0x96")
+
+
+@cocotb.test()
+async def test_assist_usb_bit_stuffing_tx(dut):
+    """Task 17B: Verifies USB 1.1 bit-stuffing on TX (inserts '0' after 6 consecutive 1s)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    DELAY = 4
+    # Program:
+    #   [0]: ASSIST CFG, NRZI=0, STUFF=USB
+    #   [1]: MOV acc, 0x7E     (0b0111_1110: LSB-first: 0, 1, 1, 1, 1, 1, 1, 0 -> 6 consecutive 1s!)
+    #   [2]: MOV OSR, acc
+    #   [3]: OUT 8, 4          (should transmit 9 bits: 0, 1, 1, 1, 1, 1, 1, [0_STUFF], 0)
+    #   [4]: JMP halt
+    asm_source = f"""
+    ASSIST CFG, NRZI=0, STUFF=USB
+    MOV acc, 0x7E
+    MOV OSR, acc
+    OUT 8, {DELAY}
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    tx_bits = []
+    async def monitor_tx():
+        while int(dut.pc.value) != 3:
+            await RisingEdge(dut.i_clk)
+        while len(tx_bits) < 9:
+            await RisingEdge(dut.i_clk)
+            if int(dut.delay_cnt.value) == 2:
+                tx_bits.append(int(dut.o_tx.value))
+
+    mon = cocotb.start_soon(monitor_tx())
+    await load_program_direct(dut, prog)
+
+    for _ in range(250):
+        await RisingEdge(dut.i_clk)
+        if len(tx_bits) == 9:
+            break
+    else:
+        assert False, f"Timeout waiting for 9 bits (got {len(tx_bits)}: {tx_bits})"
+
+    mon.cancel()
+    # Expected: 8 data bits + 1 stuff bit inserted after the 6th '1'
+    expected_bits = [0, 1, 1, 1, 1, 1, 1, 0, 0]  # bit 7 is the stuffed 0, bit 8 is the payload 0
+    assert len(tx_bits) == 9, f"Expected 9 bits (8 payload + 1 stuff), got {len(tx_bits)}: {tx_bits}"
+    assert tx_bits == expected_bits, f"USB Bit-Stuffing mismatch: expected {expected_bits}, got {tx_bits}"
+    dut._log.info(f"Test 17B: USB 1.1 Bit-Stuffing on TX verified! Inserted '0' stuff bit: {tx_bits}")
+
+
+@cocotb.test()
+async def test_assist_usb_bit_destuffing_rx(dut):
+    """Task 17C: Verifies USB 1.1 bit-destuffing on RX (strips '0' after 6 consecutive 1s)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    DELAY = 4
+    # Line starts idle high (1).
+    # Then start bit (0) -> WAIT 0, 0 detects falling edge.
+    # NOP 2 steps past start bit to midpoint of bit 0.
+    # IN 8, 4 samples 8 payload bits, transparently stripping stuff bit.
+    asm_source = f"""
+    ASSIST CFG, NRZI=0, STUFF=USB
+    WAIT 0, 0
+    NOP 4
+    IN 8, {DELAY}
+    PUSH
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    # Pre-idle RX line HIGH
+    dut.i_gpio.value = 1
+    dut.i_rx.value = 1
+
+    await load_program_direct(dut, prog)
+
+    # Payload 0x7E with stuff bit: [0, 1, 1, 1, 1, 1, 1, 0_STUFF, 0_DATA]
+    # Plus start bit (0):
+    full_stream = [0] + [0, 1, 1, 1, 1, 1, 1, 0, 0]
+    
+    # Wait for core to reach WAIT 0, 0 (PC=1)
+    while int(dut.pc.value) != 1:
+        await RisingEdge(dut.i_clk)
+    await ClockCycles(dut.i_clk, 4)
+
+    # Feed stream: 5 cycles per bit period
+    for bit in full_stream:
+        dut.i_gpio.value = bit
+        dut.i_rx.value = bit
+        await ClockCycles(dut.i_clk, DELAY + 1)
+
+    # Return line to idle high
+    dut.i_gpio.value = 1
+    dut.i_rx.value = 1
+
+    # Wait for execution to reach halt (PC=5)
+    for _ in range(50):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 5:
+            break
+    else:
+        assert False, f"Timeout: IN did not complete to halt (PC={int(dut.pc.value)})"
+
+    # Verify that ISR recovered exactly the original 8-bit payload 0x7E!
+    assert int(dut.isr.value) == 0x7E, f"Destuffing failed: expected ISR=0x7E, got 0x{int(dut.isr.value):02X}"
+    assert int(dut.stuff_error.value) == 0, f"Unexpected stuff error flag asserted"
+    dut._log.info(f"Test 17C: USB 1.1 Bit-Destuffing on RX verified! Recovered 0x{int(dut.isr.value):02X} from 9-bit stream")
+
+
+@cocotb.test()
+async def test_assist_usb_stuff_error(dut):
+    """Task 17D: Verifies USB bit-stuff error detection (7 consecutive 1s asserts stuff_error)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    DELAY = 4
+    asm_source = f"""
+    ASSIST CFG, NRZI=0, STUFF=USB
+    IN 8, {DELAY}
+    JMP STUFF_ERR, error_handler
+    MOV acc, 0xAA
+    JMP halt
+error_handler:
+    MOV acc, 0xEE
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    await load_program_direct(dut, prog)
+
+    while int(dut.pc.value) != 1:
+        await RisingEdge(dut.i_clk)
+
+    # Drive an illegal violation: 7 consecutive 1s!
+    illegal_stream = [1, 1, 1, 1, 1, 1, 1, 0]
+    for bit in illegal_stream:
+        dut.i_gpio.value = bit
+        dut.i_rx.value = bit
+        await ClockCycles(dut.i_clk, DELAY + 1)
+
+    for _ in range(50):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 6:
+            break
+    else:
+        assert False, f"Timeout: failed to reach halt (PC={int(dut.pc.value)})"
+
+    assert int(dut.stuff_error.value) == 1, f"Expected stuff_error=1, got {int(dut.stuff_error.value)}"
+    assert int(dut.acc.value) == 0xEE, f"Expected JMP STUFF_ERR branch to error_handler (acc=0xEE), got 0x{int(dut.acc.value):02X}"
+    dut._log.info("Test 17D: USB Bit-Stuff Error detection and JMP STUFF_ERR verified!")
+
+
+@cocotb.test()
+async def test_assist_can_bit_stuffing(dut):
+    """Task 17E: Verifies CAN 2.0 bit-stuffing (inserts inverted bit after 5 identical bits)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    DELAY = 4
+    # Program:
+    #   [0]: ASSIST CFG, NRZI=0, STUFF=CAN
+    #   [1]: MOV acc, 0x1F     (0b0001_1111: LSB-first: 1, 1, 1, 1, 1, 0, 0, 0 -> five 1s followed by three 0s)
+    #   [2]: MOV OSR, acc
+    #   [3]: OUT 8, 4          (should insert '0' stuff bit after the five 1s)
+    #   [4]: JMP halt
+    asm_source = f"""
+    ASSIST CFG, NRZI=0, STUFF=CAN
+    MOV acc, 0x1F
+    MOV OSR, acc
+    OUT 8, {DELAY}
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    tx_bits = []
+    async def monitor_tx():
+        while int(dut.pc.value) != 3:
+            await RisingEdge(dut.i_clk)
+        while len(tx_bits) < 9:
+            await RisingEdge(dut.i_clk)
+            if int(dut.delay_cnt.value) == 2:
+                tx_bits.append(int(dut.o_tx.value))
+
+    mon = cocotb.start_soon(monitor_tx())
+    await load_program_direct(dut, prog)
+
+    for _ in range(250):
+        await RisingEdge(dut.i_clk)
+        if len(tx_bits) == 9:
+            break
+    else:
+        assert False, f"Timeout waiting for 9 CAN bits (got {len(tx_bits)})"
+
+    mon.cancel()
+    # Expected CAN stream: five 1s -> '0' stuff bit -> three 0s = 9 bits total!
+    expected_can = [1, 1, 1, 1, 1, 0, 0, 0, 0]  # bit 5 is the stuffed '0'
+    assert len(tx_bits) == 9, f"Expected 9 bits (8 data + 1 CAN stuff), got {len(tx_bits)}: {tx_bits}"
+    assert tx_bits == expected_can, f"CAN bit-stuffing mismatch: expected {expected_can}, got {tx_bits}"
+    dut._log.info(f"Test 17E: CAN 2.0 Bit-Stuffing verified! Inserted inverted bit: {tx_bits}")
+
+
