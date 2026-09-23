@@ -3,6 +3,7 @@
 An open-source, general-purpose protocol emulator ASIC targeting the **Jane Street and Tiny Tapeout ASIC Competition** (IHP 130nm CMOS5L process, 6x4 tile allocation).
 
 > Detailed Specifications:
+> - Hardware Datasheet & Terminal Specifications: [DATASHEET.md](DATASHEET.md)
 > - Architecture and Hardware ISA: [CONCEPT.md](CONCEPT.md)
 > - Assembler, Compiler, and Toolchain: [TOOLCHAIN_CONCEPT.md](TOOLCHAIN_CONCEPT.md)
 
