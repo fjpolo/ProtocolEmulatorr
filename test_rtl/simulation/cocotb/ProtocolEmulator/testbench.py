@@ -2676,3 +2676,313 @@ halt:
     dut._log.info(f"Test 17E: CAN 2.0 Bit-Stuffing verified! Inserted inverted bit: {tx_bits}")
 
 
+# =============================================================================
+# Task 18: Asymmetric Single-Wire & Retro Physical Protocol Accelerators
+# =============================================================================
+
+@cocotb.test()
+async def test_pulse_neopixel_tx(dut):
+    """Task 18A: Verifies WS2812B NeoPixel 800kHz single-wire asymmetric pulse timing (MSB-first)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # 0x96 = 0b1001_0110. In MSB-first: bits are 1, 0, 0, 1, 0, 1, 1, 0
+    # Bit 1: 40 cycles HIGH, 22 cycles LOW
+    # Bit 0: 20 cycles HIGH, 42 cycles LOW
+    asm_source = """
+    ASSIST PULSE_CFG, NEOPIXEL
+    MOV acc, 0x96
+    MOV OSR, acc
+    OUT 8, 0
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    pulses = []  # list of (high_cycles, low_cycles)
+    async def monitor_pulses():
+        while int(dut.pc.value) != 3:
+            await RisingEdge(dut.i_clk)
+        
+        while len(pulses) < 8:
+            # Wait for line to go HIGH
+            while int(dut.o_tx.value) == 0:
+                await RisingEdge(dut.i_clk)
+            
+            high_count = 0
+            while int(dut.o_tx.value) == 1:
+                high_count += 1
+                await RisingEdge(dut.i_clk)
+            
+            low_count = 0
+            while int(dut.o_tx.value) == 0 and len(pulses) < 8:
+                low_count += 1
+                await RisingEdge(dut.i_clk)
+                if len(pulses) == 7 and low_count >= 20:
+                    # Last bit rest
+                    break
+
+            pulses.append((high_count, low_count))
+
+    mon = cocotb.start_soon(monitor_pulses())
+    await load_program_direct(dut, prog)
+
+    for _ in range(700):
+        await RisingEdge(dut.i_clk)
+        if len(pulses) == 8:
+            break
+    else:
+        assert False, f"Timeout waiting for 8 NeoPixel pulses (got {len(pulses)}: {pulses})"
+
+    mon.cancel()
+
+    # 0x96 MSB-first: [1, 0, 0, 1, 0, 1, 1, 0]
+    expected_bits = [1, 0, 0, 1, 0, 1, 1, 0]
+    decoded_bits = [1 if h > 30 else 0 for (h, l) in pulses]
+    assert decoded_bits == expected_bits, f"Decoded bits mismatch: expected {expected_bits}, got {decoded_bits} (pulses: {pulses})"
+    dut._log.info(f"Test 18A: WS2812B NeoPixel pulse timing verified! Pulses: {pulses}")
+
+
+@cocotb.test()
+async def test_pulse_neopixel_rgb_frame(dut):
+    """Task 18B: Verifies continuous 24-bit GRB frame transmission for WS2812B."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Transmit Green=0xFF, Red=0x00, Blue=0x55
+    asm_source = """
+    ASSIST PULSE_CFG, NEOPIXEL
+    MOV acc, 0xFF
+    MOV OSR, acc
+    OUT 8, 0
+    MOV acc, 0x00
+    MOV OSR, acc
+    OUT 8, 0
+    MOV acc, 0x55
+    MOV OSR, acc
+    OUT 8, 0
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    high_pulses = 0
+    async def count_rising():
+        nonlocal high_pulses
+        prev = 0
+        while True:
+            await RisingEdge(dut.i_clk)
+            cur = int(dut.o_tx.value)
+            if cur == 1 and prev == 0:
+                high_pulses += 1
+            prev = cur
+
+    counter = cocotb.start_soon(count_rising())
+    await load_program_direct(dut, prog)
+
+    for _ in range(1800):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 10:
+            break
+    else:
+        assert False, f"Timeout: failed to reach halt (PC={int(dut.pc.value)}, high_pulses={high_pulses})"
+
+    counter.cancel()
+    assert high_pulses == 24, f"Expected 24 NeoPixel bit pulses for 3 bytes, got {high_pulses}"
+    dut._log.info(f"Test 18B: 24-bit WS2812B GRB frame verified! Total pulses: {high_pulses}")
+
+
+@cocotb.test()
+async def test_pulse_joybus_tx(dut):
+    """Task 18C: Verifies N64/GameCube Joybus open-drain pulse timing (active-low 3us/1us)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # 0x01 in LSB-first: bit 0 is 1, bit 1..7 are 0
+    # In JOYBUS:
+    # Bit 0 (0): 150 cycles LOW (3us), 50 cycles HIGH (1us)
+    # Bit 1 (1): 50 cycles LOW (1us), 150 cycles HIGH (3us)
+    asm_source = """
+    ASSIST PULSE_CFG, JOYBUS
+    MOV acc, 0x01
+    MOV OSR, acc
+    OUT 8, 0
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    low_durations = []
+    async def monitor_joybus():
+        while int(dut.pc.value) != 3:
+            await RisingEdge(dut.i_clk)
+        
+        while len(low_durations) < 8:
+            while int(dut.o_tx.value) == 1:
+                await RisingEdge(dut.i_clk)
+            
+            low_count = 0
+            while int(dut.o_tx.value) == 0:
+                low_count += 1
+                await RisingEdge(dut.i_clk)
+            
+            low_durations.append(low_count)
+
+    mon = cocotb.start_soon(monitor_joybus())
+    await load_program_direct(dut, prog)
+
+    for _ in range(2000):
+        await RisingEdge(dut.i_clk)
+        if len(low_durations) == 8:
+            break
+    else:
+        assert False, f"Timeout waiting for 8 Joybus pulses (got {len(low_durations)}: {low_durations})"
+
+    mon.cancel()
+
+    # Bit 0 was 1 (short low ~50 cycles), bits 1..7 were 0 (long low ~150 cycles)
+    assert low_durations[0] < 80, f"Expected short low pulse for bit 1, got {low_durations[0]}"
+    for i in range(1, 8):
+        assert low_durations[i] > 120, f"Expected long low pulse for bit 0, got {low_durations[i]}"
+    dut._log.info(f"Test 18C: N64/GameCube Joybus open-drain pulse timing verified! Durations: {low_durations}")
+
+
+@cocotb.test()
+async def test_gamepad_nes_host_read(dut):
+    """Task 18D: Verifies NES Gamepad Host read (autonomous LATCH pulse and 8 clock pulses)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Program:
+    # [0] ASSIST GAMEPAD_CFG, ROLE=HOST, TYPE=NES
+    # [1] IN 8, 4
+    # [2] PUSH
+    # [3] JMP halt
+    asm_source = """
+    ASSIST GAMEPAD_CFG, ROLE=HOST, TYPE=NES
+    IN 8, 4
+    PUSH
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    latch_seen = False
+    clock_pulses = 0
+
+    # Test vector: Button mask 0xA5 (1010_0101)
+    test_buttons = 0xA5
+
+    async def gamepad_controller_mock():
+        nonlocal latch_seen, clock_pulses
+        # Wait for LATCH on cs_pin (Pin 2)
+        while (int(dut.o_gpio.value) & (1 << 2)) == 0:
+            await RisingEdge(dut.i_clk)
+        latch_seen = True
+        
+        while (int(dut.o_gpio.value) & (1 << 2)) != 0:
+            await RisingEdge(dut.i_clk)
+
+        # For 8 clock pulses on sck_pin (Pin 1), supply bits on rx_pin (Pin 0)
+        btn_reg = test_buttons
+        for _ in range(8):
+            # Wait for clock HIGH
+            while (int(dut.o_gpio.value) & (1 << 1)) == 0:
+                await RisingEdge(dut.i_clk)
+            clock_pulses += 1
+            # Drive MSB onto rx_pin (Pin 0)
+            bit = (btn_reg >> 7) & 1
+            dut.i_gpio.value = bit
+            dut.i_rx.value = bit
+            btn_reg = (btn_reg << 1) & 0xFF
+            # Wait for clock LOW
+            while (int(dut.o_gpio.value) & (1 << 1)) != 0:
+                await RisingEdge(dut.i_clk)
+
+    mock = cocotb.start_soon(gamepad_controller_mock())
+    await load_program_direct(dut, prog)
+
+    for _ in range(400):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 3:
+            break
+    else:
+        assert False, f"Timeout: failed to reach halt (PC={int(dut.pc.value)}, clocks={clock_pulses})"
+
+    mock.cancel()
+    assert latch_seen, "LATCH pulse on cs_pin was not detected"
+    assert clock_pulses == 8, f"Expected 8 clock pulses on sck_pin, got {clock_pulses}"
+    assert int(dut.isr.value) == test_buttons, f"Sampled button mismatch: expected 0x{test_buttons:02X}, got 0x{int(dut.isr.value):02X}"
+    dut._log.info(f"Test 18D: NES Gamepad Host read verified! Sampled 0x{int(dut.isr.value):02X} across 8 clock cycles")
+
+
+@cocotb.test()
+async def test_gamepad_snes_host_read(dut):
+    """Task 18E: Verifies SNES Gamepad Host read (autonomous LATCH pulse and 16 clock pulses)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    asm_source = """
+    ASSIST GAMEPAD_CFG, ROLE=HOST, TYPE=SNES
+    IN 8, 4
+    PUSH
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    latch_seen = False
+    clock_pulses = 0
+
+    # 16-bit SNES button word: 0xCAFE
+    test_word = 0xCAFE
+
+    async def snes_controller_mock():
+        nonlocal latch_seen, clock_pulses
+        while (int(dut.o_gpio.value) & (1 << 2)) == 0:
+            await RisingEdge(dut.i_clk)
+        latch_seen = True
+        
+        while (int(dut.o_gpio.value) & (1 << 2)) != 0:
+            await RisingEdge(dut.i_clk)
+
+        shift = test_word
+        for _ in range(16):
+            while (int(dut.o_gpio.value) & (1 << 1)) == 0:
+                await RisingEdge(dut.i_clk)
+            clock_pulses += 1
+            bit = (shift >> 15) & 1
+            dut.i_gpio.value = bit
+            dut.i_rx.value = bit
+            shift = (shift << 1) & 0xFFFF
+            while (int(dut.o_gpio.value) & (1 << 1)) != 0:
+                await RisingEdge(dut.i_clk)
+
+    mock = cocotb.start_soon(snes_controller_mock())
+    await load_program_direct(dut, prog)
+
+    for _ in range(600):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 3:
+            break
+    else:
+        assert False, f"Timeout: failed to reach halt (PC={int(dut.pc.value)}, clocks={clock_pulses})"
+
+    mock.cancel()
+    assert latch_seen, "SNES LATCH pulse was not detected"
+    assert clock_pulses == 16, f"Expected 16 clock pulses for SNES, got {clock_pulses}"
+    assert int(dut.pad_shift_reg.value) == test_word, f"SNES 16-bit word mismatch: expected 0x{test_word:04X}, got 0x{int(dut.pad_shift_reg.value):04X}"
+    dut._log.info(f"Test 18E: SNES 16-bit Gamepad Host read verified! Sampled 0x{int(dut.pad_shift_reg.value):04X} across 16 clock cycles")
+
+
+
