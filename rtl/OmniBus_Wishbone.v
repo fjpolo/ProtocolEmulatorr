@@ -191,9 +191,9 @@ module OmniBus_Wishbone #(
     // Status register composition
     wire [31:0] reg_status = {
         o_irq,                                      // [31] IRQ state
-        !reg_prog_en,                               // [30] Core Running
+        core.i2c_addr_match,                        // [30] I2C Slave Address Match
         core.crc_reg == 32'd0,                      // [29] CRC Residue == 0
-        core.pc,                                    // [28:24] Core PC
+        core.pc[4:0],                               // [28:24] Core PC
         {(8-$clog2(FIFO_DEPTH)-1){1'b0}}, rx_fifo_level, // [23:16] RX FIFO Level
         {(8-$clog2(FIFO_DEPTH)-1){1'b0}}, tx_fifo_level, // [15:8]  TX FIFO Level
         rx_fifo_aempty,                             // [7] RX Almost Empty

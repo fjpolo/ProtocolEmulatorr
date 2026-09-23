@@ -75,6 +75,9 @@ OPCODES = {
     "GAMEPAD_CFG":   0xF,  # Task 18: Retro NES/SNES Gamepad Controller Bus
     "PULSE_TIME0":   0xF,
     "PULSE_TIME1":   0xF,
+    "I2C_SLAVE_CFG":     0xF,  # Task 21: Dedicated Hardware I2C Slave Engine
+    "I2C_RELEASE_SCL":   0xF,
+    "I2C_SLAVE_DISABLE": 0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -235,7 +238,19 @@ class OmnibusAssembler:
                             return 3
                         return 0
 
-                    if len(tokens) >= 4 and _in_mode(tokens[1]) == 2:
+                    if len(tokens) >= 2 and tokens[1].strip().upper() in ("SLAVE", "I2C_SLAVE"):
+                        # IN SLAVE [, NACK] [, delay]
+                        # [11:9] = 3'b111 (7)
+                        # [8] = NACK (1 if NACK, 0 if ACK)
+                        # [7:0] = delay
+                        nack = 1 if (len(tokens) >= 3 and tokens[2].strip().upper() in ("NACK", "1")) else 0
+                        delay = 0
+                        if len(tokens) >= 4:
+                            delay = eval_arg(tokens[3]) & 0xFF
+                        elif len(tokens) >= 3 and tokens[2].strip().upper() not in ("NACK", "ACK", "0", "1"):
+                            delay = eval_arg(tokens[2]) & 0xFF
+                        word = (opcode_val << 12) | (7 << 9) | (nack << 8) | (delay & 0xFF)
+                    elif len(tokens) >= 4 and _in_mode(tokens[1]) == 2:
                         # IN 1W, bit_count, delay
                         mode = 2
                         bit_flag = 1 if eval_arg(tokens[2]) == 1 else 0
@@ -267,6 +282,7 @@ class OmnibusAssembler:
                     #   OUT 1W, 1, delay    (mode=2, 1-bit 1-Wire Write for Search ROM)
                     #   OUT 1W, 8, delay    (mode=2, 8-bit 1-Wire Write)
                     #   OUT SDA, delay      (mode=3, 8-bit MSB-first I2C + auto-SCL toggle)
+                    #   OUT SLAVE, delay    (mode=7, Hardware I2C Slave Transmit)
                     def _out_mode(s):
                         s = s.strip().upper()
                         if s in ("SCK", "SCLK", "CLK"):
@@ -277,7 +293,10 @@ class OmnibusAssembler:
                             return 3
                         return 0
 
-                    if len(tokens) >= 4 and _out_mode(tokens[1]) == 2:
+                    if len(tokens) >= 2 and tokens[1].strip().upper() in ("SLAVE", "I2C_SLAVE"):
+                        delay = eval_arg(tokens[2]) & 0x1FF if len(tokens) >= 3 else 0
+                        word = (opcode_val << 12) | (7 << 9) | (delay & 0x1FF)
+                    elif len(tokens) >= 4 and _out_mode(tokens[1]) == 2:
                         # OUT 1W, bit_count, delay
                         mode = 2
                         bit_flag = 1 if eval_arg(tokens[2]) == 1 else 0
@@ -450,48 +469,57 @@ class OmnibusAssembler:
                 #   JMP target
                 #   JMP cond, target
                 CONDITIONS = {
-                    "ALWAYS": 0,
-                    "TX_VALID": 1,
-                    "TX_RDY": 1,
-                    "TX_READY": 1,
-                    "TX_EMPTY": 2,
-                    "NO_TX": 2,
-                    "RX_FULL": 3,
-                    "RX_READY": 4,
-                    "RX_RDY": 4,
-                    "NOT_FULL": 4,
-                    "PIN_HI": 5,
-                    "PIN_HIGH": 5,
-                    "PIN_1": 5,
-                    "PIN_LO": 6,
-                    "PIN_LOW": 6,
-                    "PIN_0": 6,
-                    "CRC_OK": 7,
-                    "CRC_VALID": 7,
-                    "CRC_ZERO": 7,
+                    "ALWAYS": (0, 0),
+                    "TX_VALID": (0, 1),
+                    "TX_RDY": (0, 1),
+                    "TX_READY": (0, 1),
+                    "TX_EMPTY": (0, 2),
+                    "NO_TX": (0, 2),
+                    "RX_FULL": (0, 3),
+                    "RX_READY": (0, 4),
+                    "RX_RDY": (0, 4),
+                    "NOT_FULL": (0, 4),
+                    "PIN_HI": (0, 5),
+                    "PIN_HIGH": (0, 5),
+                    "PIN_1": (0, 5),
+                    "PIN_LO": (0, 6),
+                    "PIN_LOW": (0, 6),
+                    "PIN_0": (0, 6),
+                    "CRC_OK": (0, 7),
+                    "CRC_VALID": (0, 7),
+                    "CRC_ZERO": (0, 7),
                     # ALU Condition Codes (0x8 .. 0xE)
-                    "ZERO": 8, "EQ": 8, "Z": 8,
-                    "NOT_ZERO": 9, "NE": 9, "NZ": 9,
-                    "CARRY": 10, "ULT": 10, "C": 10, "CY": 10,
-                    "NOT_CARRY": 11, "UGE": 11, "NC": 11,
-                    "NEG": 12, "NEGATIVE": 12, "SIGN": 12, "MINUS": 12,
-                    "POS": 13, "POSITIVE": 13, "PLUS": 13,
-                    "CRC_ERR": 14, "CRC_BAD": 14, "CRC_ERROR": 14,
-                    "STUFF_ERR": 15, "STUFF_ERROR": 15, "STUFF_BAD": 15,
-                    "MANCH_ERR": 15, "MANCH_ERROR": 15, "MANCH_VIOLATION": 15, "STREAM_ERR": 15,
+                    "ZERO": (0, 8), "EQ": (0, 8), "Z": (0, 8),
+                    "NOT_ZERO": (0, 9), "NE": (0, 9), "NZ": (0, 9),
+                    "CARRY": (0, 10), "ULT": (0, 10), "C": (0, 10), "CY": (0, 10),
+                    "NOT_CARRY": (0, 11), "UGE": (0, 11), "NC": (0, 11),
+                    "NEG": (0, 12), "NEGATIVE": (0, 12), "SIGN": (0, 12), "MINUS": (0, 12),
+                    "POS": (0, 13), "POSITIVE": (0, 13), "PLUS": (0, 13),
+                    "CRC_ERR": (0, 14), "CRC_BAD": (0, 14), "CRC_ERROR": (0, 14),
+                    "STUFF_ERR": (0, 15), "STUFF_ERROR": (0, 15), "STUFF_BAD": (0, 15),
+                    "MANCH_ERR": (0, 15), "MANCH_ERROR": (0, 15), "MANCH_VIOLATION": (0, 15), "STREAM_ERR": (0, 15),
+                    # Task 21: Extended I2C Slave Condition Codes
+                    "I2C_MATCH": (1, 0), "I2C_ADDR_MATCH": (1, 0), "I2C_ADDR": (1, 0),
+                    "I2C_START": (1, 1),
+                    "I2C_STOP": (1, 2),
+                    "I2C_READ": (1, 3),
+                    "I2C_WRITE": (1, 4),
+                    "I2C_ACK": (1, 5),
+                    "I2C_NACK": (1, 6),
+                    "I2C_BUS_ACTIVE": (1, 7), "I2C_ACTIVE": (1, 7),
                 }
                 if len(tokens) >= 3:
                     cond_name = tokens[1].strip().upper()
                     if cond_name not in CONDITIONS:
                         raise AssemblerError(f"Line {line_num}: Unknown condition '{tokens[1]}' for JMP")
-                    cond = CONDITIONS[cond_name]
+                    is_ext, cond = CONDITIONS[cond_name]
                     target = eval_arg(tokens[2]) & 0x7F
                 elif len(tokens) == 2:
-                    cond = 0  # Unconditional JMP
+                    is_ext, cond = 0, 0  # Unconditional JMP
                     target = eval_arg(tokens[1]) & 0x7F
                 else:
                     raise AssemblerError(f"Line {line_num}: JMP requires target address or label")
-                word = (opcode_val << 12) | (cond << 8) | target
+                word = (opcode_val << 12) | (cond << 8) | ((1 << 7) if is_ext else 0) | target
 
             elif op == "PULL":
                 # Forms:
@@ -750,7 +778,7 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
-            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1"):
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE"):
                 # Sub-operations:
                 # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
                 # 2'b01: ASSIST RESET
@@ -886,12 +914,45 @@ class OmnibusAssembler:
                                 manch_en = 0
                     word = (0xF << 12) | (0 << 10) | (1 << 4) | (manch_en << 3) | (manch_mode << 1) | manch_state
 
-                elif sub_cmd == "RESET":
-                    word = (0xF << 12) | (1 << 10)
+                elif sub_cmd in ("RESET", "I2C_RESET"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8)
+
+                elif sub_cmd in ("I2C_SLAVE_DISABLE", "I2C_DISABLE"):
+                    word = (0xF << 12) | (1 << 10) | (1 << 8)
+
+                elif sub_cmd in ("I2C_SLAVE_CFG", "I2C_CFG", "SLAVE_CFG"):
+                    # I2C_SLAVE_CFG <addr7> [, stretch=0|1]
+                    slave_addr = 0
+                    stretch = 0
+                    for a in arg_tokens:
+                        item = a.strip().upper()
+                        if "=" in item:
+                            k, v = item.split("=", 1)
+                            k, v = k.strip(), v.strip()
+                            if k in ("ADDR", "ADDRESS", "SLAVE_ADDR"):
+                                slave_addr = eval_arg(v) & 0x7F
+                            elif k in ("STRETCH", "CLOCK_STRETCH"):
+                                stretch = 1 if v in ("1", "TRUE", "ENABLE", "ON") else 0
+                        elif item in ("STRETCH", "ENABLE_STRETCH"):
+                            stretch = 1
+                        elif item in ("NO_STRETCH", "DISABLE_STRETCH"):
+                            stretch = 0
+                        else:
+                            slave_addr = eval_arg(a) & 0x7F
+                    word = (0xF << 12) | (1 << 10) | (2 << 8) | ((stretch & 1) << 7) | (slave_addr & 0x7F)
+
+                elif sub_cmd in ("I2C_RELEASE_SCL", "RELEASE_SCL", "RELEASE"):
+                    word = (0xF << 12) | (1 << 10) | (3 << 8)
 
                 elif sub_cmd in ("READ", "STATUS"):
-                    pad_high = 1 if any("PAD" in a.upper() or "SNES" in a.upper() or "HIGH" in a.upper() for a in arg_tokens) else 0
-                    word = (0xF << 12) | (2 << 10) | (pad_high << 9)
+                    if any("I2C_ADDR" in a.upper() or "ADDR" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8)
+                    elif any("I2C" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (1 << 8)
+                    elif any("PAD" in a.upper() or "SNES" in a.upper() or "HIGH" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (2 << 8)
+                    else:
+                        word = (0xF << 12) | (2 << 10) | (0 << 8)
 
                 elif sub_cmd in ("PULSE_CFG", "PULSE", "PULSECFG"):
                     # ASSIST PULSE_CFG, MODE=NEOPIXEL / JOYBUS / OFF / CUSTOM

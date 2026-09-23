@@ -121,6 +121,26 @@ module ProtocolEmulator(
     reg        manch_rx_sample1;    // First half-bit sampled value
     reg        manch_error;         // Latched error flag for Manchester code violation
 
+    // Dedicated Hardware I2C / SMBus Slave Engine State (Task 21)
+    reg        i2c_slave_en;        // 1=Enable hardware I2C slave monitor
+    reg [6:0]  i2c_slave_addr;      // 7-bit programmable slave address
+    reg        i2c_stretch_en;      // 1=Enable automatic clock stretching (holding SCL low)
+    reg        i2c_addr_match;      // 1=Slave address matched
+    reg        i2c_rw_bit;          // 0=Master Write, 1=Master Read
+    reg        i2c_start_flag;      // Sticky flag: set on START / repeated START
+    reg        i2c_stop_flag;       // Sticky flag: set on STOP
+    reg        i2c_bus_active;      // 1=Bus active between START and STOP
+    reg        i2c_master_ack;      // Sampled Master ACK (1=ACK, 0=NACK)
+    reg        i2c_drive_ack;       // 1=Autonomous hardware pulling SDA low for ACK
+    reg        i2c_stretch_hold;    // 1=Autonomous hardware holding SCL low for clock stretch
+    reg [7:0]  i2c_rx_addr;         // Latched 8-bit address word from master
+    reg [3:0]  i2c_bit_idx;         // Bit counter for address reception
+    reg [3:0]  i2c_slave_state;     // State machine: 0=IDLE, 1=ADDR_RX, 2=ADDR_ACK, 3=DATA_WAIT
+    reg [1:0]  in_slave_phase;      // Phase sequencing for IN SLAVE
+    reg [1:0]  out_slave_phase;     // Phase sequencing for OUT SLAVE
+    reg        scl_prev;            // Previous SCL level for edge detection
+    reg        sda_prev;            // Previous SDA level for edge detection
+
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
     reg [2:0]  rx_pin;          // Pin index for IN deserializer / default WAIT (default 0)
@@ -130,11 +150,7 @@ module ProtocolEmulator(
     reg [7:0]  gpio_out_reg;    // 8-bit GPIO output levels
     reg [7:0]  gpio_oe_reg;     // 8-bit GPIO output enables (1=drive, 0=Hi-Z)
 
-    assign o_gpio     = gpio_out_reg;
-    assign o_gpio_oe  = gpio_oe_reg;
-    assign o_tx       = gpio_out_reg[tx_pin];
-    assign o_spi_sck  = gpio_out_reg[sck_pin];
-    assign o_spi_cs_n = gpio_out_reg[cs_pin];
+
 
     // =========================================================================
     // OMNIBUS 16-BIT INSTRUCTION SET ARCHITECTURE (ISA) SPECIFICATION
@@ -394,6 +410,36 @@ module ProtocolEmulator(
     wire [15:0] instr   = imem[pc];
     wire [3:0]  opcode  = instr[15:12];
 
+    wire slave_sda_drive = i2c_drive_ack || (opcode == 4'h1 && instr[11:9] == 3'b111 && out_slave_phase == 2'd0 && osr[7] == 1'b0);
+    wire slave_scl_drive = i2c_stretch_hold;
+
+    wire [7:0] i2c_gpio_out;
+    wire [7:0] i2c_gpio_oe;
+
+    genvar p;
+    generate
+        for (p = 0; p < 8; p = p + 1) begin : gen_i2c_gpio
+            wire is_tx  = (p == tx_pin);
+            wire is_sck = (p == sck_pin);
+
+            assign i2c_gpio_out[p] = (is_tx && slave_sda_drive) ? 1'b0 :
+                                     (is_sck && slave_scl_drive) ? 1'b0 :
+                                     (i2c_slave_en && (is_tx || is_sck)) ? 1'b1 :
+                                     gpio_out_reg[p];
+
+            assign i2c_gpio_oe[p]  = (is_tx && slave_sda_drive) ? 1'b1 :
+                                     (is_sck && slave_scl_drive) ? 1'b1 :
+                                     (i2c_slave_en && (is_tx || is_sck)) ? 1'b0 :
+                                     gpio_oe_reg[p];
+        end
+    endgenerate
+
+    assign o_gpio     = i2c_gpio_out;
+    assign o_gpio_oe  = i2c_gpio_oe;
+    assign o_tx       = i2c_gpio_out[tx_pin];
+    assign o_spi_sck  = i2c_gpio_out[sck_pin];
+    assign o_spi_cs_n = i2c_gpio_out[cs_pin];
+
     // Operands for SET / WAIT:
     // [11:9] pin_sel (3 bits: GPIO 0..7)
     // [8]    pin_val (1 bit: 0 or 1)
@@ -448,6 +494,18 @@ module ProtocolEmulator(
         end
     end
     wire [7:0] gpio_in = gpio_sync_1;
+
+    // Dedicated Hardware I2C / SMBus Slave Line Edge & Framing Detectors
+    wire i2c_scl_in = gpio_in[sck_pin];
+    wire i2c_sda_in = gpio_in[tx_pin] & gpio_in[rx_pin];
+
+    wire scl_rise = (!scl_prev && i2c_scl_in);
+    wire scl_fall = (scl_prev && !i2c_scl_in);
+    wire sda_fall = (sda_prev && !i2c_sda_in);
+    wire sda_rise = (!sda_prev && i2c_sda_in);
+
+    wire i2c_start_cond = (sda_fall && i2c_scl_in);
+    wire i2c_stop_cond  = (sda_rise && i2c_scl_in);
 
     // Stream Accelerator RX Decoding: NRZI transition detector
     wire nrzi_rx_bit = (gpio_in[rx_pin] == nrzi_rx_prev) ? 1'b1 : 1'b0;
@@ -661,10 +719,90 @@ module ProtocolEmulator(
             manch_rx_phase    <= 1'b0;
             manch_rx_sample1  <= 1'b0;
             manch_error       <= 1'b0;
+            i2c_slave_en      <= 1'b0;
+            i2c_slave_addr    <= 7'd0;
+            i2c_stretch_en    <= 1'b0;
+            i2c_addr_match    <= 1'b0;
+            i2c_rw_bit        <= 1'b0;
+            i2c_start_flag    <= 1'b0;
+            i2c_stop_flag     <= 1'b0;
+            i2c_bus_active    <= 1'b0;
+            i2c_master_ack    <= 1'b0;
+            i2c_drive_ack     <= 1'b0;
+            i2c_stretch_hold  <= 1'b0;
+            i2c_rx_addr       <= 8'd0;
+            i2c_bit_idx       <= 4'd0;
+            i2c_slave_state   <= 4'd0;
+            in_slave_phase    <= 2'd0;
+            out_slave_phase   <= 2'd0;
+            scl_prev          <= 1'b1;
+            sda_prev          <= 1'b1;
         end else begin
             // Default: clear single-cycle pop/push strobes
             o_tx_pop  <= 1'b0;
             o_rx_push <= 1'b0;
+
+            // Track edge transitions on SCL & SDA
+            scl_prev <= i2c_scl_in;
+            sda_prev <= i2c_sda_in;
+
+            // -------------------------------------------------------------
+            // Autonomous Hardware I2C / SMBus Slave Tracker (Task 21)
+            // -------------------------------------------------------------
+            if (i2c_stop_cond) begin
+                i2c_bus_active   <= 1'b0;
+                i2c_stop_flag    <= 1'b1;
+                i2c_drive_ack    <= 1'b0;
+                i2c_stretch_hold <= 1'b0;
+                i2c_slave_state  <= 4'd0; // IDLE
+            end else if (i2c_start_cond) begin
+                i2c_bus_active   <= 1'b1;
+                i2c_start_flag   <= 1'b1;
+                i2c_stop_flag    <= 1'b0;
+                i2c_addr_match   <= 1'b0;
+                i2c_drive_ack    <= 1'b0;
+                i2c_stretch_hold <= 1'b0;
+                i2c_bit_idx      <= 4'd0;
+                i2c_slave_state  <= i2c_slave_en ? 4'd1 : 4'd0; // ADDR_RX or IDLE
+            end else if (i2c_slave_en) begin
+                case (i2c_slave_state)
+                    4'd1: begin // ADDR_RX: 8 bits (7-bit address + R/W)
+                        if (scl_rise) begin
+                            i2c_rx_addr <= {i2c_rx_addr[6:0], i2c_sda_in};
+                            i2c_bit_idx <= i2c_bit_idx + 4'd1;
+                        end else if (scl_fall) begin
+                            if (i2c_bit_idx == 4'd8) begin
+                                if (i2c_rx_addr[7:1] == i2c_slave_addr) begin
+                                    i2c_rw_bit      <= i2c_rx_addr[0];
+                                    i2c_drive_ack   <= 1'b1; // Drive ACK for 9th SCL
+                                    i2c_slave_state <= 4'd2; // ADDR_ACK
+                                end else begin
+                                    i2c_addr_match  <= 1'b0;
+                                    i2c_drive_ack   <= 1'b0;
+                                    i2c_slave_state <= 4'd0; // IDLE (NACK)
+                                end
+                            end
+                        end
+                    end
+
+                    4'd2: begin // ADDR_ACK: 9th SCL pulse
+                        if (scl_fall) begin
+                            i2c_drive_ack   <= 1'b0; // Release SDA after 9th pulse
+                            i2c_addr_match  <= 1'b1; // Confirm address match to microcode
+                            if (i2c_stretch_en) begin
+                                i2c_stretch_hold <= 1'b1; // Hold SCL low
+                            end
+                            i2c_slave_state <= 4'd3; // DATA_WAIT
+                        end
+                    end
+
+                    4'd3: begin // DATA_WAIT
+                        // Waiting for microcode IN SLAVE / OUT SLAVE
+                    end
+
+                    default: i2c_slave_state <= 4'd0;
+                endcase
+            end
 
             if (delay_cnt > 16'd0) begin
                 delay_cnt <= delay_cnt - 16'd1;
@@ -681,7 +819,49 @@ module ProtocolEmulator(
                     end
 
                     4'h2: begin // IN: Multi-cycle deserialization into ISR
-                        if (pulse_mode == 2'b10) begin
+                        if (instr[11:9] == 3'b111) begin
+                            // -------------------------------------------------------
+                            // I2C Slave Receive Mode (IN SLAVE / IN I2C_SLAVE):
+                            // Deserializes 8 data bits from master MSB-first into ISR
+                            // on SCL rising edges, drives ACK low on 9th SCL pulse,
+                            // releases SDA on SCL fall, and latches o_data <= isr.
+                            // -------------------------------------------------------
+                            delay_cnt        <= 16'd0;
+                            i2c_stretch_hold <= 1'b0; // release clock stretch if active
+                            if (in_slave_phase == 2'd0) begin
+                                if (i2c_stop_cond) begin
+                                    in_slave_phase <= 2'd0;
+                                    rx_bit_cnt     <= 4'd0;
+                                    pc             <= pc + 7'd1;
+                                end else if (scl_rise) begin
+                                    isr <= {isr[6:0], i2c_sda_in};
+                                    if (rx_bit_cnt == 4'd7) begin
+                                        in_slave_phase <= 2'd1;
+                                    end else begin
+                                        rx_bit_cnt <= rx_bit_cnt + 4'd1;
+                                    end
+                                end
+                            end else if (in_slave_phase == 2'd1) begin
+                                if (i2c_stop_cond) begin
+                                    in_slave_phase <= 2'd0;
+                                    rx_bit_cnt     <= 4'd0;
+                                    pc             <= pc + 7'd1;
+                                end else if (scl_fall) begin
+                                    i2c_drive_ack  <= 1'b1; // Drive ACK low for 9th SCL pulse
+                                    in_slave_phase <= 2'd2;
+                                end
+                            end else if (in_slave_phase == 2'd2) begin
+                                if (scl_fall || i2c_stop_cond) begin
+                                    i2c_drive_ack  <= 1'b0; // Release SDA
+                                    if (i2c_stretch_en && !i2c_stop_cond)
+                                        i2c_stretch_hold <= 1'b1; // Clock stretch
+                                    o_data         <= isr;
+                                    rx_bit_cnt     <= 4'd0;
+                                    in_slave_phase <= 2'd0;
+                                    pc             <= pc + 7'd1;
+                                end
+                            end
+                        end else if (pulse_mode == 2'b10) begin
                             // -------------------------------------------------------
                             // NES / SNES Gamepad Host Read Mode (Task 18)
                             // Phase 0: Assert LATCH high on cs_pin for t_latch cycles
@@ -992,7 +1172,47 @@ module ProtocolEmulator(
                     end
 
                     4'h1: begin // OUT: Multi-cycle serialization from OSR
-                        if (instr[11:10] == 2'b01 || instr[11:10] == 2'b11) begin
+                        if (instr[11:9] == 3'b111) begin
+                            // -------------------------------------------------------
+                            // I2C Slave Transmit Mode (OUT SLAVE / OUT I2C_SLAVE):
+                            // Transmits 8 data bits from OSR MSB-first to master on SCL
+                            // falling edges, releases SDA on 9th pulse, and samples
+                            // master ACK on 9th SCL rising edge into i2c_master_ack.
+                            // -------------------------------------------------------
+                            delay_cnt        <= 16'd0;
+                            i2c_stretch_hold <= 1'b0; // release clock stretch if active
+                            if (out_slave_phase == 2'd0) begin
+                                if (i2c_stop_cond) begin
+                                    out_slave_phase <= 2'd0;
+                                    bit_cnt         <= 4'd0;
+                                    pc              <= pc + 7'd1;
+                                end else if (scl_fall) begin
+                                    if (bit_cnt == 4'd7) begin
+                                        out_slave_phase <= 2'd1;
+                                    end else begin
+                                        osr     <= {osr[6:0], 1'b0};
+                                        bit_cnt <= bit_cnt + 4'd1;
+                                    end
+                                end
+                            end else if (out_slave_phase == 2'd1) begin
+                                if (i2c_stop_cond) begin
+                                    out_slave_phase <= 2'd0;
+                                    bit_cnt         <= 4'd0;
+                                    pc              <= pc + 7'd1;
+                                end else if (scl_rise) begin
+                                    i2c_master_ack  <= !i2c_sda_in; // 1 = ACK (low), 0 = NACK (high)
+                                    out_slave_phase <= 2'd2;
+                                end
+                            end else if (out_slave_phase == 2'd2) begin
+                                if (scl_fall || i2c_stop_cond) begin
+                                    if (i2c_stretch_en && i2c_master_ack && !i2c_stop_cond)
+                                        i2c_stretch_hold <= 1'b1;
+                                    bit_cnt         <= 4'd0;
+                                    out_slave_phase <= 2'd0;
+                                    pc              <= pc + 7'd1;
+                                end
+                            end
+                        end else if (instr[11:10] == 2'b01 || instr[11:10] == 2'b11) begin
                             // -------------------------------------------------------
                             // MSB-first Serializer with Auto-Clock Toggle:
                             //   instr[11:10] = 01: SPI Mode (OUT SCK)
@@ -1368,25 +1588,40 @@ module ProtocolEmulator(
 
                     4'h8: begin // JMP [cond], target: Conditional or Unconditional Jump
                         delay_cnt <= 16'd0;
-                        case (instr[11:8])
-                            4'h0: pc <= target;                              // Unconditional JMP target
-                            4'h1: pc <= i_tx_valid ? target : pc + 7'd1;     // JMP TX_VALID, target
-                            4'h2: pc <= !i_tx_valid ? target : pc + 7'd1;    // JMP TX_EMPTY, target
-                            4'h3: pc <= i_rx_full ? target : pc + 7'd1;      // JMP RX_FULL,  target
-                            4'h4: pc <= !i_rx_full ? target : pc + 7'd1;     // JMP RX_READY, target
-                            4'h5: pc <= gpio_in[rx_pin] ? target : pc + 7'd1;// JMP PIN_HI,   target
-                            4'h6: pc <= !gpio_in[rx_pin] ? target : pc + 7'd1;// JMP PIN_LO,  target
-                            4'h7: pc <= (crc_reg == 32'h00000000) ? target : pc + 7'd1;// JMP CRC_OK, target
-                            4'h8: pc <= zero_flag ? target : pc + 7'd1;      // JMP ZERO / EQ
-                            4'h9: pc <= !zero_flag ? target : pc + 7'd1;     // JMP NOT_ZERO / NE
-                            4'hA: pc <= carry_flag ? target : pc + 7'd1;     // JMP CARRY / ULT
-                            4'hB: pc <= !carry_flag ? target : pc + 7'd1;    // JMP NOT_CARRY / UGE
-                            4'hC: pc <= acc[7] ? target : pc + 7'd1;         // JMP NEG / SIGN
-                            4'hD: pc <= !acc[7] ? target : pc + 7'd1;        // JMP POS
-                            4'hE: pc <= (crc_reg != 32'h00000000) ? target : pc + 7'd1;// JMP CRC_ERR
-                            4'hF: pc <= (stuff_error | manch_error) ? target : pc + 7'd1; // JMP STUFF_ERR / MANCH_ERR
-                            default: pc <= target;
-                        endcase
+                        if (instr[7]) begin
+                            // Extended I2C Slave Conditions (Task 21)
+                            case (instr[11:8])
+                                4'h0: pc <= i2c_addr_match ? target : pc + 7'd1;                    // JMP I2C_MATCH
+                                4'h1: pc <= i2c_start_flag ? target : pc + 7'd1;                    // JMP I2C_START
+                                4'h2: pc <= i2c_stop_flag ? target : pc + 7'd1;                     // JMP I2C_STOP
+                                4'h3: pc <= (i2c_addr_match & i2c_rw_bit) ? target : pc + 7'd1;     // JMP I2C_READ
+                                4'h4: pc <= (i2c_addr_match & !i2c_rw_bit) ? target : pc + 7'd1;    // JMP I2C_WRITE
+                                4'h5: pc <= !i2c_master_ack ? target : pc + 7'd1;                   // JMP I2C_ACK
+                                4'h6: pc <= i2c_master_ack ? target : pc + 7'd1;                    // JMP I2C_NACK
+                                4'h7: pc <= i2c_bus_active ? target : pc + 7'd1;                    // JMP I2C_BUS_ACTIVE
+                                default: pc <= target;
+                            endcase
+                        end else begin
+                            case (instr[11:8])
+                                4'h0: pc <= target;                              // Unconditional JMP target
+                                4'h1: pc <= i_tx_valid ? target : pc + 7'd1;     // JMP TX_VALID, target
+                                4'h2: pc <= !i_tx_valid ? target : pc + 7'd1;    // JMP TX_EMPTY, target
+                                4'h3: pc <= i_rx_full ? target : pc + 7'd1;      // JMP RX_FULL,  target
+                                4'h4: pc <= !i_rx_full ? target : pc + 7'd1;     // JMP RX_READY, target
+                                4'h5: pc <= gpio_in[rx_pin] ? target : pc + 7'd1;// JMP PIN_HI,   target
+                                4'h6: pc <= !gpio_in[rx_pin] ? target : pc + 7'd1;// JMP PIN_LO,  target
+                                4'h7: pc <= (crc_reg == 32'h00000000) ? target : pc + 7'd1;// JMP CRC_OK, target
+                                4'h8: pc <= zero_flag ? target : pc + 7'd1;      // JMP ZERO / EQ
+                                4'h9: pc <= !zero_flag ? target : pc + 7'd1;     // JMP NOT_ZERO / NE
+                                4'hA: pc <= carry_flag ? target : pc + 7'd1;     // JMP CARRY / ULT
+                                4'hB: pc <= !carry_flag ? target : pc + 7'd1;    // JMP NOT_CARRY / UGE
+                                4'hC: pc <= acc[7] ? target : pc + 7'd1;         // JMP NEG / SIGN
+                                4'hD: pc <= !acc[7] ? target : pc + 7'd1;        // JMP POS
+                                4'hE: pc <= (crc_reg != 32'h00000000) ? target : pc + 7'd1;// JMP CRC_ERR
+                                4'hF: pc <= (stuff_error | manch_error) ? target : pc + 7'd1; // JMP STUFF_ERR / MANCH_ERR
+                                default: pc <= target;
+                            endcase
+                        end
                     end
 
                     4'hE: begin // CRC: Hardware CRC Generator & Checksum Accelerator
@@ -1687,30 +1922,66 @@ module ProtocolEmulator(
                                 end
                                 pc <= pc + 7'd1;
                             end
-                            2'b01: begin // ASSIST RESET (clear counters, error flags, reset states)
-                                tx_stuff_cnt   <= 3'd0;
-                                rx_stuff_cnt   <= 3'd0;
-                                stuff_error    <= 1'b0;
-                                nrzi_tx_state  <= 1'b1;
-                                nrzi_rx_prev   <= 1'b1;
-                                tx_last_bit    <= 1'b1;
-                                rx_last_bit    <= 1'b1;
-                                manch_tx_phase <= 1'b0;
-                                manch_rx_phase <= 1'b0;
-                                manch_tx_state <= 1'b0;
-                                manch_error    <= 1'b0;
+                            2'b01: begin
+                                case (instr[9:8])
+                                    2'b00: begin // ASSIST RESET (clear counters, error flags, reset states)
+                                        tx_stuff_cnt    <= 3'd0;
+                                        rx_stuff_cnt    <= 3'd0;
+                                        stuff_error     <= 1'b0;
+                                        nrzi_tx_state   <= 1'b1;
+                                        nrzi_rx_prev    <= 1'b1;
+                                        tx_last_bit     <= 1'b1;
+                                        rx_last_bit     <= 1'b1;
+                                        manch_tx_phase  <= 1'b0;
+                                        manch_rx_phase  <= 1'b0;
+                                        manch_tx_state  <= 1'b0;
+                                        manch_error     <= 1'b0;
+                                        i2c_start_flag  <= 1'b0;
+                                        i2c_stop_flag   <= 1'b0;
+                                    end
+                                    2'b01: begin // I2C_SLAVE_DISABLE
+                                        i2c_slave_en     <= 1'b0;
+                                        i2c_stretch_hold <= 1'b0;
+                                        i2c_drive_ack    <= 1'b0;
+                                        i2c_addr_match   <= 1'b0;
+                                    end
+                                    2'b10: begin // I2C_SLAVE_CFG <addr7> [, stretch=0|1]
+                                        i2c_slave_en     <= 1'b1;
+                                        i2c_stretch_en   <= instr[7];
+                                        i2c_slave_addr   <= instr[6:0];
+                                        i2c_addr_match   <= 1'b0;
+                                        i2c_stretch_hold <= 1'b0;
+                                        i2c_drive_ack    <= 1'b0;
+                                    end
+                                    2'b11: begin // I2C_RELEASE_SCL
+                                        i2c_stretch_hold <= 1'b0;
+                                    end
+                                endcase
                                 pc <= pc + 7'd1;
                             end
                             2'b10: begin // ASSIST READ (read status into acc)
-                                if (instr[9]) begin
-                                    acc        <= pad_shift_reg[15:8]; // Read upper byte of 16-bit SNES gamepad
-                                    zero_flag  <= (pad_shift_reg[15:8] == 8'h00);
-                                    carry_flag <= 1'b0;
-                                end else begin
-                                    acc        <= {stuff_error, manch_error, assist_manch_en, assist_nrzi_en, assist_stuff_mode, tx_stuff_cnt[1:0]};
-                                    zero_flag  <= ({stuff_error, manch_error} == 2'b00);
-                                    carry_flag <= (stuff_error | manch_error);
-                                end
+                                case (instr[9:8])
+                                    2'b00: begin // Standard framing / Manchester / NRZI status
+                                        acc        <= {stuff_error, manch_error, assist_manch_en, assist_nrzi_en, assist_stuff_mode, tx_stuff_cnt[1:0]};
+                                        zero_flag  <= ({stuff_error, manch_error} == 2'b00);
+                                        carry_flag <= (stuff_error | manch_error);
+                                    end
+                                    2'b01: begin // I2C Slave Status Flags
+                                        acc        <= {i2c_bus_active, i2c_start_flag, i2c_stop_flag, i2c_addr_match, i2c_rw_bit, i2c_master_ack, i2c_stretch_hold, i2c_slave_en};
+                                        zero_flag  <= !i2c_addr_match;
+                                        carry_flag <= i2c_master_ack;
+                                    end
+                                    2'b10: begin // Gamepad upper byte
+                                        acc        <= pad_shift_reg[15:8];
+                                        zero_flag  <= (pad_shift_reg[15:8] == 8'h00);
+                                        carry_flag <= 1'b0;
+                                    end
+                                    2'b11: begin // I2C Received Address & RW bit
+                                        acc        <= {i2c_rx_addr, i2c_rw_bit};
+                                        zero_flag  <= (i2c_rx_addr == 7'd0);
+                                        carry_flag <= i2c_rw_bit;
+                                    end
+                                endcase
                                 pc <= pc + 7'd1;
                             end
                             2'b11: begin // ASSIST PULSE & GAMEPAD (Task 18)
