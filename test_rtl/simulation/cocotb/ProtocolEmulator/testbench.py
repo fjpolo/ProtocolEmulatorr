@@ -2985,4 +2985,275 @@ halt:
     dut._log.info(f"Test 18E: SNES 16-bit Gamepad Host read verified! Sampled 0x{int(dut.pad_shift_reg.value):04X} across 16 clock cycles")
 
 
+# =============================================================================
+# Task 19: Autonomous Manchester / Biphase Mark Stream Accelerator Tests
+# =============================================================================
+
+@cocotb.test()
+async def test_stream_manchester_tx_ieee(dut):
+    """Task 19A: Autonomous IEEE 802.3 Manchester serialization with center transitions."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Microcode:
+    # 0: ASSIST MANCH, IEEE
+    # 1: MOV acc, 0x53        ; 0x53 = 0b0101_0011, LSB-first: 1, 1, 0, 0, 1, 0, 1, 0
+    # 2: MOV OSR, acc
+    # 3: OUT 8, 4             ; eff_hdelay = 2 cycles
+    # 4: JMP halt
+    asm_source = """
+    ASSIST MANCH, IEEE
+    MOV acc, 0x53
+    MOV OSR, acc
+    OUT 8, 4
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    # Monitor o_tx levels: collect exactly 48 cycles (16 half-bits x 3 cycles)
+    samples = []
+    async def monitor_manch_tx():
+        while int(dut.pc.value) != 3:
+            await RisingEdge(dut.i_clk)
+        
+        for _ in range(48):
+            samples.append(int(dut.o_tx.value) & 1)
+            await RisingEdge(dut.i_clk)
+
+    mon = cocotb.start_soon(monitor_manch_tx())
+    await load_program_direct(dut, prog)
+    await mon
+
+    for _ in range(10):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 4:
+            break
+
+    # For delay=4, eff_hdelay=2: each half-bit is held for 3 clock cycles (total 6 cycles per bit, 48 cycles for 8 bits)
+    # 0x53 LSB-first: [1, 1, 0, 0, 1, 0, 1, 0]
+    # IEEE 802.3:
+    #   bit 1: first half HIGH, second half LOW
+    #   bit 0: first half LOW, second half HIGH
+    expected_bits = [1, 1, 0, 0, 1, 0, 1, 0]
+    expected_half_bits = []
+    for b in expected_bits:
+        if b == 1:
+            expected_half_bits.extend([1, 0])
+        else:
+            expected_half_bits.extend([0, 1])
+
+    assert len(samples) == 48, f"Expected exactly 48 clock cycles of Manchester output, got {len(samples)}"
+    
+    # Each half-bit spans 3 cycles
+    decoded_half_bits = [samples[i * 3 + 1] for i in range(16)]
+    assert decoded_half_bits == expected_half_bits, (
+        f"Manchester half-bit pattern mismatch:\nExpected: {expected_half_bits}\nGot:      {decoded_half_bits}"
+    )
+
+    # Reconstruct 8 data bits from pairs
+    decoded_bytes = 0
+    for idx in range(8):
+        h0 = decoded_half_bits[idx * 2]
+        h1 = decoded_half_bits[idx * 2 + 1]
+        assert h0 != h1, f"Manchester center transition missing on bit {idx}: h0={h0}, h1={h1}"
+        bit_val = 1 if (h0 == 1 and h1 == 0) else 0
+        decoded_bytes |= (bit_val << idx)
+
+    assert decoded_bytes == 0x53, f"Decoded byte mismatch: expected 0x53, got 0x{decoded_bytes:02X}"
+    dut._log.info(f"Test 19A: Autonomous IEEE 802.3 Manchester TX PASSED! Decoded: 0x{decoded_bytes:02X}")
+
+
+@cocotb.test()
+async def test_stream_manchester_tx_bmc(dut):
+    """Task 19B: Autonomous BMC / Biphase Mark (FM1) serialization."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Microcode:
+    # 0: ASSIST MANCH, BMC
+    # 1: MOV acc, 0xA5        ; 0xA5 = 0b1010_0101, LSB-first: 1, 0, 1, 0, 0, 1, 0, 1
+    # 2: MOV OSR, acc
+    # 3: OUT 8, 4
+    # 4: JMP halt
+    asm_source = """
+    ASSIST MANCH, BMC
+    MOV acc, 0xA5
+    MOV OSR, acc
+    OUT 8, 4
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    samples = []
+    async def monitor_bmc_tx():
+        while int(dut.pc.value) != 3:
+            await RisingEdge(dut.i_clk)
+        
+        for _ in range(48):
+            samples.append(int(dut.o_tx.value) & 1)
+            await RisingEdge(dut.i_clk)
+
+    mon = cocotb.start_soon(monitor_bmc_tx())
+    await load_program_direct(dut, prog)
+    await mon
+
+    for _ in range(10):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 4:
+            break
+
+    assert len(samples) == 48, f"Expected exactly 48 cycles of BMC output, got {len(samples)}"
+    decoded_half_bits = [samples[i * 3 + 1] for i in range(16)]
+
+    # BMC Rules:
+    # Always transitions at bit boundary (h0 of bit i != h1 of bit i-1)
+    # Transitions at mid-bit (h0 != h1) if and only if bit is 1.
+    expected_bits = [1, 0, 1, 0, 0, 1, 0, 1]  # 0xA5 LSB-first
+    for i in range(8):
+        h0 = decoded_half_bits[i * 2]
+        h1 = decoded_half_bits[i * 2 + 1]
+        mid_trans = (h0 != h1)
+        expected_bit = expected_bits[i]
+        assert (1 if mid_trans else 0) == expected_bit, (
+            f"BMC bit {i} mismatch: mid_trans={mid_trans}, expected={expected_bit} (h0={h0}, h1={h1})"
+        )
+        if i > 0:
+            prev_h1 = decoded_half_bits[(i - 1) * 2 + 1]
+            assert h0 != prev_h1, f"BMC boundary transition missing at bit {i}: h0={h0}, prev_h1={prev_h1}"
+
+    dut._log.info("Test 19B: Autonomous BMC / FM1 Serialization PASSED! Verified boundary & mid-bit rules.")
+
+
+@cocotb.test()
+async def test_stream_manchester_rx_ieee(dut):
+    """Task 19C: Autonomous IEEE 802.3 Manchester deserialization and bit recovery into ISR."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    asm_source = """
+    ASSIST MANCH, IEEE
+    IN 8, 4
+    PUSH
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    # Target byte: 0x69 = 0b0110_1001 (LSB-first: 1, 0, 0, 1, 0, 1, 1, 0)
+    target_byte = 0x69
+    bits = [(target_byte >> i) & 1 for i in range(8)]
+
+    # 16 half-bits:
+    # For bit 1: Phase 0 is HIGH (1), Phase 1 is LOW (0)
+    # For bit 0: Phase 0 is LOW (0), Phase 1 is HIGH (1)
+    half_bits = []
+    for b in bits:
+        if b == 1:
+            half_bits.extend([1, 0])
+        else:
+            half_bits.extend([0, 1])
+
+    # Pre-drive initial line state before PC reaches IN (matching half_bits[0])
+    dut.i_rx.value = half_bits[0]
+    dut.i_gpio.value = (int(dut.i_gpio.value) & ~1) | half_bits[0]
+
+    async def drive_manch_rx():
+        # Wait until IN instruction (PC == 1) begins
+        while int(dut.pc.value) != 1:
+            await RisingEdge(dut.i_clk)
+        
+        # When PC becomes 1, immediately start feeding subsequent half-bits
+        for h in half_bits[1:]:
+            dut.i_rx.value = h
+            dut.i_gpio.value = (int(dut.i_gpio.value) & ~1) | h
+            await ClockCycles(dut.i_clk, 3)
+
+    driver = cocotb.start_soon(drive_manch_rx())
+    await load_program_direct(dut, prog)
+
+    for _ in range(500):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 3:
+            break
+    else:
+        assert False, f"Timeout waiting for Manchester RX to complete (PC={int(dut.pc.value)})"
+
+    driver.cancel()
+
+    assert int(dut.manch_error.value) == 0, f"Unexpected Manchester error: {int(dut.manch_error.value)}"
+    assert int(dut.isr.value) == target_byte, f"ISR mismatch: expected 0x{target_byte:02X}, got 0x{int(dut.isr.value):02X}"
+    assert int(dut.o_data.value) == target_byte, f"o_data mismatch: expected 0x{target_byte:02X}, got 0x{int(dut.o_data.value):02X}"
+    dut._log.info(f"Test 19C: Autonomous Manchester RX PASSED! Successfully decoded 0x{int(dut.isr.value):02X}")
+
+
+@cocotb.test()
+async def test_stream_manchester_violation_detect(dut):
+    """Task 19D: Code violation detection (flatline) asserting manch_error and branching via JMP MANCH_ERR."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    asm_source = """
+    ASSIST MANCH, IEEE
+    IN 8, 4
+    JMP MANCH_ERR, violation_handled
+    SET 1, 0, 0
+halt:
+    JMP halt
+violation_handled:
+    SET 1, 1, 0
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    # Drive stream with code violation on bit 3 (flatline 1 for both half-bits)
+    stream_levels = []
+    # Bit 0: 1
+    stream_levels.extend([1] * 3 + [0] * 3)
+    # Bit 1: 0
+    stream_levels.extend([0] * 3 + [1] * 3)
+    # Bit 2: 1
+    stream_levels.extend([1] * 3 + [0] * 3)
+    # Bit 3: VIOLATION (all 1s)
+    stream_levels.extend([1] * 3 + [1] * 3)
+    # Bits 4..7: 0
+    for _ in range(4):
+        stream_levels.extend([0] * 3 + [1] * 3)
+
+    async def drive_violation_rx():
+        while int(dut.pc.value) != 1:
+            await RisingEdge(dut.i_clk)
+        for lvl in stream_levels:
+            dut.i_rx.value = lvl
+            dut.i_gpio.value = (int(dut.i_gpio.value) & ~1) | lvl
+            await RisingEdge(dut.i_clk)
+
+    driver = cocotb.start_soon(drive_violation_rx())
+    await load_program_direct(dut, prog)
+
+    for _ in range(500):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 4 and ((int(dut.o_gpio.value) >> 1) & 1) == 1:
+            break
+    else:
+        assert False, f"Timeout or failed branch on Manchester violation (PC={int(dut.pc.value)}, manch_error={int(dut.manch_error.value)})"
+
+    driver.cancel()
+
+    assert int(dut.manch_error.value) == 1, "Expected manch_error to be asserted on violation"
+    pin1_val = (int(dut.o_gpio.value) >> 1) & 1
+    assert pin1_val == 1, f"Expected Pin 1 == 1 (violation handled), got {pin1_val}"
+    dut._log.info("Test 19D: Manchester violation detection & JMP MANCH_ERR branch PASSED!")
+
+
+
 
