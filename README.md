@@ -33,6 +33,14 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 * [Task 07C — Unified 8-Bit GPIO Bus & Dynamic Pin Mapping](task07c.md)
 * [Task 08 — I2C Master in Microcode (Loopback Mode)](task08.md)
 * [Task 09 — Zero-Overhead Hardware Loop Counters](task09.md)
+* [Task 10 — Bidirectional SERDES & Full-Duplex Architecture](task10.md)
+* [Task 11 — Hardware FIFO Handshaking & Status Flags](task11.md)
+* [Task 12 — 1-Wire Protocol & Hardware Serializer/Deserializer](task12.md)
+* [Task 13 — Hardware CRC Generator & Checksum Accelerator](task13.md)
+* [Task 14 — Parameterized FIFO Subsystem & Wishbone B4 Slave Wrapper](task14.md)
+* [Task 15 — 8-bit Micro-ALU & Arithmetic Engine](task15.md)
+* [Task 16 — 128-Word IMEM Expansion & 4-Bank Switching](task16.md)
+* [Task 17 — Autonomous Stream Accelerators: NRZI & Bit-Stuffer/De-stuffer](task17.md)
 
 ## Usage
 
