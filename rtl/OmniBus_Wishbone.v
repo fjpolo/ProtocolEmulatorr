@@ -43,15 +43,28 @@ module OmniBus_Wishbone #(
     input  wire        i_rx,
     output wire        o_tx,
     output wire        o_spi_sck,
-    output wire        o_spi_cs_n
+    output wire        o_spi_cs_n,
+
+    // -------------------------------------------------------------------------
+    // Wishbone B4 Master Interface (DMA Host System Memory Bus)
+    // -------------------------------------------------------------------------
+    output wire        o_m_wb_cyc,
+    output wire        o_m_wb_stb,
+    output wire        o_m_wb_we,
+    output wire [31:0] o_m_wb_addr,
+    output wire [31:0] o_m_wb_data,
+    output wire [3:0]  o_m_wb_sel,
+    input  wire [31:0] i_m_wb_data,
+    input  wire        i_m_wb_ack,
+    input  wire        i_m_wb_err
 );
 
     // =========================================================================
     // Address Map Offsets (32-bit aligned words)
     // =========================================================================
-    localparam [7:0] ADDR_DATA   = 8'h00;  // RW: TX FIFO write / RX FIFO read
-    localparam [7:0] ADDR_STATUS = 8'h04;  // RO: FIFO flags, levels, PC telemetry
-    localparam [7:0] ADDR_CTRL   = 8'h08;  // RW: Soft reset, prog_en, FIFO flushes, IRQ mask
+    localparam [7:0] ADDR_DATA      = 8'h00;  // RW: TX FIFO write / RX FIFO read
+    localparam [7:0] ADDR_STATUS    = 8'h04;  // RO: FIFO flags, levels, PC telemetry
+    localparam [7:0] ADDR_CTRL      = 8'h08;  // RW: Soft reset, prog_en, FIFO flushes, IRQ mask
     localparam [7:0] ADDR_BAUD      = 8'h0C;  // RW: Dynamic baud rate divisor
     localparam [7:0] ADDR_GPIO      = 8'h10;  // RO: GPIO pin readback [i_gpio, o_gpio, o_oe]
     localparam [7:0] ADDR_IMEM_BANK = 8'h14;  // RW: Active IMEM bank for programming window (0..3)
@@ -59,7 +72,15 @@ module OmniBus_Wishbone #(
     localparam [7:0] ADDR_DEBUG     = 8'h1C;  // RO: Hardware JTAG TAP state, SWD ACK, parity error & telemetry
     localparam [7:0] ADDR_QSPI      = 8'h20;  // RO: Hardware Quad-SPI state, width, cpol, rx_byte & addr_reg telemetry
     localparam [7:0] ADDR_GLITCH    = 8'h24;  // RO: Hardware Glitch status, timer & MitM telemetry
-    localparam [7:0] ADDR_IMEM      = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
+    localparam [7:0] ADDR_DMA_CTRL    = 8'h30;  // RW: DMA global & channel control / start
+    localparam [7:0] ADDR_DMA_STATUS  = 8'h34;  // RO: DMA channel status & FSM states
+    localparam [7:0] ADDR_DMA_TX_ADDR = 8'h38;  // RW: Linear TX Source Address / SG Desc Address
+    localparam [7:0] ADDR_DMA_TX_LEN  = 8'h3C;  // RW: Linear TX Byte Count
+    localparam [7:0] ADDR_DMA_RX_ADDR = 8'h40;  // RW: Linear RX Dest Address / SG Desc Address
+    localparam [7:0] ADDR_DMA_RX_LEN  = 8'h44;  // RW: Linear RX Byte Count
+    localparam [7:0] ADDR_DMA_TX_DESC = 8'h48;  // RO: Current active TX descriptor address
+    localparam [7:0] ADDR_DMA_RX_DESC = 8'h4C;  // RO: Current active RX descriptor address
+    localparam [7:0] ADDR_IMEM        = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
 
     // =========================================================================
     // Control & Configuration Registers
@@ -74,14 +95,38 @@ module OmniBus_Wishbone #(
     reg        reg_irq_rx_ready_en;
     reg        reg_irq_rx_afull_en;
 
+    // DMA Control Registers
+    reg        reg_dma_tx_en;
+    reg        reg_dma_tx_start;
+    reg        reg_dma_tx_irq_en;
+    reg        reg_dma_tx_sg_en;
+    reg        reg_dma_rx_en;
+    reg        reg_dma_rx_start;
+    reg        reg_dma_rx_irq_en;
+    reg        reg_dma_rx_sg_en;
+    reg        reg_dma_abort;
+    reg [31:0] reg_dma_tx_addr;
+    reg [15:0] reg_dma_tx_len;
+    reg [31:0] reg_dma_rx_addr;
+    reg [15:0] reg_dma_rx_len;
+
     // Combined active-low reset for core and FIFOs
     wire core_rst_n = i_wb_rst_n && !reg_soft_rst;
 
     // =========================================================================
     // TX & RX Hardware FIFOs
     // =========================================================================
-    wire       tx_fifo_push;
-    wire [7:0] tx_fifo_wdata = i_wb_data[7:0];
+    wire wb_valid = i_wb_cyc && i_wb_stb;
+
+    wire       dma_tx_fifo_push;
+    wire [7:0] dma_tx_fifo_wdata;
+    wire       dma_rx_fifo_pop;
+
+    wire       cpu_tx_fifo_push = wb_valid && i_wb_we && !o_wb_ack && (i_wb_addr == ADDR_DATA);
+    wire       cpu_rx_fifo_pop  = wb_valid && !i_wb_we && !o_wb_ack && (i_wb_addr == ADDR_DATA);
+
+    wire       tx_fifo_push  = cpu_tx_fifo_push || dma_tx_fifo_push;
+    wire [7:0] tx_fifo_wdata = dma_tx_fifo_push ? dma_tx_fifo_wdata : i_wb_data[7:0];
     wire       tx_fifo_full;
     wire       tx_fifo_afull;
     wire       tx_fifo_pop;
@@ -112,7 +157,7 @@ module OmniBus_Wishbone #(
     wire [7:0] rx_fifo_wdata;
     wire       rx_fifo_full;
     wire       rx_fifo_afull;
-    wire       rx_fifo_pop;
+    wire       rx_fifo_pop = cpu_rx_fifo_pop || dma_rx_fifo_pop;
     wire [7:0] rx_fifo_rdata;
     wire       rx_fifo_empty;
     wire       rx_fifo_aempty;
@@ -184,13 +229,75 @@ module OmniBus_Wishbone #(
     );
 
     // =========================================================================
+    // Direct Memory Access (DMA) Scatter-Gather Controller Instance
+    // =========================================================================
+    wire [31:0] dma_status;
+    wire [31:0] dma_tx_desc;
+    wire [31:0] dma_rx_desc;
+    wire [15:0] dma_tx_bytes_rem;
+    wire [15:0] dma_rx_bytes_rem;
+    wire [31:0] dma_tx_curr_addr;
+    wire [31:0] dma_rx_curr_addr;
+    wire        dma_irq;
+
+    OmniBus_DMA dma_inst (
+        .i_clk              (i_wb_clk),
+        .i_rst_n            (core_rst_n),
+
+        // Wishbone Master
+        .o_m_wb_cyc         (o_m_wb_cyc),
+        .o_m_wb_stb         (o_m_wb_stb),
+        .o_m_wb_we          (o_m_wb_we),
+        .o_m_wb_addr        (o_m_wb_addr),
+        .o_m_wb_data        (o_m_wb_data),
+        .o_m_wb_sel         (o_m_wb_sel),
+        .i_m_wb_data        (i_m_wb_data),
+        .i_m_wb_ack         (i_m_wb_ack),
+        .i_m_wb_err         (i_m_wb_err),
+
+        // FIFO Interfaces
+        .o_tx_fifo_push     (dma_tx_fifo_push),
+        .o_tx_fifo_wdata    (dma_tx_fifo_wdata),
+        .i_tx_fifo_full     (tx_fifo_full),
+        .i_tx_fifo_afull    (tx_fifo_afull),
+
+        .o_rx_fifo_pop      (dma_rx_fifo_pop),
+        .i_rx_fifo_rdata    (rx_fifo_rdata),
+        .i_rx_fifo_empty    (rx_fifo_empty),
+        .i_rx_fifo_aempty   (rx_fifo_aempty),
+
+        // Control Inputs
+        .i_dma_tx_en        (reg_dma_tx_en),
+        .i_dma_tx_start     (reg_dma_tx_start),
+        .i_dma_tx_irq_en    (reg_dma_tx_irq_en),
+        .i_dma_tx_sg_en     (reg_dma_tx_sg_en),
+
+        .i_dma_rx_en        (reg_dma_rx_en),
+        .i_dma_rx_start     (reg_dma_rx_start),
+        .i_dma_rx_irq_en    (reg_dma_rx_irq_en),
+        .i_dma_rx_sg_en     (reg_dma_rx_sg_en),
+
+        .i_dma_abort        (reg_dma_abort),
+
+        .i_dma_tx_addr      (reg_dma_tx_addr),
+        .i_dma_tx_len       (reg_dma_tx_len),
+        .i_dma_rx_addr      (reg_dma_rx_addr),
+        .i_dma_rx_len       (reg_dma_rx_len),
+
+        // Status & Telemetry
+        .o_dma_status       (dma_status),
+        .o_dma_tx_desc      (dma_tx_desc),
+        .o_dma_rx_desc      (dma_rx_desc),
+        .o_dma_tx_bytes_rem (dma_tx_bytes_rem),
+        .o_dma_rx_bytes_rem (dma_rx_bytes_rem),
+        .o_dma_tx_curr_addr (dma_tx_curr_addr),
+        .o_dma_rx_curr_addr (dma_rx_curr_addr),
+        .o_dma_irq          (dma_irq)
+    );
+
+    // =========================================================================
     // Wishbone Bus Cycle & Register Decoding
     // =========================================================================
-    wire wb_valid = i_wb_cyc && i_wb_stb;
-
-    // Generate single-cycle strobes for FIFO reads / writes
-    assign tx_fifo_push = wb_valid && i_wb_we && !o_wb_ack && (i_wb_addr == ADDR_DATA);
-    assign rx_fifo_pop  = wb_valid && !i_wb_we && !o_wb_ack && (i_wb_addr == ADDR_DATA);
 
     // Status register composition
     wire [31:0] reg_status = {
@@ -235,17 +342,25 @@ module OmniBus_Wishbone #(
             wb_rdata_comb = {16'h0000, core_prog_rdata};
         end else begin
             case (i_wb_addr)
-                ADDR_DATA:      wb_rdata_comb = {24'h000000, rx_fifo_rdata};
-                ADDR_STATUS:    wb_rdata_comb = reg_status;
-                ADDR_CTRL:      wb_rdata_comb = reg_ctrl_read;
-                ADDR_BAUD:      wb_rdata_comb = {16'h0000, reg_baud};
-                ADDR_GPIO:      wb_rdata_comb = reg_gpio_read;
-                ADDR_IMEM_BANK: wb_rdata_comb = {14'd0, core.active_bank, 1'b0, core.pc, 6'd0, reg_imem_bank};
-                ADDR_AUDIO:     wb_rdata_comb = {core.audio_sample, core.audio_en, core.audio_mode, core.audio_pin, core.audio_preset, core.pdm_bit, 11'd0};
-                ADDR_DEBUG:     wb_rdata_comb = {16'h0000, core.swd_last_ack, core.swd_parity_err, core.swd_en, 3'b000, core.jtag_tdo_sampled, core.jtag_state, core.jtag_tms, core.jtag_tck, core.jtag_en};
-                ADDR_QSPI:      wb_rdata_comb = {core.qspi_addr_reg[15:0], core.qspi_rx_byte, core.qspi_state, core.qspi_cpol, core.qspi_width, core.qspi_en};
-                ADDR_GLITCH:    wb_rdata_comb = {core.mitm_match_count, core.glitch_timer[7:0], core.mitm_replace_byte, core.glitch_fired, core.mitm_match_found, core.glitch_armed, core.glitch_active, core.glitch_pol, core.glitch_pin};
-                default:        wb_rdata_comb = 32'h00000000;
+                ADDR_DATA:        wb_rdata_comb = {24'h000000, rx_fifo_rdata};
+                ADDR_STATUS:      wb_rdata_comb = reg_status;
+                ADDR_CTRL:        wb_rdata_comb = reg_ctrl_read;
+                ADDR_BAUD:        wb_rdata_comb = {16'h0000, reg_baud};
+                ADDR_GPIO:        wb_rdata_comb = reg_gpio_read;
+                ADDR_IMEM_BANK:   wb_rdata_comb = {14'd0, core.active_bank, 1'b0, core.pc, 6'd0, reg_imem_bank};
+                ADDR_AUDIO:       wb_rdata_comb = {core.audio_sample, core.audio_en, core.audio_mode, core.audio_pin, core.audio_preset, core.pdm_bit, 11'd0};
+                ADDR_DEBUG:       wb_rdata_comb = {16'h0000, core.swd_last_ack, core.swd_parity_err, core.swd_en, 3'b000, core.jtag_tdo_sampled, core.jtag_state, core.jtag_tms, core.jtag_tck, core.jtag_en};
+                ADDR_QSPI:        wb_rdata_comb = {core.qspi_addr_reg[15:0], core.qspi_rx_byte, core.qspi_state, core.qspi_cpol, core.qspi_width, core.qspi_en};
+                ADDR_GLITCH:      wb_rdata_comb = {core.mitm_match_count, core.glitch_timer[7:0], core.mitm_replace_byte, core.glitch_fired, core.mitm_match_found, core.glitch_armed, core.glitch_active, core.glitch_pol, core.glitch_pin};
+                ADDR_DMA_CTRL:    wb_rdata_comb = {23'd0, reg_dma_abort, reg_dma_rx_sg_en, reg_dma_rx_irq_en, reg_dma_rx_start, reg_dma_rx_en, reg_dma_tx_sg_en, reg_dma_tx_irq_en, reg_dma_tx_start, reg_dma_tx_en};
+                ADDR_DMA_STATUS:  wb_rdata_comb = dma_status;
+                ADDR_DMA_TX_ADDR: wb_rdata_comb = reg_dma_tx_addr;
+                ADDR_DMA_TX_LEN:  wb_rdata_comb = {16'd0, reg_dma_tx_len};
+                ADDR_DMA_RX_ADDR: wb_rdata_comb = reg_dma_rx_addr;
+                ADDR_DMA_RX_LEN:  wb_rdata_comb = {16'd0, reg_dma_rx_len};
+                ADDR_DMA_TX_DESC: wb_rdata_comb = dma_tx_desc;
+                ADDR_DMA_RX_DESC: wb_rdata_comb = dma_rx_desc;
+                default:          wb_rdata_comb = 32'h00000000;
             endcase
         end
     end
@@ -262,12 +377,28 @@ module OmniBus_Wishbone #(
             reg_irq_tx_empty_en <= 1'b0;
             reg_irq_rx_ready_en <= 1'b0;
             reg_irq_rx_afull_en <= 1'b0;
+            reg_dma_tx_en       <= 1'b0;
+            reg_dma_tx_start    <= 1'b0;
+            reg_dma_tx_irq_en   <= 1'b0;
+            reg_dma_tx_sg_en    <= 1'b0;
+            reg_dma_rx_en       <= 1'b0;
+            reg_dma_rx_start    <= 1'b0;
+            reg_dma_rx_irq_en   <= 1'b0;
+            reg_dma_rx_sg_en    <= 1'b0;
+            reg_dma_abort       <= 1'b0;
+            reg_dma_tx_addr     <= 32'd0;
+            reg_dma_tx_len      <= 16'd0;
+            reg_dma_rx_addr     <= 32'd0;
+            reg_dma_rx_len      <= 16'd0;
             o_wb_ack            <= 1'b0;
             o_wb_data           <= 32'h00000000;
         end else begin
             // Single-cycle self-clearing strobes
-            reg_tx_flush <= 1'b0;
-            reg_rx_flush <= 1'b0;
+            reg_tx_flush     <= 1'b0;
+            reg_rx_flush     <= 1'b0;
+            reg_dma_tx_start <= 1'b0;
+            reg_dma_rx_start <= 1'b0;
+            reg_dma_abort    <= 1'b0;
 
             if (wb_valid && !o_wb_ack) begin
                 o_wb_ack  <= 1'b1;
@@ -289,6 +420,21 @@ module OmniBus_Wishbone #(
                         ADDR_IMEM_BANK: begin
                             reg_imem_bank <= i_wb_data[1:0];
                         end
+                        ADDR_DMA_CTRL: begin
+                            reg_dma_tx_en     <= i_wb_data[0];
+                            reg_dma_tx_start  <= i_wb_data[1];
+                            reg_dma_tx_irq_en <= i_wb_data[2];
+                            reg_dma_tx_sg_en  <= i_wb_data[3];
+                            reg_dma_rx_en     <= i_wb_data[4];
+                            reg_dma_rx_start  <= i_wb_data[5];
+                            reg_dma_rx_irq_en <= i_wb_data[6];
+                            reg_dma_rx_sg_en  <= i_wb_data[7];
+                            reg_dma_abort     <= i_wb_data[8];
+                        end
+                        ADDR_DMA_TX_ADDR: reg_dma_tx_addr <= i_wb_data;
+                        ADDR_DMA_TX_LEN:  reg_dma_tx_len  <= i_wb_data[15:0];
+                        ADDR_DMA_RX_ADDR: reg_dma_rx_addr <= i_wb_data;
+                        ADDR_DMA_RX_LEN:  reg_dma_rx_len  <= i_wb_data[15:0];
                         default: ;
                     endcase
                 end
@@ -301,6 +447,7 @@ module OmniBus_Wishbone #(
     // Interrupt Generation Logic
     assign o_irq = (reg_irq_tx_empty_en && tx_fifo_empty) ||
                    (reg_irq_rx_ready_en && !rx_fifo_empty) ||
-                   (reg_irq_rx_afull_en && rx_fifo_afull);
+                   (reg_irq_rx_afull_en && rx_fifo_afull) ||
+                   dma_irq;
 
 endmodule

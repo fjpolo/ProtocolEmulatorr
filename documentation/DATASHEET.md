@@ -1,9 +1,9 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.7 (Architecture Release — Tasks 01 through 25)  
+**Document Revision**: 1.8 (Architecture Release — Tasks 01 through 26)  
 **Architecture Milestone**: OmniBus Lite (v1.0 Foundation)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
-**Dedicated User Guides**: [GLITCH_MITM_USER_GUIDE.md](GLITCH_MITM_USER_GUIDE.md) (Hardware Fault Injection & Wire-Speed MitM Fuzzing)  
+**Dedicated User Guides**: [GLITCH_MITM_USER_GUIDE.md](GLITCH_MITM_USER_GUIDE.md) (Hardware Fault Injection & Wire-Speed MitM Fuzzing), [task26.md](task26.md) (OmniBus DMA Controller)  
 
 ---
 
@@ -26,6 +26,11 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
 ```
 
 ### Key Architectural Specifications
+- **OmniBus DMA Scatter-Gather Controller & Host Memory Streamer (Task 26)**:
+  - **32-Bit Wishbone B4 Master Interface**: Autonomous direct memory access engine driving host memory bus cycles (`o_m_wb_cyc`, `stb`, `we`, `addr`, `data`, `sel`) with sub-word byte masking.
+  - **Dual-Channel Concurrent Streaming**: Independent TX (Host Memory $\to$ TX FIFO) and RX (RX FIFO $\to$ Host Memory) channels with round-robin memory bus arbitration.
+  - **Hardware Scatter-Gather Descriptor Traversal**: 16-byte linked-list descriptor processor (`buf_addr`, `length/flags`, `next_desc`, `status`) with automatic in-place byte count writebacks and End-of-Transmission (EOT) termination.
+  - **Hardware Interrupts & Abort**: Dedicated interrupt generation (`o_irq`) upon channel completion, with instantaneous soft abort reset control.
 - **Deterministic Zero-Jitter Execution Engine**: Microcode instructions execute in single clock cycles with precision cycle-accurate sidecar delays (up to 5,110 cycles per bit or runtime dynamic baud divisor).
 - **1-Bit Delta-Sigma Audio DAC & 4-Voice Chiptune APU Synthesizer**: 50 MHz 1st-order Delta-Sigma ($\Sigma$-$\Delta$) PDM modulator with $OSR = 1250\times$, single-ended and differential BTL outputs on GPIO pins, 4 polyphonic synthesizer voices (Pulse 1, Pulse 2 with 4 duty cycles, 16-step Triangle, 15-bit/7-bit Galois LFSR Noise), saturation-clamped mixer ($V \le 255$), autonomous hardware sound effects (`BEEP`, `BLIP`, `ERROR`, `COIN`, `LASER`, `SIREN`, `NOISE`), and single-cycle PCM streaming (`OUT AUDIO`).
 - **Hardware Glitch / Fault Injection & Active Wire-Speed MitM Fuzzing Engine**:
@@ -621,6 +626,27 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
   - **Digital Mixer**: Real-time saturation-clamped summation ($V_0 + V_1 + V_2 + V_3 \le 255$).
 - **Autonomous Hardware Sound Effects**: Built-in multi-step preset sequencer for instant sound generation without microcode polling (`BEEP`, `BLIP`, `ERROR`, `COIN`, `LASER`, `SIREN`, `NOISE`).
 - **Direct PCM Streaming**: Single-cycle `OUT AUDIO` sample transfer from OSR directly to DAC for high-speed host PCM sample playback.
+
+### 7. OmniBus DMA Scatter-Gather Controller & Host Memory Streamer (Task 26)
+- **Wishbone B4 Master Bus Interface**:
+  - `o_m_wb_cyc`, `o_m_wb_stb`, `o_m_wb_we`, `o_m_wb_addr[31:0]`, `o_m_wb_data[31:0]`, `o_m_wb_sel[3:0]`.
+  - Driven with single-cycle pipelined transactions, automatic sub-word byte masking, and round-robin bus arbitration between TX and RX channels.
+- **DMA Channel Control & Status Registers (Wishbone Slave Base `0x30..0x4C`)**:
+  - `0x30`: `ADDR_DMA_CTRL` (`tx_en`, `tx_start`, `tx_irq_en`, `tx_sg_en`, `rx_en`, `rx_start`, `rx_irq_en`, `rx_sg_en`, `abort`).
+  - `0x34`: `ADDR_DMA_STATUS` (`tx_busy`, `tx_done`, `tx_err`, `rx_busy`, `rx_done`, `rx_err`, `irq`).
+  - `0x38`: `ADDR_DMA_TX_ADDR` (Host memory source pointer / Descriptor head).
+  - `0x3C`: `ADDR_DMA_TX_LEN` (TX transfer length in bytes, 1..65535).
+  - `0x40`: `ADDR_DMA_RX_ADDR` (Host memory destination pointer / Descriptor head).
+  - `0x44`: `ADDR_DMA_RX_LEN` (RX transfer length in bytes, 1..65535).
+  - `0x48`: `ADDR_DMA_TX_DESC` (Current TX descriptor readback).
+  - `0x4C`: `ADDR_DMA_RX_DESC` (Current RX descriptor readback).
+- **16-Byte Scatter-Gather Descriptor Architecture**:
+  - **Word 0 (+0x00)**: `buf_addr[31:0]` (Host memory buffer pointer).
+  - **Word 1 (+0x04)**: `[31:16]` = Flags (Bit 0 = EOT: End of Table), `[15:0]` = Transfer Length.
+  - **Word 2 (+0x08)**: `next_desc[31:0]` (Pointer to subsequent descriptor in host RAM).
+  - **Word 3 (+0x0C)**: `[15:0]` = Status / Transferred Bytes (Written back by DMA master upon completing buffer).
+- **Host Interrupt Integration**:
+  - Programmable completion IRQ (`tx_irq_en`, `rx_irq_en`) asserted on `o_irq` for zero-overhead OS/driver event notification.
 
 ---
 

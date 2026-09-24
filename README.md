@@ -30,6 +30,7 @@ All ready-to-run microcode demonstrators, interactive terminals, and test harnes
 
 | Script | Protocol / Feature | Mode & Description |
 | :--- | :--- | :--- |
+| [`scripts/run_dma.bat`](scripts/run_dma.bat) | **OmniBus DMA Controller** | 32-bit Wishbone B4 Master dual-channel memory streamer & Scatter-Gather linked-list test suite. |
 | [`scripts/run_glitch.bat`](scripts/run_glitch.bat) | **Hardware Glitch & MitM Engine** | Sub-cycle crowbar pulse generator, wire-speed pattern matching & real-time byte mutation terminal. |
 | [`scripts/run_qspi.bat`](scripts/run_qspi.bat) | **Quad-SPI / Octal Host** | Autonomous Winbond W25Q Quad Fast Read (`0xEB`), 24/32-bit address & dummy cycles. |
 | [`scripts/run_jtag.bat`](scripts/run_jtag.bat) | **JTAG & ARM SWD** | IEEE 1149.1 TAP state navigation, RISC-V IDCODE scan, and ARM CoreSight SWD probe. |
@@ -72,15 +73,17 @@ All ready-to-run microcode demonstrators, interactive terminals, and test harnes
 * [Task 23 — Dedicated Hardware JTAG TAP Controller & ARM SWD Sequencer](documentation/task23.md)
 * [Task 24 — Quad-SPI & Multi-Lane Flash/PSRAM Hardware Host Controller](documentation/task24.md)
 * [Task 25 — Hardware Glitch / Fault Injection & Active Wire-Speed MitM Fuzzing Engine](documentation/task25.md)
+* [Task 26 — OmniBus DMA Scatter-Gather Controller & Host Memory Streamer](documentation/task26.md)
 
 ---
 
-## OmniBus Lite: The Complete Architectural Foundation (Tasks 01–25)
+## OmniBus Architecture Release (Tasks 01–26)
 
-Tasks 01 through 25 establish **OmniBus Lite**—a production-grade, self-contained, silicon-ready protocol processor core:
-* **100% Regression Pass Rate**: All **82 self-checking Cocotb testcases** (75 core + 7 Wishbone) pass with 0 failures, 0 skips, and 0 regressions.
-* **Proven Silicon Footprint**: ~22,000 standard cells, fitting comfortably within the Tiny Tapeout 6×4 tile allocation on IHP 130nm CMOS5L (~0.72 mm²).
+Tasks 01 through 26 establish **OmniBus** as a production-grade, self-contained, silicon-ready protocol processor core:
+* **100% Regression Pass Rate**: All **86 self-checking Cocotb testcases** (75 core + 11 Wishbone/DMA) pass with 0 failures, 0 skips, and 0 regressions.
+* **Proven Silicon Footprint**: ~24,000 standard cells, fitting comfortably within the Tiny Tapeout 6×4 tile allocation on IHP 130nm CMOS5L (~0.72 mm²).
 * **Broad Physical Protocol Coverage**:
+  - **Host Memory DMA & Streaming**: 32-bit Wishbone B4 Master interface, dual-channel (TX/RX) memory streaming, 16-byte linked-list Scatter-Gather descriptor processing with status write-backs, and completion interrupts.
   - **Hardware Security & Fuzzing**: Sub-cycle precision crowbar & glitch pulse generation (1..255 cycles, 20 ns resolution @ 50 MHz), 16-bit countdown delay (0..65535 cycles), autonomous wire-speed pattern matching with wildcard bitmask, real-time in-flight byte mutation, and Wishbone telemetry (`0x24`).
   - **Serial & Industrial**: UART (300 baud – 25 Mbps), SPI (Modes 0–3 up to 25 MHz), I2C Master & Autonomous Hardware Slave with Clock Stretching, 1-Wire, USB 1.1 (NRZI & Bit-Stuffing), CAN 2.0.
   - **High-Speed Multi-Lane**: Single, Dual, Quad, and Octal-SPI (xSPI / OSPI) NOR Flash and PSRAM host engine.

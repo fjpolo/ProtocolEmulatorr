@@ -23,13 +23,83 @@ from cocotb.triggers import RisingEdge, ClockCycles, Timer
 
 CLK_PERIOD_NS = 20  # 50 MHz clock
 
-ADDR_DATA      = 0x00
-ADDR_STATUS    = 0x04
-ADDR_CTRL      = 0x08
-ADDR_BAUD      = 0x0C
-ADDR_GPIO      = 0x10
-ADDR_IMEM_BANK = 0x14
-ADDR_IMEM      = 0x80
+ADDR_DATA        = 0x00
+ADDR_STATUS      = 0x04
+ADDR_CTRL        = 0x08
+ADDR_BAUD        = 0x0C
+ADDR_GPIO        = 0x10
+ADDR_IMEM_BANK   = 0x14
+ADDR_AUDIO       = 0x18
+ADDR_DEBUG       = 0x1C
+ADDR_QSPI        = 0x20
+ADDR_GLITCH      = 0x24
+ADDR_DMA_CTRL    = 0x30
+ADDR_DMA_STATUS  = 0x34
+ADDR_DMA_TX_ADDR = 0x38
+ADDR_DMA_TX_LEN  = 0x3C
+ADDR_DMA_RX_ADDR = 0x40
+ADDR_DMA_RX_LEN  = 0x44
+ADDR_DMA_TX_DESC = 0x48
+ADDR_DMA_RX_DESC = 0x4C
+ADDR_IMEM        = 0x80
+
+
+class WishboneMemorySlave:
+    """Simulates host system RAM responding to DMA Master bus requests."""
+
+    def __init__(self, dut, clk):
+        self.dut = dut
+        self.clk = clk
+        self.mem = {}
+        self.dut.i_m_wb_ack.value = 0
+        self.dut.i_m_wb_err.value = 0
+        self.dut.i_m_wb_data.value = 0
+        self._running = True
+
+    def write_byte(self, addr, val):
+        self.mem[addr] = val & 0xFF
+
+    def read_byte(self, addr):
+        return self.mem.get(addr, 0x00)
+
+    def write_word(self, addr, val):
+        self.write_byte(addr + 0, val & 0xFF)
+        self.write_byte(addr + 1, (val >> 8) & 0xFF)
+        self.write_byte(addr + 2, (val >> 16) & 0xFF)
+        self.write_byte(addr + 3, (val >> 24) & 0xFF)
+
+    def read_word(self, addr):
+        b0 = self.read_byte(addr + 0)
+        b1 = self.read_byte(addr + 1)
+        b2 = self.read_byte(addr + 2)
+        b3 = self.read_byte(addr + 3)
+        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+
+    async def run(self):
+        while self._running:
+            await RisingEdge(self.clk)
+            if int(self.dut.o_m_wb_cyc.value) == 1 and int(self.dut.o_m_wb_stb.value) == 1:
+                addr = int(self.dut.o_m_wb_addr.value)
+                we   = int(self.dut.o_m_wb_we.value)
+                sel  = int(self.dut.o_m_wb_sel.value)
+                if we == 1:
+                    wdata = int(self.dut.o_m_wb_data.value)
+                    if sel & 0x1: self.write_byte(addr + 0, wdata & 0xFF)
+                    if sel & 0x2: self.write_byte(addr + 1, (wdata >> 8) & 0xFF)
+                    if sel & 0x4: self.write_byte(addr + 2, (wdata >> 16) & 0xFF)
+                    if sel & 0x8: self.write_byte(addr + 3, (wdata >> 24) & 0xFF)
+                else:
+                    self.dut.i_m_wb_data.value = self.read_word(addr)
+
+                self.dut.i_m_wb_ack.value = 1
+                await RisingEdge(self.clk)
+                self.dut.i_m_wb_ack.value = 0
+            else:
+                self.dut.i_m_wb_ack.value = 0
+
+    def stop(self):
+        self._running = False
+
 
 
 class WishboneMaster:
@@ -89,6 +159,9 @@ async def reset_dut(dut):
     dut.i_wb_sel.value   = 0
     dut.i_gpio.value     = 0xFF
     dut.i_rx.value       = 1
+    dut.i_m_wb_ack.value  = 0
+    dut.i_m_wb_err.value  = 0
+    dut.i_m_wb_data.value = 0
     await ClockCycles(dut.i_wb_clk, 5)
     dut.i_wb_rst_n.value = 1
     await ClockCycles(dut.i_wb_clk, 2)
@@ -439,3 +512,254 @@ halt:
     dut._log.info(f"Configured ADDR_GLITCH: 0x{val:08X}")
     assert val == 0x0000BE2C, f"Expected 0x0000BE2C, got 0x{val:08X}"
     dut._log.info("Wishbone Glitch & MitM Telemetry Register (0x24) test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 8: DMA Linear TX Channel (Host Memory -> TX FIFO)
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_dma_linear_tx(dut):
+    """Test 26A: Verify DMA Linear Memory-to-TX-FIFO transfer."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+    mem = WishboneMemorySlave(dut, dut.i_wb_clk)
+    cocotb.start_soon(mem.run())
+
+    # 1. Populate system memory at 0x1000 with 16 test bytes
+    tx_data = [
+        0x10, 0x11, 0x12, 0x13,
+        0x20, 0x21, 0x22, 0x23,
+        0x30, 0x31, 0x32, 0x33,
+        0x40, 0x41, 0x42, 0x43
+    ]
+    for idx, b in enumerate(tx_data):
+        mem.write_byte(0x1000 + idx, b)
+
+    # 2. Place core in programming mode and flush TX FIFO
+    await wb.write(ADDR_CTRL, 0x06) # prog_en=1, tx_flush=1
+    await ClockCycles(dut.i_wb_clk, 5)
+
+    # 3. Configure DMA TX Channel
+    await wb.write(ADDR_DMA_TX_ADDR, 0x00001000)
+    await wb.write(ADDR_DMA_TX_LEN, 16)
+
+    # 4. Trigger DMA TX transfer (tx_en=1, tx_start=1)
+    await wb.write(ADDR_DMA_CTRL, 0x03)
+
+    # 5. Poll ADDR_DMA_STATUS until transfer finishes (tx_busy==0 and tx_done==1)
+    for _ in range(100):
+        await ClockCycles(dut.i_wb_clk, 2)
+        status = await wb.read(ADDR_DMA_STATUS)
+        if (status & 0x01) == 0 and (status & 0x02) != 0:
+            break
+    else:
+        assert False, f"DMA TX did not complete in time, status: 0x{status:08X}"
+
+    dut._log.info(f"DMA TX Complete! Status: 0x{status:08X}")
+
+    # 6. Verify TX FIFO level in ADDR_STATUS is 16
+    stat = await wb.read(ADDR_STATUS)
+    tx_level = (stat >> 8) & 0xFF
+    dut._log.info(f"TX FIFO Level after DMA: {tx_level}")
+    assert tx_level == 16, f"Expected 16 bytes in TX FIFO, got {tx_level}"
+
+    # 7. Read and verify all 16 bytes popped from TX FIFO
+    popped_bytes = []
+    for i in range(16):
+        await RisingEdge(dut.i_wb_clk)
+        b = int(dut.tx_fifo_rdata.value)
+        popped_bytes.append(b)
+        dut.core.o_tx_pop.value = 1
+        await RisingEdge(dut.i_wb_clk)
+        dut.core.o_tx_pop.value = 0
+
+    dut._log.info(f"Popped bytes: {[hex(x) for x in popped_bytes]}")
+    assert popped_bytes == tx_data, f"Data mismatch! Expected {tx_data}, got {popped_bytes}"
+    mem.stop()
+    dut._log.info("DMA Linear TX Channel test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 9: DMA Linear RX Channel (RX FIFO -> Host Memory)
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_dma_linear_rx(dut):
+    """Test 26B: Verify DMA Linear RX-FIFO-to-Memory capture."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+    mem = WishboneMemorySlave(dut, dut.i_wb_clk)
+    cocotb.start_soon(mem.run())
+
+    rx_test_bytes = [0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC]
+
+    # 1. Place core in programming mode and flush RX FIFO
+    await wb.write(ADDR_CTRL, 0x0A) # prog_en=1, rx_flush=1
+    await ClockCycles(dut.i_wb_clk, 5)
+
+    # 2. Push 8 test bytes into rx_fifo
+    for b in rx_test_bytes:
+        await RisingEdge(dut.i_wb_clk)
+        dut.core.o_data.value = b
+        dut.core.o_rx_push.value = 1
+        await RisingEdge(dut.i_wb_clk)
+        dut.core.o_rx_push.value = 0
+
+    await ClockCycles(dut.i_wb_clk, 2)
+    stat = await wb.read(ADDR_STATUS)
+    rx_level = (stat >> 16) & 0xFF
+    dut._log.info(f"RX FIFO Level before DMA: {rx_level}")
+    assert rx_level == 8, f"Expected 8 bytes in RX FIFO, got {rx_level}"
+
+    # 3. Configure RX DMA
+    await wb.write(ADDR_DMA_RX_ADDR, 0x00002000)
+    await wb.write(ADDR_DMA_RX_LEN, 8)
+
+    # 4. Trigger RX DMA (rx_en=1, rx_start=1) -> bits [5, 4] = 0x30
+    await wb.write(ADDR_DMA_CTRL, 0x30)
+
+    # 5. Poll ADDR_DMA_STATUS until rx_done is asserted
+    for _ in range(150):
+        await ClockCycles(dut.i_wb_clk, 2)
+        status = await wb.read(ADDR_DMA_STATUS)
+        if (status & 0x10) == 0 and (status & 0x20) != 0:
+            break
+    else:
+        assert False, f"DMA RX did not complete in time, status: 0x{status:08X}"
+
+    dut._log.info(f"DMA RX Complete! Status: 0x{status:08X}")
+
+    # 6. Verify memory contents at 0x2000..0x2007
+    captured = [mem.read_byte(0x00002000 + i) for i in range(8)]
+    dut._log.info(f"Memory captured bytes: {[hex(x) for x in captured]}")
+    assert captured == rx_test_bytes, f"RX Data mismatch! Expected {rx_test_bytes}, got {captured}"
+    mem.stop()
+    dut._log.info("DMA Linear RX Channel test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 10: DMA Scatter-Gather Chained Descriptors (TX Channel)
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_dma_scatter_gather_chain(dut):
+    """Test 26C: Verify 2-stage Scatter-Gather linked-list descriptor traversal."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+    mem = WishboneMemorySlave(dut, dut.i_wb_clk)
+    cocotb.start_soon(mem.run())
+
+    # Descriptor 1 @ 0x3000: 4 bytes from 0x4000, next = 0x3010, flags = 0
+    mem.write_word(0x3000, 0x00004000)               # Word 0: buf_addr
+    mem.write_word(0x3004, (0x0000 << 16) | 4)        # Word 1: flags=0, len=4
+    mem.write_word(0x3008, 0x00003010)               # Word 2: next_desc = 0x3010
+    mem.write_word(0x300C, 0x00000000)               # Word 3: status
+
+    # Descriptor 2 @ 0x3010: 4 bytes from 0x4010, next = 0x0000, flags = 1 (EOT)
+    mem.write_word(0x3010, 0x00004010)               # Word 0: buf_addr
+    mem.write_word(0x3014, (0x0001 << 16) | 4)        # Word 1: flags=EOT(bit 16), len=4
+    mem.write_word(0x3018, 0x00000000)               # Word 2: next_desc
+    mem.write_word(0x301C, 0x00000000)               # Word 3: status
+
+    # Data buffers
+    buf1 = [0xCA, 0xFE, 0xBA, 0xBE]
+    buf2 = [0xDE, 0xAD, 0xBE, 0xEF]
+    for idx, b in enumerate(buf1):
+        mem.write_byte(0x4000 + idx, b)
+    for idx, b in enumerate(buf2):
+        mem.write_byte(0x4010 + idx, b)
+
+    # Halt core and flush FIFO
+    await wb.write(ADDR_CTRL, 0x06)
+    await ClockCycles(dut.i_wb_clk, 5)
+
+    # Configure DMA for Scatter-Gather:
+    # ADDR_DMA_TX_ADDR = 0x3000 (first descriptor)
+    await wb.write(ADDR_DMA_TX_ADDR, 0x00003000)
+    # Trigger SG TX: tx_en=1, tx_start=1, tx_sg_en=1 -> bits [3, 1, 0] = 0x0B
+    await wb.write(ADDR_DMA_CTRL, 0x0B)
+
+    # Poll until complete
+    for _ in range(150):
+        await ClockCycles(dut.i_wb_clk, 2)
+        status = await wb.read(ADDR_DMA_STATUS)
+        if (status & 0x01) == 0 and (status & 0x02) != 0:
+            break
+    else:
+        assert False, f"Scatter-gather DMA did not complete, status: 0x{status:08X}"
+
+    dut._log.info(f"Scatter-Gather DMA Complete! Status: 0x{status:08X}")
+
+    # Verify status write-backs in memory
+    st1 = mem.read_word(0x300C)
+    st2 = mem.read_word(0x301C)
+    dut._log.info(f"Desc1 status: 0x{st1:08X}, Desc2 status: 0x{st2:08X}")
+    assert (st1 & 0xFFFF) == 4, f"Expected 4 bytes transferred for Desc1, got {st1}"
+    assert (st2 & 0xFFFF) == 4, f"Expected 4 bytes transferred for Desc2, got {st2}"
+
+    # Verify 8 total bytes in TX FIFO
+    popped = []
+    for _ in range(8):
+        await RisingEdge(dut.i_wb_clk)
+        popped.append(int(dut.tx_fifo_rdata.value))
+        dut.core.o_tx_pop.value = 1
+        await RisingEdge(dut.i_wb_clk)
+        dut.core.o_tx_pop.value = 0
+
+    expected = buf1 + buf2
+    dut._log.info(f"Scatter-Gather popped bytes: {[hex(x) for x in popped]}")
+    assert popped == expected, f"Expected {expected}, got {popped}"
+    mem.stop()
+    dut._log.info("DMA Scatter-Gather Chained Descriptors test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 11: DMA Interrupt Generation & Abort Logic
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_dma_irq_and_abort(dut):
+    """Test 26D: Verify DMA completion interrupt assertion and software abort."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+    mem = WishboneMemorySlave(dut, dut.i_wb_clk)
+    cocotb.start_soon(mem.run())
+
+    # 1. Verify o_irq initially low
+    assert int(dut.o_irq.value) == 0
+
+    # 2. Populate 4 bytes in memory
+    for i in range(4):
+        mem.write_byte(0x1000 + i, 0x11 * (i + 1))
+
+    # Halt core and flush FIFO
+    await wb.write(ADDR_CTRL, 0x06)
+    await ClockCycles(dut.i_wb_clk, 5)
+
+    # 3. Start TX DMA with tx_irq_en (bit 2) + tx_en (bit 0) + tx_start (bit 1) = 0x07
+    await wb.write(ADDR_DMA_TX_ADDR, 0x00001000)
+    await wb.write(ADDR_DMA_TX_LEN, 4)
+    await wb.write(ADDR_DMA_CTRL, 0x07)
+
+    # 4. Wait for transfer done
+    for _ in range(50):
+        await ClockCycles(dut.i_wb_clk, 2)
+        status = await wb.read(ADDR_DMA_STATUS)
+        if (status & 0x02) != 0:
+            break
+
+    # 5. Verify interrupt asserted on completion
+    assert int(dut.o_irq.value) == 1, "Expected o_irq to assert after DMA TX Done!"
+    dut._log.info("DMA Interrupt asserted successfully!")
+
+    # 6. Test Abort
+    await wb.write(ADDR_DMA_CTRL, 0x0100) # abort = bit 8
+    await ClockCycles(dut.i_wb_clk, 2)
+    st = await wb.read(ADDR_DMA_STATUS)
+    assert (st & 0x01) == 0, f"Expected tx_busy == 0 after abort, got: 0x{st:08X}"
+    assert (st & 0x10) == 0, f"Expected rx_busy == 0 after abort, got: 0x{st:08X}"
+
+    mem.stop()
+    dut._log.info("DMA Interrupt Generation & Abort test PASSED!")
+
