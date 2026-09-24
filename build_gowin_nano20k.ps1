@@ -19,7 +19,7 @@
 [CmdletBinding(PositionalBinding = $false)]
 param (
     [ValidateSet("console60k", "nano20k", "nano9k")]
-    [string]$Board = "console60k",
+    [string]$Board = "nano20k",
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$RemainingArgs

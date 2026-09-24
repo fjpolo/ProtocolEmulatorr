@@ -3,10 +3,10 @@
 An open-source, general-purpose protocol emulator ASIC targeting the **Jane Street and Tiny Tapeout ASIC Competition** (IHP 130nm CMOS5L process, 6x4 tile allocation).
 
 > Detailed Specifications:
-> - Hardware Datasheet & Terminal Specifications: [DATASHEET.md](DATASHEET.md)
-> - Glitch / Fault Injector & MitM Engine User Guide: [GLITCH_MITM_USER_GUIDE.md](GLITCH_MITM_USER_GUIDE.md)
-> - Architecture and Hardware ISA: [CONCEPT.md](CONCEPT.md)
-> - Assembler, Compiler, and Toolchain: [TOOLCHAIN_CONCEPT.md](TOOLCHAIN_CONCEPT.md)
+> - Hardware Datasheet & Terminal Specifications: [DATASHEET.md](documentation/DATASHEET.md)
+> - Glitch / Fault Injector & MitM Engine User Guide: [GLITCH_MITM_USER_GUIDE.md](documentation/GLITCH_MITM_USER_GUIDE.md)
+> - Architecture and Hardware ISA: [CONCEPT.md](documentation/CONCEPT.md)
+> - Assembler, Compiler, and Toolchain: [TOOLCHAIN_CONCEPT.md](documentation/TOOLCHAIN_CONCEPT.md)
 
 ## Overview
 **OmniBus** operates in three distinct modes:
@@ -23,34 +23,55 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 * **Unified 8-Bit Bidirectional GPIO Bus**: Dynamic role mapping (`PINMAP`) and per-pin open-drain configuration (`CFG_OD`) allowing arbitrary protocol routing across GPIOs 0..7
 * **Multi-Target Prototyping**: Complete build and test flows for Sipeed Tang Console 60K, Nano 20K, and Nano 9K before CMOS5L tapeout
 
+
+## Demonstration & Protocol Scripts
+
+All ready-to-run microcode demonstrators, interactive terminals, and test harnesses are located in [`scripts/`](scripts/):
+
+| Script | Protocol / Feature | Mode & Description |
+| :--- | :--- | :--- |
+| [`scripts/run_glitch.bat`](scripts/run_glitch.bat) | **Hardware Glitch & MitM Engine** | Sub-cycle crowbar pulse generator, wire-speed pattern matching & real-time byte mutation terminal. |
+| [`scripts/run_qspi.bat`](scripts/run_qspi.bat) | **Quad-SPI / Octal Host** | Autonomous Winbond W25Q Quad Fast Read (`0xEB`), 24/32-bit address & dummy cycles. |
+| [`scripts/run_jtag.bat`](scripts/run_jtag.bat) | **JTAG & ARM SWD** | IEEE 1149.1 TAP state navigation, RISC-V IDCODE scan, and ARM CoreSight SWD probe. |
+| [`scripts/run_audio.bat`](scripts/run_audio.bat) | **Audio DAC & Chiptune APU** | 50 MHz 1st-order Delta-Sigma ($\Sigma$-$\Delta$) PDM DAC & 4-voice polyphonic synthesizer. |
+| [`scripts/run_i2c_slave.bat`](scripts/run_i2c_slave.bat) | **Hardware I2C Slave** | Autonomous SCL/SDA framing, hardware address matching, clock stretching & 24C02 EEPROM. |
+| [`scripts/run_crc32.bat`](scripts/run_crc32.bat) | **Hardware CRC-32 / CRC-5** | IEEE 802.3 Ethernet FCS 32-bit CRC calculation & USB 1.1 token CRC-5 verification. |
+| [`scripts/run_manch.bat`](scripts/run_manch.bat) | **Manchester / BMC Engine** | 10BASE-T Ethernet, S/PDIF, and DALI transceiver with hardware violation detection. |
+| [`scripts/run_pulse.bat`](scripts/run_pulse.bat) | **Pulse & Retro Gamepads** | WS2812B NeoPixel RGB LED streaming, Nintendo N64/GC Joybus, and NES/SNES controllers. |
+| [`scripts/run_usb.bat`](scripts/run_usb.bat) | **Stream Accelerators** | Autonomous NRZI encoding/decoding and USB 1.1 / CAN bit-stuffing/de-stuffing. |
+| [`scripts/run_imem.bat`](scripts/run_imem.bat) | **IMEM Bank Switching** | 128-word microcode execution across Banks 0..3 with hot-reloading. |
+| [`scripts/run_alu.bat`](scripts/run_alu.bat) | **8-Bit Micro-ALU** | Interactive ASCII classification, uppercase conversion, and self-test harness. |
+| [`scripts/run_echo_configurable.bat`](scripts/run_echo_configurable.bat) | **Configurable UART Echo** | Dynamic runtime baud rate divisor configuration (300 baud – 25 Mbps). |
+| [`scripts/run_spi_generic.bat`](scripts/run_spi_generic.bat) | **SPI Master** | Full-duplex synchronous SPI transmission and reception with auto-SCK generation. |
+
 ## Architecture Specifications
 
-* [Task 01 — Baseline Engine & ALU](task01.md)
-* [Task 02 — Sidecar Delays & Opcode Decoding](task02.md)
-* [Task 03 — Mid-Bit Deserialization & Edge Wait](task03.md)
-* [Task 04 — In-Band Microcode Bootloader](task04.md)
-* [Task 05 — Hardware Subroutine Call Stack](task05.md)
-* [Task 06 — Runtime-Configurable Baud Divisor](task06.md)
-* [Task 07 — SPI Master & Auto-SCK Serialization](task07.md)
-* [Task 07C — Unified 8-Bit GPIO Bus & Dynamic Pin Mapping](task07c.md)
-* [Task 08 — I2C Master in Microcode (Loopback Mode)](task08.md)
-* [Task 09 — Zero-Overhead Hardware Loop Counters](task09.md)
-* [Task 10 — Bidirectional SERDES & Full-Duplex Architecture](task10.md)
-* [Task 11 — Hardware FIFO Handshaking & Status Flags](task11.md)
-* [Task 12 — 1-Wire Protocol & Hardware Serializer/Deserializer](task12.md)
-* [Task 13 — Hardware CRC Generator & Checksum Accelerator](task13.md)
-* [Task 14 — Parameterized FIFO Subsystem & Wishbone B4 Slave Wrapper](task14.md)
-* [Task 15 — 8-bit Micro-ALU & Arithmetic Engine](task15.md)
-* [Task 16 — 128-Word IMEM Expansion & 4-Bank Switching](task16.md)
-* [Task 17 — Autonomous Stream Accelerators: NRZI & Bit-Stuffer/De-stuffer](task17.md)
-* [Task 18 — Asymmetric Single-Wire & Retro Physical Protocol Accelerators](task18.md)
-* [Task 19 — Autonomous Manchester / Biphase Mark Stream Accelerator](task19.md)
-* [Task 20 — Hardware CRC-32 (Ethernet FCS) & CRC-5 Engine](task20.md)
-* [Task 21 — Dedicated Hardware I2C / SMBus Slave Engine](task21.md)
-* [Task 22 — 1-Bit Delta-Sigma Audio DAC & Chiptune PDM Synthesizer Engine](task22.md)
-* [Task 23 — Dedicated Hardware JTAG TAP Controller & ARM SWD Sequencer](task23.md)
-* [Task 24 — Quad-SPI & Multi-Lane Flash/PSRAM Hardware Host Controller](task24.md)
-* [Task 25 — Hardware Glitch / Fault Injection & Active Wire-Speed MitM Fuzzing Engine](task25.md)
+* [Task 01 — Baseline Engine & ALU](documentation/task01.md)
+* [Task 02 — Sidecar Delays & Opcode Decoding](documentation/task02.md)
+* [Task 03 — Mid-Bit Deserialization & Edge Wait](documentation/task03.md)
+* [Task 04 — In-Band Microcode Bootloader](documentation/task04.md)
+* [Task 05 — Hardware Subroutine Call Stack](documentation/task05.md)
+* [Task 06 — Runtime-Configurable Baud Divisor](documentation/task06.md)
+* [Task 07 — SPI Master & Auto-SCK Serialization](documentation/task07.md)
+* [Task 07C — Unified 8-Bit GPIO Bus & Dynamic Pin Mapping](documentation/task07c.md)
+* [Task 08 — I2C Master in Microcode (Loopback Mode)](documentation/task08.md)
+* [Task 09 — Zero-Overhead Hardware Loop Counters](documentation/task09.md)
+* [Task 10 — Bidirectional SERDES & Full-Duplex Architecture](documentation/task10.md)
+* [Task 11 — Hardware FIFO Handshaking & Status Flags](documentation/task11.md)
+* [Task 12 — 1-Wire Protocol & Hardware Serializer/Deserializer](documentation/task12.md)
+* [Task 13 — Hardware CRC Generator & Checksum Accelerator](documentation/task13.md)
+* [Task 14 — Parameterized FIFO Subsystem & Wishbone B4 Slave Wrapper](documentation/task14.md)
+* [Task 15 — 8-bit Micro-ALU & Arithmetic Engine](documentation/task15.md)
+* [Task 16 — 128-Word IMEM Expansion & 4-Bank Switching](documentation/task16.md)
+* [Task 17 — Autonomous Stream Accelerators: NRZI & Bit-Stuffer/De-stuffer](documentation/task17.md)
+* [Task 18 — Asymmetric Single-Wire & Retro Physical Protocol Accelerators](documentation/task18.md)
+* [Task 19 — Autonomous Manchester / Biphase Mark Stream Accelerator](documentation/task19.md)
+* [Task 20 — Hardware CRC-32 (Ethernet FCS) & CRC-5 Engine](documentation/task20.md)
+* [Task 21 — Dedicated Hardware I2C / SMBus Slave Engine](documentation/task21.md)
+* [Task 22 — 1-Bit Delta-Sigma Audio DAC & Chiptune PDM Synthesizer Engine](documentation/task22.md)
+* [Task 23 — Dedicated Hardware JTAG TAP Controller & ARM SWD Sequencer](documentation/task23.md)
+* [Task 24 — Quad-SPI & Multi-Lane Flash/PSRAM Hardware Host Controller](documentation/task24.md)
+* [Task 25 — Hardware Glitch / Fault Injection & Active Wire-Speed MitM Fuzzing Engine](documentation/task25.md)
 
 ---
 
@@ -111,25 +132,25 @@ The repository includes ready-to-build Gowin EDA projects under `boards/sipeed/`
 # Build Tang Console 60K (synthesis, PnR, bitstream generation)
 build_console60k.bat
 
-# Multi-board launcher (default: console60k)
-build_gowin.bat -Board console60k
-build_gowin.bat -Board nano20k
-build_gowin.bat -Board nano9k
+# Build Tang Nano 20K launcher (default: nano20k)
+build_gowin_nano20k.bat
+build_gowin_nano20k.bat -Board nano20k
+build_gowin_nano20k.bat -Board nano9k
 
 # Clean build artifacts before compiling
-build_gowin.bat -Board console60k -Clean
+build_gowin_nano20k.bat -Clean
 
 # Run logic synthesis only
-build_gowin.bat -Board console60k -Target syn
+build_gowin_nano20k.bat -Target syn
 
 # Program directly to volatile SRAM
-build_gowin.bat -Board console60k -Flash sram
+build_gowin_nano20k.bat -Flash sram
 
 # Program to persistent external SPI Flash
-build_gowin.bat -Board console60k -Flash flash
+build_gowin_nano20k.bat -Flash flash
 
 # Scan for connected JTAG cables and devices
-build_gowin.bat -Board console60k -Scan
+build_gowin_nano20k.bat -Scan
 ```
 
 ## FPGA Debugging with Manta Logic Analyzer
