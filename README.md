@@ -16,7 +16,7 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 ## Key Innovations
 
 * **Deterministic 16-bit ISA**: Single-cycle execution with hardware sidecar delays (0-31 cycles)
-* **Autonomous Stream Accelerators**: On-the-fly NRZI, Bit-Stuffing (USB/CAN), Manchester encoding, multi-polynomial CRC (CRC-5/8/16/32 Ethernet FCS), dedicated hardware I2C / SMBus slave engine with autonomous address matching and clock stretching, 1-Bit Delta-Sigma Audio DAC & Chiptune PDM Synthesizer, and IEEE 1149.1 JTAG TAP Controller & ARM SWD Hardware Sequencer (supporting RISC-V DTM & ARM CoreSight)
+* **Autonomous Stream Accelerators**: On-the-fly NRZI, Bit-Stuffing (USB/CAN), Manchester encoding, multi-polynomial CRC (CRC-5/8/16/32 Ethernet FCS), dedicated hardware I2C / SMBus slave engine with autonomous address matching and clock stretching, 1-Bit Delta-Sigma Audio DAC & Chiptune PDM Synthesizer, IEEE 1149.1 JTAG TAP Controller & ARM SWD Sequencer, and Quad-SPI (QSPI) / Dual / Octal-SPI Multi-Lane Flash & PSRAM Host Controller
 * **Wire-Speed MitM and Glitch Injection**: Dynamic rule-based byte replacement and sub-cycle fault triggering
 * **Retro and Creative Physical Protocols**: Native support for N64/GameCube Joybus, NES/SNES gamepads, NeoPixel LED strips, and 4-voice polyphonic chiptune audio APU
 * **Unified 8-Bit Bidirectional GPIO Bus**: Dynamic role mapping (`PINMAP`) and per-pin open-drain configuration (`CFG_OD`) allowing arbitrary protocol routing across GPIOs 0..7
@@ -48,6 +48,7 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 * [Task 21 — Dedicated Hardware I2C / SMBus Slave Engine](task21.md)
 * [Task 22 — 1-Bit Delta-Sigma Audio DAC & Chiptune PDM Synthesizer Engine](task22.md)
 * [Task 23 — Dedicated Hardware JTAG TAP Controller & ARM SWD Sequencer](task23.md)
+* [Task 24 — Quad-SPI & Multi-Lane Flash/PSRAM Hardware Host Controller](task24.md)
 
 ## Usage
 

@@ -4620,3 +4620,448 @@ halt:
 
 
 
+
+
+# =============================================================================
+# Task 24: Quad-SPI & Multi-Lane Flash/PSRAM Hardware Host Controller Tests
+# =============================================================================
+
+class QSPIFlashModel:
+    """Simulates a Quad/Dual/Octal SPI Flash (e.g. Winbond W25Q128 / APMemory PSRAM)."""
+    def __init__(self, dut):
+        self.dut = dut
+        self.sck_pin = 1
+        self.cs_pin = 2
+        self.tx_pin = 0   # IO0
+        self.rx_pin = 3   # IO1
+        self.io2_pin = 4  # IO2
+        self.io3_pin = 5  # IO3
+        self.memory = {}
+        self.captured_writes = []
+        self.running = False
+        self._task = None
+
+    def start(self):
+        self._task = cocotb.start_soon(self.run())
+
+    def stop(self):
+        self.running = False
+        if self._task:
+            self._task.cancel()
+
+    def set_byte(self, addr, val):
+        self.memory[addr] = val & 0xFF
+
+    async def run(self):
+        self.running = True
+        prev_sclk = 0
+        state = "IDLE"
+        cmd = 0
+        cmd_bit_cnt = 0
+        addr = 0
+        addr_clock_cnt = 0
+        dummy_clock_cnt = 0
+        target_dummy = 6
+        read_addr = 0
+        read_byte_idx = 0
+        nibble_phase = 0
+        pair_phase = 0
+
+        while self.running:
+            await RisingEdge(self.dut.i_clk)
+            gpio_out = int(self.dut.o_gpio.value) if self.dut.o_gpio.value.is_resolvable else 0
+            cs_val = (gpio_out >> self.cs_pin) & 1
+            sclk = (gpio_out >> self.sck_pin) & 1
+
+            if cs_val == 1:
+                # CS# is deasserted high
+                state = "IDLE"
+                cmd = 0
+                cmd_bit_cnt = 0
+                addr = 0
+                addr_clock_cnt = 0
+                dummy_clock_cnt = 0
+                nibble_phase = 0
+                pair_phase = 0
+                prev_sclk = sclk
+                # Release inputs to 0
+                curr_in = int(self.dut.i_gpio.value) if self.dut.i_gpio.value.is_resolvable else 0
+                val = curr_in & ~((1 << self.tx_pin) | (1 << self.rx_pin) | (1 << self.io2_pin) | (1 << self.io3_pin))
+                self.dut.i_gpio.value = val
+                self.dut.i_rx.value = 0
+                continue
+
+            # CS# is asserted low:
+            # 1. SCK Rising Edge: Sample inputs from host
+            if prev_sclk == 0 and sclk == 1:
+                if state == "IDLE":
+                    state = "CMD"
+                    cmd = (gpio_out >> self.tx_pin) & 1
+                    cmd_bit_cnt = 1
+                elif state == "CMD":
+                    cmd = (cmd << 1) | ((gpio_out >> self.tx_pin) & 1)
+                    cmd_bit_cnt += 1
+                    if cmd_bit_cnt == 8:
+                        if cmd == 0xEB: # Quad Fast Read 1-4-4
+                            state = "ADDR_QUAD"
+                            addr = 0
+                            addr_clock_cnt = 0
+                        elif cmd == 0x3B: # Dual Read
+                            state = "ADDR_DUAL"
+                            addr = 0
+                            addr_clock_cnt = 0
+                        elif cmd == 0x02: # Page Program Quad
+                            state = "ADDR_QUAD_WR"
+                            addr = 0
+                            addr_clock_cnt = 0
+                        else:
+                            state = "CMD_DONE"
+
+                elif state == "ADDR_QUAD":
+                    nib = (((gpio_out >> self.io3_pin) & 1) << 3) | \
+                          (((gpio_out >> self.io2_pin) & 1) << 2) | \
+                          (((gpio_out >> self.rx_pin)  & 1) << 1) | \
+                          (((gpio_out >> self.tx_pin)  & 1) << 0)
+                    addr = (addr << 4) | nib
+                    addr_clock_cnt += 1
+                    if addr_clock_cnt == 6: # 24 bits
+                        state = "DUMMY_QUAD"
+                        dummy_clock_cnt = 0
+                        target_dummy = 6
+                        read_addr = addr
+
+                elif state == "ADDR_DUAL":
+                    pair = (((gpio_out >> self.rx_pin) & 1) << 1) | \
+                           (((gpio_out >> self.tx_pin) & 1) << 0)
+                    addr = (addr << 2) | pair
+                    addr_clock_cnt += 1
+                    if addr_clock_cnt == 12: # 24 bits
+                        state = "DUMMY_DUAL"
+                        dummy_clock_cnt = 0
+                        target_dummy = 4
+                        read_addr = addr
+
+                elif state == "ADDR_QUAD_WR":
+                    nib = (((gpio_out >> self.io3_pin) & 1) << 3) | \
+                          (((gpio_out >> self.io2_pin) & 1) << 2) | \
+                          (((gpio_out >> self.rx_pin)  & 1) << 1) | \
+                          (((gpio_out >> self.tx_pin)  & 1) << 0)
+                    addr = (addr << 4) | nib
+                    addr_clock_cnt += 1
+                    if addr_clock_cnt == 6:
+                        state = "DATA_QUAD_WR"
+                        nibble_phase = 0
+
+                elif state == "DUMMY_QUAD":
+                    dummy_clock_cnt += 1
+                    if dummy_clock_cnt == target_dummy:
+                        state = "DATA_QUAD_RD"
+                        nibble_phase = 0
+
+                elif state == "DUMMY_DUAL":
+                    dummy_clock_cnt += 1
+                    if dummy_clock_cnt == target_dummy:
+                        state = "DATA_DUAL_RD"
+                        pair_phase = 0
+
+                elif state == "DATA_QUAD_WR":
+                    nib = (((gpio_out >> self.io3_pin) & 1) << 3) | \
+                          (((gpio_out >> self.io2_pin) & 1) << 2) | \
+                          (((gpio_out >> self.rx_pin)  & 1) << 1) | \
+                          (((gpio_out >> self.tx_pin)  & 1) << 0)
+                    if nibble_phase == 0:
+                        self._wr_byte = (nib << 4)
+                        nibble_phase = 1
+                    else:
+                        self._wr_byte |= nib
+                        self.captured_writes.append(self._wr_byte)
+                        nibble_phase = 0
+
+            # 2. SCK Falling Edge: Drive read data from flash to host
+            elif prev_sclk == 1 and sclk == 0:
+                if state == "DATA_QUAD_RD":
+                    byte_val = self.memory.get(read_addr, 0xFF)
+                    if nibble_phase == 0:
+                        nib = (byte_val >> 4) & 0xF
+                        nibble_phase = 1
+                    else:
+                        nib = byte_val & 0xF
+                        nibble_phase = 0
+                        read_addr += 1
+
+                    # Drive nibble onto {IO3, IO2, IO1, IO0}
+                    curr_in = int(self.dut.i_gpio.value) if self.dut.i_gpio.value.is_resolvable else 0
+                    val = curr_in & ~((1 << self.tx_pin) | (1 << self.rx_pin) | (1 << self.io2_pin) | (1 << self.io3_pin))
+                    d0 = (nib >> 0) & 1
+                    d1 = (nib >> 1) & 1
+                    d2 = (nib >> 2) & 1
+                    d3 = (nib >> 3) & 1
+                    val |= (d0 << self.tx_pin) | (d1 << self.rx_pin) | (d2 << self.io2_pin) | (d3 << self.io3_pin)
+                    self.dut.i_gpio.value = val
+                    self.dut.i_rx.value = d1
+
+                elif state == "DATA_DUAL_RD":
+                    byte_val = self.memory.get(read_addr, 0xFF)
+                    shift = 6 - (pair_phase * 2)
+                    pair = (byte_val >> shift) & 0x3
+                    pair_phase += 1
+                    if pair_phase == 4:
+                        pair_phase = 0
+                        read_addr += 1
+
+                    curr_in = int(self.dut.i_gpio.value) if self.dut.i_gpio.value.is_resolvable else 0
+                    val = curr_in & ~((1 << self.tx_pin) | (1 << self.rx_pin))
+                    d0 = (pair >> 0) & 1
+                    d1 = (pair >> 1) & 1
+                    val |= (d0 << self.tx_pin) | (d1 << self.rx_pin)
+                    self.dut.i_gpio.value = val
+                    self.dut.i_rx.value = d1
+
+            prev_sclk = sclk
+
+
+@cocotb.test()
+async def test_qspi_quad_fast_read_w25q(dut):
+    """Task 24A: Winbond W25Q128 Quad Fast Read (0xEB 1-4-4 mode, 24-bit addr, 6 dummy cycles, 4 data bytes)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+    dut.i_baud_div.value = 2  # Fast simulation
+
+    flash = QSPIFlashModel(dut)
+    # Target address 0x102030 -> bytes: 0xDE, 0xAD, 0xBE, 0xEF
+    flash.set_byte(0x102030, 0xDE)
+    flash.set_byte(0x102031, 0xAD)
+    flash.set_byte(0x102032, 0xBE)
+    flash.set_byte(0x102033, 0xEF)
+    flash.start()
+
+    asm_source = """
+    QSPI_CFG MODE=QUAD, CPOL=0
+    QSPI_CS 0
+    MOV acc, 0xEB
+    QSPI_CMD
+    MOV acc, 0x10
+    QSPI_LOAD_ADDR 0
+    MOV acc, 0x20
+    QSPI_LOAD_ADDR 1
+    MOV acc, 0x30
+    QSPI_LOAD_ADDR 2
+    QSPI_ADDR 24
+    QSPI_DUMMY 6
+    IN QSPI
+    PUSH
+    IN QSPI
+    PUSH
+    IN QSPI
+    PUSH
+    IN QSPI
+    PUSH
+    QSPI_CS 1
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    pushed_bytes = []
+    async def monitor_rx():
+        while len(pushed_bytes) < 4:
+            await RisingEdge(dut.i_clk)
+            if int(dut.o_rx_push.value) == 1:
+                pushed_bytes.append(int(dut.o_data.value))
+
+    mon = cocotb.start_soon(monitor_rx())
+    await load_program_direct(dut, prog)
+
+    for _ in range(1200):
+        await RisingEdge(dut.i_clk)
+        if len(pushed_bytes) == 4:
+            break
+
+    mon.cancel()
+    flash.stop()
+
+    dut._log.info(f"Read 4 bytes from QSPI Flash: {[hex(b) for b in pushed_bytes]}")
+    assert pushed_bytes == [0xDE, 0xAD, 0xBE, 0xEF], f"Expected [0xDE, 0xAD, 0xBE, 0xEF], got {[hex(b) for b in pushed_bytes]}"
+    dut._log.info("Test 24A: Winbond W25Q128 Quad Fast Read (0xEB) PASSED!")
+
+
+@cocotb.test()
+async def test_qspi_dual_read(dut):
+    """Task 24B: Dual SPI Read (0x3B 1-2-2 mode, 24-bit addr, 4 dummy cycles, 2 data bytes)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+    dut.i_baud_div.value = 2
+
+    flash = QSPIFlashModel(dut)
+    flash.set_byte(0x010203, 0xA5)
+    flash.set_byte(0x010204, 0x5A)
+    flash.start()
+
+    asm_source = """
+    QSPI_CFG MODE=DUAL, CPOL=0
+    QSPI_CS 0
+    MOV acc, 0x3B
+    QSPI_CMD
+    MOV acc, 0x01
+    QSPI_LOAD_ADDR 0
+    MOV acc, 0x02
+    QSPI_LOAD_ADDR 1
+    MOV acc, 0x03
+    QSPI_LOAD_ADDR 2
+    QSPI_ADDR 24
+    QSPI_DUMMY 4
+    IN QSPI
+    PUSH
+    IN QSPI
+    PUSH
+    QSPI_CS 1
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    pushed_bytes = []
+    async def monitor_rx():
+        while len(pushed_bytes) < 2:
+            await RisingEdge(dut.i_clk)
+            if int(dut.o_rx_push.value) == 1:
+                pushed_bytes.append(int(dut.o_data.value))
+
+    mon = cocotb.start_soon(monitor_rx())
+    await load_program_direct(dut, prog)
+
+    for _ in range(1200):
+        await RisingEdge(dut.i_clk)
+        if len(pushed_bytes) == 2:
+            break
+
+    mon.cancel()
+    flash.stop()
+
+    dut._log.info(f"Read 2 bytes via Dual SPI: {[hex(b) for b in pushed_bytes]}")
+    assert pushed_bytes == [0xA5, 0x5A], f"Expected [0xA5, 0x5A], got {[hex(b) for b in pushed_bytes]}"
+    dut._log.info("Test 24B: Dual SPI Read (0x3B) PASSED!")
+
+
+@cocotb.test()
+async def test_qspi_quad_write_stream(dut):
+    """Task 24C: Verifies OUT QSPI Quad-lane high-speed burst write stream."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+    dut.i_baud_div.value = 2
+
+    flash = QSPIFlashModel(dut)
+    flash.start()
+
+    asm_source = """
+    QSPI_CFG MODE=QUAD, CPOL=0
+    QSPI_CS 0
+    MOV acc, 0x02
+    QSPI_CMD
+    MOV acc, 0x00
+    QSPI_LOAD_ADDR 0
+    MOV acc, 0x10
+    QSPI_LOAD_ADDR 1
+    MOV acc, 0x00
+    QSPI_LOAD_ADDR 2
+    QSPI_ADDR 24
+    MOV acc, 0x12
+    MOV osr, acc
+    OUT QSPI
+    MOV acc, 0x34
+    MOV osr, acc
+    OUT QSPI
+    MOV acc, 0x56
+    MOV osr, acc
+    OUT QSPI
+    QSPI_CS 1
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    await load_program_direct(dut, prog)
+
+    for _ in range(1200):
+        await RisingEdge(dut.i_clk)
+        if len(flash.captured_writes) == 3:
+            break
+
+    flash.stop()
+
+    dut._log.info(f"Captured Quad Writes: {[hex(b) for b in flash.captured_writes]}")
+    assert flash.captured_writes == [0x12, 0x34, 0x56], f"Expected [0x12, 0x34, 0x56], got {[hex(b) for b in flash.captured_writes]}"
+    dut._log.info("Test 24C: OUT QSPI Quad-lane burst write stream PASSED!")
+
+
+@cocotb.test()
+async def test_qspi_octal_transfer(dut):
+    """Task 24D: Verifies Octal-SPI (8-lane parallel) single-clock byte transfer."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+    dut.i_baud_div.value = 2
+
+    asm_source = """
+    QSPI_CFG MODE=OCTAL, CPOL=0
+    QSPI_CS 0
+    MOV acc, 0x55
+    MOV osr, acc
+    OUT QSPI
+    IN QSPI
+    PUSH
+    QSPI_CS 1
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    octal_sampled_out = []
+    prev_sclk = 0
+
+    async def octal_responder():
+        nonlocal prev_sclk
+        while True:
+            await RisingEdge(dut.i_clk)
+            sclk = int(dut.o_spi_sck.value) if dut.o_spi_sck.value.is_resolvable else 0
+            gpio_out = int(dut.o_gpio.value) if dut.o_gpio.value.is_resolvable else 0
+            if prev_sclk == 0 and sclk == 1:
+                # Rising edge: sample OUT
+                octal_sampled_out.append(gpio_out & 0xFF)
+            elif prev_sclk == 1 and sclk == 0:
+                # Falling edge: drive IN
+                dut.i_gpio.value = 0xAA
+            prev_sclk = sclk
+
+    responder = cocotb.start_soon(octal_responder())
+
+    pushed_bytes = []
+    async def monitor_rx():
+        while len(pushed_bytes) < 1:
+            await RisingEdge(dut.i_clk)
+            if int(dut.o_rx_push.value) == 1:
+                pushed_bytes.append(int(dut.o_data.value))
+
+    mon = cocotb.start_soon(monitor_rx())
+    await load_program_direct(dut, prog)
+
+    for _ in range(800):
+        await RisingEdge(dut.i_clk)
+        if len(pushed_bytes) == 1:
+            break
+
+    responder.cancel()
+    mon.cancel()
+
+    dut._log.info(f"Octal Sampled Out: {[hex(b) for b in octal_sampled_out]}")
+    dut._log.info(f"Octal Pushed In: {[hex(b) for b in pushed_bytes]}")
+    assert len(octal_sampled_out) >= 1 and octal_sampled_out[0] == 0x55, f"Expected 0x55 on Octal out, got {[hex(b) for b in octal_sampled_out]}"
+    assert pushed_bytes == [0xAA], f"Expected [0xAA] on Octal in, got {[hex(b) for b in pushed_bytes]}"
+    dut._log.info("Test 24D: Octal-SPI 8-lane transfer PASSED!")

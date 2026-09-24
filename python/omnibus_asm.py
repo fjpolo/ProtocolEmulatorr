@@ -96,6 +96,13 @@ OPCODES = {
     "SWD_RD32":          0xF,
     "SWD_WR32":          0xF,
     "SWD_LOAD":          0xF,
+    "QSPI_CFG":          0xF,  # Task 24: Dedicated QSPI & Multi-Lane Host Controller
+    "QSPI_CS":           0xF,
+    "QSPI_CMD":          0xF,
+    "QSPI_DUMMY":        0xF,
+    "QSPI_ADDR":         0xF,
+    "QSPI_LOAD_ADDR":    0xF,
+    "QSPI_LOAD":         0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -256,7 +263,9 @@ class OmnibusAssembler:
                             return 3
                         return 0
 
-                    if len(tokens) >= 2 and tokens[1].strip().upper() in ("AUDIO", "DAC", "PDM"):
+                    if len(tokens) >= 2 and tokens[1].strip().upper() in ("QSPI", "OCTAL", "QUAD", "DUAL"):
+                        word = (opcode_val << 12) | (0x1E << 7)
+                    elif len(tokens) >= 2 and tokens[1].strip().upper() in ("AUDIO", "DAC", "PDM"):
                         word = (opcode_val << 12) | (0x1F << 7)
                     elif len(tokens) >= 2 and tokens[1].strip().upper() in ("SLAVE", "I2C_SLAVE"):
                         # IN SLAVE [, NACK] [, delay]
@@ -314,7 +323,9 @@ class OmnibusAssembler:
                             return 3
                         return 0
 
-                    if len(tokens) >= 2 and tokens[1].strip().upper() in ("AUDIO", "DAC", "PDM"):
+                    if len(tokens) >= 2 and tokens[1].strip().upper() in ("QSPI", "OCTAL", "QUAD", "DUAL"):
+                        word = (opcode_val << 12) | (0x1E << 7)
+                    elif len(tokens) >= 2 and tokens[1].strip().upper() in ("AUDIO", "DAC", "PDM"):
                         word = (opcode_val << 12) | (0x1F << 7)
                     elif len(tokens) >= 2 and tokens[1].strip().upper() in ("SLAVE", "I2C_SLAVE"):
                         delay = eval_arg(tokens[2]) & 0x1FF if len(tokens) >= 3 else 0
@@ -806,7 +817,7 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
-            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD"):
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD"):
                 # Sub-operations:
                 # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
                 # 2'b01: ASSIST RESET
@@ -1045,6 +1056,81 @@ class OmnibusAssembler:
                 elif sub_cmd in ("SWD_LOAD", "SWD_LOAD_BYTE"):
                     idx = eval_arg(arg_tokens[0]) & 0x3 if arg_tokens else 0
                     word = (0xF << 12) | (1 << 10) | (1 << 8) | (10 << 4) | (idx & 0x3)
+
+                elif sub_cmd in ("QSPI_CFG", "QSPI"):
+                    en = 1
+                    width = 2  # default QUAD
+                    cpol = 0
+                    for a in arg_tokens:
+                        item = a.strip().upper()
+                        if "=" in item:
+                            k, v = item.split("=", 1)
+                            k, v = k.strip(), v.strip()
+                            if k in ("EN", "ENABLE"):
+                                en = 1 if v not in ("0", "OFF", "DISABLE") else 0
+                            elif k in ("WIDTH", "MODE", "LANES"):
+                                if v in ("OCTAL", "8", "OCT"): width = 3
+                                elif v in ("QUAD", "4"): width = 2
+                                elif v in ("DUAL", "2"): width = 1
+                                elif v in ("SINGLE", "1", "STANDARD"): width = 0
+                                else: width = eval_arg(v) & 3
+                            elif k in ("CPOL", "POLARITY", "POL"):
+                                cpol = 1 if v in ("1", "HIGH", "TRUE") else 0
+                        else:
+                            if item in ("OFF", "DISABLE", "0"):
+                                en = 0
+                            elif item in ("OCTAL", "8", "OCT"):
+                                width = 3
+                            elif item in ("QUAD", "4"):
+                                width = 2
+                            elif item in ("DUAL", "2"):
+                                width = 1
+                            elif item in ("SINGLE", "1"):
+                                width = 0
+                            elif item in ("CPOL1", "CPOL=1", "HIGH"):
+                                cpol = 1
+                            elif item in ("CPOL0", "CPOL=0", "LOW"):
+                                cpol = 0
+                            elif item.isdigit():
+                                w = eval_arg(item)
+                                if w in (1, 2, 4, 8):
+                                    width = {1: 0, 2: 1, 4: 2, 8: 3}[w]
+                                else:
+                                    en = w & 1
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (0xB << 4) | ((cpol & 1) << 3) | ((width & 3) << 1) | (en & 1)
+
+                elif sub_cmd in ("QSPI_CS",):
+                    cs_val = 0
+                    if arg_tokens:
+                        tok = arg_tokens[0].strip().upper()
+                        if tok in ("DEASSERT", "HIGH", "1", "RELEASE", "DISABLE"):
+                            cs_val = 1
+                        elif tok in ("ASSERT", "LOW", "0", "SELECT", "ENABLE"):
+                            cs_val = 0
+                        else:
+                            cs_val = eval_arg(tok) & 1
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (0xC << 4) | (cs_val & 1)
+
+                elif sub_cmd in ("QSPI_CMD",):
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (0xD << 4)
+
+                elif sub_cmd in ("QSPI_DUMMY",):
+                    cycles = eval_arg(arg_tokens[0]) & 0xF if arg_tokens else 6
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (0xE << 4) | (cycles & 0xF)
+
+                elif sub_cmd in ("QSPI_ADDR",):
+                    is_32 = 0
+                    if arg_tokens:
+                        tok = arg_tokens[0].strip().upper()
+                        if tok in ("32", "32B", "4", "4BYTE"):
+                            is_32 = 1
+                        else:
+                            is_32 = 1 if eval_arg(tok) == 32 else 0
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (0xF << 4) | (1 << 3) | (is_32 & 1)
+
+                elif sub_cmd in ("QSPI_LOAD_ADDR", "QSPI_LOAD"):
+                    idx = eval_arg(arg_tokens[0]) & 3 if arg_tokens else 0
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (0xF << 4) | (0 << 3) | (idx & 3)
 
                 elif sub_cmd in ("READ", "STATUS"):
                     if any("I2C_ADDR" in a.upper() or "ADDR" in a.upper() for a in arg_tokens):

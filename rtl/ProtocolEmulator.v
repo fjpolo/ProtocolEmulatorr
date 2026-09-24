@@ -212,6 +212,27 @@ module ProtocolEmulator(
     reg [15:0] swd_switch_seq;    // 16-bit JTAG-to-SWD select sequence (0xE79E)
     reg        swd_phase;         // Clock phase: 0=Falling (drive), 1=Rising (sample)
 
+    // =========================================================================
+    // Dedicated Hardware Quad-SPI (QSPI) & Multi-Lane Host State (Task 24)
+    // =========================================================================
+    reg        qspi_en;           // 1=Enable hardware QSPI host engine
+    reg [1:0]  qspi_width;        // 0=Single (1-bit), 1=Dual (2-bit), 2=Quad (4-bit), 3=Octal (8-bit)
+    reg        qspi_ddr;          // 1=Double Data Rate (both edges), 0=Single Data Rate
+    reg        qspi_cpol;         // 0=SCK idle low, 1=SCK idle high
+    reg [3:0]  qspi_state;        // 0=IDLE, 1=CMD, 2=ADDR, 3=DUMMY, 4=DATA_RX, 5=DATA_TX
+    reg [7:0]  qspi_cmd_byte;     // 8-bit instruction opcode
+    reg [31:0] qspi_addr_reg;     // 24-bit or 32-bit address storage
+    reg [5:0]  qspi_addr_bits;    // Remaining address bits to clock (e.g. 24 or 32)
+    reg [3:0]  qspi_dummy_cnt;    // Remaining dummy clock cycles
+    reg [5:0]  qspi_bit_cnt;      // Bit/nibble transfer counter within byte
+    reg [31:0] qspi_data_reg;     // 32-bit multi-lane shift storage
+    reg        qspi_sclk;         // Generated SCK clock level
+    reg        qspi_cs;           // Generated CS# level (active low)
+    reg        qspi_oe;           // Output enable for data lanes
+    reg [7:0]  qspi_data_out;     // Data bits driven to lanes
+    reg        qspi_phase;        // Clock phase: 0=drive/setup, 1=sample/hold
+    reg [7:0]  qspi_rx_byte;      // Assembled received byte
+
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
     reg [2:0]  rx_pin;          // Pin index for IN deserializer / default WAIT (default 0)
@@ -529,6 +550,21 @@ module ProtocolEmulator(
             wire is_swd_sclk  = swd_en && is_sck;
             wire is_swd_swdio = swd_en && is_tx;
 
+            wire [2:0] qspi_rx_p = (rx_pin == tx_pin) ? 3'd3 : rx_pin;
+            wire is_qspi_sck   = qspi_en && is_sck && (qspi_width != 2'b11);
+            wire is_qspi_cs    = qspi_en && is_cs && (qspi_width != 2'b11);
+            wire is_qspi_lane0 = qspi_en && (p == tx_pin);
+            wire is_qspi_lane1 = qspi_en && (p == qspi_rx_p) && (qspi_width != 2'b00);
+            wire is_qspi_lane2 = qspi_en && (p == 3'd4) && (qspi_width[1] == 1'b1);
+            wire is_qspi_lane3 = qspi_en && (p == 3'd5) && (qspi_width[1] == 1'b1);
+            wire is_qspi_octal = qspi_en && (qspi_width == 2'b11);
+            wire is_qspi_lane  = is_qspi_lane0 || is_qspi_lane1 || is_qspi_lane2 || is_qspi_lane3 || is_qspi_octal;
+            wire qspi_bit_val  = is_qspi_octal ? qspi_data_out[p] :
+                                 is_qspi_lane0 ? qspi_data_out[0] :
+                                 is_qspi_lane1 ? qspi_data_out[1] :
+                                 is_qspi_lane2 ? qspi_data_out[2] :
+                                 is_qspi_lane3 ? qspi_data_out[3] : 1'b0;
+
             assign i2c_gpio_out[p] = is_audio_main ? pdm_bit :
                                      is_audio_diff ? ~pdm_bit :
                                      is_jtag_tck   ? jtag_tck :
@@ -536,6 +572,9 @@ module ProtocolEmulator(
                                      is_jtag_tdi   ? jtag_tdi :
                                      is_swd_sclk   ? swd_sclk :
                                      is_swd_swdio  ? swd_swdio_out :
+                                     is_qspi_sck   ? qspi_sclk :
+                                     is_qspi_cs    ? qspi_cs :
+                                     is_qspi_lane  ? qspi_bit_val :
                                      (is_tx && slave_sda_drive) ? 1'b0 :
                                      (is_sck && slave_scl_drive) ? 1'b0 :
                                      (i2c_slave_en && (is_tx || is_sck)) ? 1'b1 :
@@ -549,6 +588,10 @@ module ProtocolEmulator(
                                      (jtag_en && is_rx) ? 1'b0 :
                                      is_swd_sclk   ? 1'b1 :
                                      is_swd_swdio  ? swd_oe :
+                                     is_qspi_sck   ? 1'b1 :
+                                     is_qspi_cs    ? 1'b1 :
+                                     is_qspi_lane  ? qspi_oe :
+                                     (qspi_en && (qspi_width == 2'b00) && (p == qspi_rx_p)) ? 1'b0 :
                                      (is_tx && slave_sda_drive) ? 1'b1 :
                                      (is_sck && slave_scl_drive) ? 1'b1 :
                                      (i2c_slave_en && (is_tx || is_sck)) ? 1'b0 :
@@ -559,8 +602,8 @@ module ProtocolEmulator(
     assign o_gpio     = i2c_gpio_out;
     assign o_gpio_oe  = i2c_gpio_oe;
     assign o_tx       = i2c_gpio_out[tx_pin];
-    assign o_spi_sck  = i2c_gpio_out[sck_pin];
-    assign o_spi_cs_n = i2c_gpio_out[cs_pin];
+    assign o_spi_sck  = qspi_en ? qspi_sclk : i2c_gpio_out[sck_pin];
+    assign o_spi_cs_n = qspi_en ? qspi_cs   : i2c_gpio_out[cs_pin];
 
     // Operands for SET / WAIT:
     // [11:9] pin_sel (3 bits: GPIO 0..7)
@@ -603,6 +646,7 @@ module ProtocolEmulator(
     generate
         for (g = 0; g < 8; g = g + 1) begin : gen_gpio_raw
             assign gpio_raw[g] = (swd_en && g == tx_pin) ? i_gpio[g] :
+                                 (qspi_en) ? i_gpio[g] :
                                  (g == rx_pin || g == 3'd0) ? (i_gpio[g] & i_rx) : i_gpio[g];
         end
     endgenerate
@@ -618,6 +662,13 @@ module ProtocolEmulator(
         end
     end
     wire [7:0] gpio_in = gpio_sync_1;
+
+    // Dedicated Multi-Lane QSPI / Octal Input Bus Sampling Wires (Task 24)
+    wire [2:0] qspi_rx_in_pin = (rx_pin == tx_pin) ? 3'd3 : rx_pin;
+    wire [3:0] qspi_in_nibble = {gpio_in[5], gpio_in[4], gpio_in[qspi_rx_in_pin], gpio_in[tx_pin]};
+    wire [1:0] qspi_in_pair   = {gpio_in[qspi_rx_in_pin], gpio_in[tx_pin]};
+    wire       qspi_in_single = gpio_in[qspi_rx_in_pin];
+    wire [7:0] qspi_in_octal  = gpio_in;
 
     // Dedicated Hardware I2C / SMBus Slave Line Edge & Framing Detectors
     wire i2c_scl_in = gpio_in[sck_pin];
@@ -945,6 +996,23 @@ module ProtocolEmulator(
             swd_reset_cnt     <= 8'd0;
             swd_switch_seq    <= 16'hE79E;
             swd_phase         <= 1'b0;
+            qspi_en           <= 1'b0;
+            qspi_width        <= 2'b00;
+            qspi_ddr          <= 1'b0;
+            qspi_cpol         <= 1'b0;
+            qspi_state        <= 4'd0;
+            qspi_cmd_byte     <= 8'h00;
+            qspi_addr_reg     <= 32'd0;
+            qspi_addr_bits    <= 6'd0;
+            qspi_dummy_cnt    <= 4'd0;
+            qspi_bit_cnt      <= 6'd0;
+            qspi_data_reg     <= 32'd0;
+            qspi_sclk         <= 1'b0;
+            qspi_cs           <= 1'b1;
+            qspi_oe           <= 1'b0;
+            qspi_data_out     <= 8'h00;
+            qspi_phase        <= 1'b0;
+            qspi_rx_byte      <= 8'h00;
         end else begin
             // Default: clear single-cycle pop/push strobes
             o_tx_pop  <= 1'b0;
@@ -1438,6 +1506,219 @@ module ProtocolEmulator(
 
                     default: swd_state <= 4'd0;
                 endcase
+            end else if (qspi_state != 4'd0) begin
+                // -------------------------------------------------------------
+                // Quad-SPI (QSPI) & Multi-Lane Hardware Sequencer (Task 24)
+                // -------------------------------------------------------------
+                case (qspi_state)
+                    4'd1: begin // CMD: Transmit 8-bit command on IO0 (tx_pin)
+                        if (qspi_phase == 1'b0) begin
+                            qspi_sclk        <= qspi_cpol;
+                            qspi_cs          <= 1'b0; // assert CS# low
+                            qspi_oe          <= 1'b1;
+                            qspi_data_out[0] <= qspi_cmd_byte[7];
+                            qspi_phase       <= 1'b1;
+                            delay_cnt        <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            qspi_sclk     <= ~qspi_cpol;
+                            qspi_cmd_byte <= {qspi_cmd_byte[6:0], 1'b0};
+                            qspi_bit_cnt  <= qspi_bit_cnt + 6'd1;
+                            qspi_phase    <= 1'b0;
+                            delay_cnt     <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                            if (qspi_bit_cnt == 6'd7) begin
+                                qspi_state   <= 4'd0; // Done CMD
+                                qspi_bit_cnt <= 6'd0;
+                                pc           <= pc + 7'd1;
+                            end
+                        end
+                    end
+
+                    4'd2: begin // ADDR: Transmit 24-bit or 32-bit address across qspi_width lanes
+                        if (qspi_phase == 1'b0) begin
+                            qspi_sclk  <= qspi_cpol;
+                            qspi_oe    <= 1'b1;
+                            case (qspi_width)
+                                2'b10:   qspi_data_out[3:0] <= qspi_addr_reg[31:28]; // Quad: 4 bits/clk
+                                2'b01:   qspi_data_out[1:0] <= qspi_addr_reg[31:30]; // Dual: 2 bits/clk
+                                2'b11:   qspi_data_out[7:0] <= qspi_addr_reg[31:24]; // Octal: 8 bits/clk
+                                default: qspi_data_out[0]   <= qspi_addr_reg[31];    // Single: 1 bit/clk
+                            endcase
+                            qspi_phase <= 1'b1;
+                            delay_cnt  <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            qspi_sclk <= ~qspi_cpol;
+                            case (qspi_width)
+                                2'b10: begin // Quad
+                                    qspi_addr_reg  <= {qspi_addr_reg[27:0], 4'b0000};
+                                    qspi_addr_bits <= (qspi_addr_bits <= 6'd4) ? 6'd0 : qspi_addr_bits - 6'd4;
+                                    if (qspi_addr_bits <= 6'd4) begin
+                                        qspi_state <= 4'd0;
+                                        pc         <= pc + 7'd1;
+                                    end
+                                end
+                                2'b01: begin // Dual
+                                    qspi_addr_reg  <= {qspi_addr_reg[29:0], 2'b00};
+                                    qspi_addr_bits <= (qspi_addr_bits <= 6'd2) ? 6'd0 : qspi_addr_bits - 6'd2;
+                                    if (qspi_addr_bits <= 6'd2) begin
+                                        qspi_state <= 4'd0;
+                                        pc         <= pc + 7'd1;
+                                    end
+                                end
+                                2'b11: begin // Octal
+                                    qspi_addr_reg  <= {qspi_addr_reg[23:0], 8'b0000_0000};
+                                    qspi_addr_bits <= (qspi_addr_bits <= 6'd8) ? 6'd0 : qspi_addr_bits - 6'd8;
+                                    if (qspi_addr_bits <= 6'd8) begin
+                                        qspi_state <= 4'd0;
+                                        pc         <= pc + 7'd1;
+                                    end
+                                end
+                                default: begin // Single
+                                    qspi_addr_reg  <= {qspi_addr_reg[30:0], 1'b0};
+                                    qspi_addr_bits <= qspi_addr_bits - 6'd1;
+                                    if (qspi_addr_bits <= 6'd1) begin
+                                        qspi_state <= 4'd0;
+                                        pc         <= pc + 7'd1;
+                                    end
+                                end
+                            endcase
+                            qspi_phase <= 1'b0;
+                            delay_cnt  <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end
+                    end
+
+                    4'd3: begin // DUMMY: Clock N dummy wait cycles with pins in Hi-Z
+                        if (qspi_phase == 1'b0) begin
+                            qspi_sclk  <= qspi_cpol;
+                            qspi_oe    <= 1'b0; // Hi-Z
+                            qspi_phase <= 1'b1;
+                            delay_cnt  <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            qspi_sclk      <= ~qspi_cpol;
+                            qspi_dummy_cnt <= qspi_dummy_cnt - 4'd1;
+                            qspi_phase     <= 1'b0;
+                            delay_cnt      <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                            if (qspi_dummy_cnt == 4'd1) begin
+                                qspi_state <= 4'd0; // Done dummy
+                                pc         <= pc + 7'd1;
+                            end
+                        end
+                    end
+
+                    4'd4: begin // DATA_RX: Receive 1 byte across multi-lanes into isr/acc/o_data
+                        if (qspi_phase == 1'b0) begin
+                            qspi_sclk  <= qspi_cpol;
+                            qspi_oe    <= 1'b0; // Target drives
+                            qspi_phase <= 1'b1;
+                            delay_cnt  <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            qspi_sclk  <= ~qspi_cpol;
+                            qspi_phase <= 1'b0;
+                            delay_cnt  <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                            case (qspi_width)
+                                2'b10: begin // Quad: 2 nibbles = 1 byte
+                                    if (qspi_bit_cnt == 6'd0) begin
+                                        qspi_rx_byte[7:4] <= qspi_in_nibble;
+                                        qspi_bit_cnt      <= 6'd1;
+                                    end else begin
+                                        qspi_rx_byte[3:0] <= qspi_in_nibble;
+                                        isr               <= {qspi_rx_byte[7:4], qspi_in_nibble};
+                                        o_data            <= {qspi_rx_byte[7:4], qspi_in_nibble};
+                                        acc               <= {qspi_rx_byte[7:4], qspi_in_nibble};
+                                        qspi_state        <= 4'd0;
+                                        qspi_bit_cnt      <= 6'd0;
+                                        pc                <= pc + 7'd1;
+                                    end
+                                end
+                                2'b01: begin // Dual: 4 pairs = 1 byte
+                                    qspi_rx_byte <= {qspi_rx_byte[5:0], qspi_in_pair};
+                                    qspi_bit_cnt <= qspi_bit_cnt + 6'd1;
+                                    if (qspi_bit_cnt == 6'd3) begin
+                                        isr          <= {qspi_rx_byte[5:0], qspi_in_pair};
+                                        o_data       <= {qspi_rx_byte[5:0], qspi_in_pair};
+                                        acc          <= {qspi_rx_byte[5:0], qspi_in_pair};
+                                        qspi_state   <= 4'd0;
+                                        qspi_bit_cnt <= 6'd0;
+                                        pc           <= pc + 7'd1;
+                                    end
+                                end
+                                2'b11: begin // Octal: 1 byte in 1 clock
+                                    isr          <= qspi_in_octal;
+                                    o_data       <= qspi_in_octal;
+                                    acc          <= qspi_in_octal;
+                                    qspi_rx_byte <= qspi_in_octal;
+                                    qspi_state   <= 4'd0;
+                                    pc           <= pc + 7'd1;
+                                end
+                                default: begin // Single: 8 bits
+                                    qspi_rx_byte <= {qspi_rx_byte[6:0], qspi_in_single};
+                                    qspi_bit_cnt <= qspi_bit_cnt + 6'd1;
+                                    if (qspi_bit_cnt == 6'd7) begin
+                                        isr          <= {qspi_rx_byte[6:0], qspi_in_single};
+                                        o_data       <= {qspi_rx_byte[6:0], qspi_in_single};
+                                        acc          <= {qspi_rx_byte[6:0], qspi_in_single};
+                                        qspi_state   <= 4'd0;
+                                        qspi_bit_cnt <= 6'd0;
+                                        pc           <= pc + 7'd1;
+                                    end
+                                end
+                            endcase
+                        end
+                    end
+
+                    4'd5: begin // DATA_TX: Transmit 1 byte from osr across multi-lanes
+                        if (qspi_phase == 1'b0) begin
+                            qspi_sclk <= qspi_cpol;
+                            qspi_oe   <= 1'b1;
+                            case (qspi_width)
+                                2'b10:   qspi_data_out[3:0] <= (qspi_bit_cnt == 6'd0) ? osr[7:4] : osr[3:0];
+                                2'b01:   qspi_data_out[1:0] <= osr[7:6];
+                                2'b11:   qspi_data_out[7:0] <= osr;
+                                default: qspi_data_out[0]   <= osr[7];
+                            endcase
+                            qspi_phase <= 1'b1;
+                            delay_cnt  <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            qspi_sclk  <= ~qspi_cpol;
+                            qspi_phase <= 1'b0;
+                            delay_cnt  <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                            case (qspi_width)
+                                2'b10: begin // Quad
+                                    if (qspi_bit_cnt == 6'd0) begin
+                                        qspi_bit_cnt <= 6'd1;
+                                    end else begin
+                                        qspi_state   <= 4'd0;
+                                        qspi_bit_cnt <= 6'd0;
+                                        pc           <= pc + 7'd1;
+                                    end
+                                end
+                                2'b01: begin // Dual
+                                    osr          <= {osr[5:0], 2'b00};
+                                    qspi_bit_cnt <= qspi_bit_cnt + 6'd1;
+                                    if (qspi_bit_cnt == 6'd3) begin
+                                        qspi_state   <= 4'd0;
+                                        qspi_bit_cnt <= 6'd0;
+                                        pc           <= pc + 7'd1;
+                                    end
+                                end
+                                2'b11: begin // Octal
+                                    qspi_state <= 4'd0;
+                                    pc         <= pc + 7'd1;
+                                end
+                                default: begin // Single
+                                    osr          <= {osr[6:0], 1'b0};
+                                    qspi_bit_cnt <= qspi_bit_cnt + 6'd1;
+                                    if (qspi_bit_cnt == 6'd7) begin
+                                        qspi_state   <= 4'd0;
+                                        qspi_bit_cnt <= 6'd0;
+                                        pc           <= pc + 7'd1;
+                                    end
+                                end
+                            endcase
+                        end
+                    end
+
+                    default: qspi_state <= 4'd0;
+                endcase
             end else begin
                 case (opcode)
                     4'h4: begin // WAIT: Wait until gpio_in[pin_sel] == pin_val, then delay
@@ -1451,7 +1732,16 @@ module ProtocolEmulator(
                     end
 
                     4'h2: begin // IN: Multi-cycle deserialization into ISR
-                        if (instr[11:7] == 5'b11111) begin
+                        if (instr[11:7] == 5'b11110) begin
+                            // -------------------------------------------------------
+                            // QSPI Multi-Lane Stream Read (IN QSPI):
+                            // Receives 1 byte across configured lanes into isr, o_data, acc
+                            // -------------------------------------------------------
+                            qspi_state   <= 4'd4; // DATA_RX
+                            qspi_bit_cnt <= 6'd0;
+                            qspi_phase   <= 1'b0;
+                            pc           <= pc;
+                        end else if (instr[11:7] == 5'b11111) begin
                             // -------------------------------------------------------
                             // Audio DAC Sample Read Mode (IN AUDIO):
                             // Captures current audio_sample into ISR and o_data in 1 cycle.
@@ -1813,7 +2103,16 @@ module ProtocolEmulator(
                     end
 
                     4'h1: begin // OUT: Multi-cycle serialization from OSR
-                        if (instr[11:7] == 5'b11111) begin
+                        if (instr[11:7] == 5'b11110) begin
+                            // -------------------------------------------------------
+                            // QSPI Multi-Lane Stream Write (OUT QSPI):
+                            // Transmits 1 byte from osr across configured lanes
+                            // -------------------------------------------------------
+                            qspi_state   <= 4'd5; // DATA_TX
+                            qspi_bit_cnt <= 6'd0;
+                            qspi_phase   <= 1'b0;
+                            pc           <= pc;
+                        end else if (instr[11:7] == 5'b11111) begin
                             // -------------------------------------------------------
                             // Audio DAC Sample Load Mode (OUT AUDIO):
                             // Immediately latches OSR into audio_sample, activates
@@ -2786,6 +3085,57 @@ module ProtocolEmulator(
                                                     2'b11: swd_data_reg[31:24] <= acc;
                                                 endcase
                                                 pc <= pc + 7'd1;
+                                            end
+                                            4'hB: begin // QSPI_CFG: instr[0]=en, instr[2:1]=width, instr[3]=cpol
+                                                qspi_en    <= instr[0];
+                                                qspi_width <= instr[2:1];
+                                                qspi_cpol  <= instr[3];
+                                                if (!instr[0]) begin
+                                                    qspi_state <= 4'd0;
+                                                    qspi_oe    <= 1'b0;
+                                                    qspi_sclk  <= instr[3];
+                                                    qspi_cs    <= 1'b1;
+                                                end else begin
+                                                    qspi_sclk  <= instr[3];
+                                                    qspi_cs    <= 1'b1;
+                                                end
+                                                pc <= pc + 7'd1;
+                                            end
+                                            4'hC: begin // QSPI_CS: instr[0]=cs_val (0=assert, 1=deassert)
+                                                qspi_cs   <= instr[0];
+                                                delay_cnt <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                                                pc        <= pc + 7'd1;
+                                            end
+                                            4'hD: begin // QSPI_CMD: Transmit 8-bit command in acc on MOSI (single-lane)
+                                                qspi_cmd_byte <= acc;
+                                                qspi_state    <= 4'd1;
+                                                qspi_bit_cnt  <= 6'd0;
+                                                qspi_phase    <= 1'b0;
+                                                pc            <= pc;
+                                            end
+                                            4'hE: begin // QSPI_DUMMY: Clock dummy wait cycles (instr[3:0] or acc[3:0])
+                                                qspi_dummy_cnt <= (instr[3:0] != 4'd0) ? instr[3:0] : acc[3:0];
+                                                qspi_state     <= 4'd3;
+                                                qspi_phase     <= 1'b0;
+                                                pc             <= pc;
+                                            end
+                                            4'hF: begin // QSPI_ADDR / QSPI_LOAD_ADDR
+                                                if (instr[3]) begin
+                                                    // QSPI_ADDR: instr[0]=0 -> 24-bit, instr[0]=1 -> 32-bit
+                                                    qspi_addr_bits <= instr[0] ? 6'd32 : 6'd24;
+                                                    qspi_state     <= 4'd2;
+                                                    qspi_phase     <= 1'b0;
+                                                    pc             <= pc;
+                                                end else begin
+                                                    // QSPI_LOAD_ADDR <idx>: load acc into address byte
+                                                    case (instr[1:0])
+                                                        2'b00: qspi_addr_reg[31:24] <= acc;
+                                                        2'b01: qspi_addr_reg[23:16] <= acc;
+                                                        2'b10: qspi_addr_reg[15:8]  <= acc;
+                                                        2'b11: qspi_addr_reg[7:0]   <= acc;
+                                                    endcase
+                                                    pc <= pc + 7'd1;
+                                                end
                                             end
                                             default: pc <= pc + 7'd1;
                                         endcase

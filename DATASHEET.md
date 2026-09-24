@@ -1,6 +1,6 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.5 (Architecture Release — Tasks 01 through 23)  
+**Document Revision**: 1.6 (Architecture Release — Tasks 01 through 24)
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
 
 ---
@@ -26,6 +26,10 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
 ### Key Architectural Specifications
 - **Deterministic Zero-Jitter Execution Engine**: Microcode instructions execute in single clock cycles with precision cycle-accurate sidecar delays (up to 5,110 cycles per bit or runtime dynamic baud divisor).
 - **1-Bit Delta-Sigma Audio DAC & 4-Voice Chiptune APU Synthesizer**: 50 MHz 1st-order Delta-Sigma ($\Sigma$-$\Delta$) PDM modulator with $OSR = 1250\times$, single-ended and differential BTL outputs on GPIO pins, 4 polyphonic synthesizer voices (Pulse 1, Pulse 2 with 4 duty cycles, 16-step Triangle, 15-bit/7-bit Galois LFSR Noise), saturation-clamped mixer ($V \le 255$), autonomous hardware sound effects (`BEEP`, `BLIP`, `ERROR`, `COIN`, `LASER`, `SIREN`, `NOISE`), and single-cycle PCM streaming (`OUT AUDIO`).
+- **Quad-SPI (QSPI), Dual-SPI & Octal-SPI Multi-Lane Flash & PSRAM Hardware Host Controller**:
+  - High-throughput multi-lane serial interface supporting Single (1-bit), Dual (2-bit), Quad (4-bit IO0..IO3), and Octal (8-bit across all 8 GPIO pins) modes.
+  - **Autonomous Protocol Phase Sequencer**: Hardware automation of Instruction Phase (`QSPI_CMD`), Address Phase (`QSPI_ADDR 24|32` across active lanes), Dummy Clock Phase (`QSPI_DUMMY 0..15` with bus in Hi-Z), and multi-byte stream transfers (`IN QSPI`, `OUT QSPI`) with auto-clock toggling.
+  - **Direct Memory Support**: High-speed communication with Winbond (W25Q128 Quad Fast Read `0xEB`), Macronix (MX25), Micron, ISSI, and APMemory (APS6404 QSPI PSRAM).
 - **Dedicated Hardware JTAG TAP Controller & ARM SWD Hardware Sequencer (Supporting RISC-V DTM & ARM CoreSight)**:
   - **IEEE 1149.1 16-State JTAG TAP Controller**: Fully autonomous hardware FSM (`jtag_state`) with smart multi-clock TMS stepping (`JTAG_NAV RESET`, `IDLE`, `SHIFT_DR`, `SHIFT_IR`, `EXIT_TO_IDLE`), high-speed 1-to-8 bit Data/Instruction Register shifts with auto-Exit1-DR (`JTAG_SHIFT`), and RISC-V Debug Module (DTM) IDCODE/DTMCS/DMI scan support.
   - **ARM Serial Wire Debug (SWD / ADIv5) Host Engine**: Autonomous 8-bit Request packet generation with hardware Even Parity, automatic 1-cycle bus turnaround (`Trn`), 3-bit target ACK sampling (`001`=OK, `010`=WAIT, `100`=FAULT), 32-bit data read/write (`SWD_RD32`, `SWD_WR32`) with hardware parity verification, and autonomous 54-clock line reset with 16-bit `0xE79E` JTAG-to-SWD select sequence (`SWD_RESET`).
@@ -325,6 +329,7 @@ The ProtocolEmulator provides a standard 32-bit pipelined Wishbone B4 slave inte
 | **`0x14`** | `WB_REG_IMEM_BANK` | R/W | 8 bits | Microcode memory bank select register (`[1:0]` = active bank 0..3). |
 | **`0x18`** | `WB_REG_AUDIO` | R/W | 32 bits | Audio DAC & Chiptune Synthesizer control & telemetry:<br>`[0]`: `audio_en`<br>`[2:1]`: `audio_mode` (0=Off, 1=PCM, 2=Synth)<br>`[5:3]`: `audio_pin` (GPIO 0..7)<br>`[6]`: `audio_diff` (BTL complementary enable)<br>`[14:7]`: `audio_sample` (8-bit PCM sample)<br>`[18:15]`: `audio_preset` (Active preset ID)<br>`[31]`: `pdm_bit` (Instantaneous 1-bit PDM output monitor). |
 | **`0x1C`** | `WB_REG_DEBUG` | R/W | 32 bits | Hardware JTAG TAP & ARM SWD Host status & telemetry:<br>`[0]`: `jtag_en`<br>`[4:1]`: `jtag_state[3:0]` (16-state TAP FSM)<br>`[5]`: `jtag_tms` (current TMS pin level)<br>`[6]`: `jtag_tck` (current TCK pin level)<br>`[7]`: `jtag_tdo_sampled` (last sampled TDO level)<br>`[8]`: `swd_en`<br>`[11:9]`: `swd_last_ack[2:0]` (`001`=OK, `010`=WAIT, `100`=FAULT)<br>`[12]`: `swd_parity_err` (sticky data parity error)<br>`[13]`: `swd_oe` (SWDIO output drive enable)<br>`[17:14]`: `swd_state[3:0]` (SWD hardware sequencer state). |
+| **`0x20`** | `WB_REG_QSPI` | R | 32 bits | Hardware Quad-SPI Host status and telemetry:<br>`[0]`: `qspi_en`<br>`[2:1]`: `qspi_width[1:0]` (`00`=Single, `01`=Dual, `10`=Quad, `11`=Octal)<br>`[3]`: `qspi_cpol`<br>`[7:4]`: `qspi_state[3:0]` (`1`=CMD, `2`=ADDR, `3`=DUMMY, `4`=RX, `5`=TX)<br>`[15:8]`: `qspi_rx_byte[7:0]` (last byte deserialized across multi-lane bus)<br>`[31:16]`: `qspi_addr_reg[15:0]` (lower 16 bits of physical address register). |
 | **`0x80 – 0xFF`**| `WB_IMEM_APERTURE` | R/W | 16 bits | Direct access to 128 microcode memory words (Words 0..127 across banks). |
 
 ---
@@ -502,6 +507,11 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
       - `4'h8`: `SWD_RD32` — Read 32 data bits + parity bit + turnaround from target into `swd_data_reg`.
       - `4'h9`: `SWD_WR32` — Write turnaround + 32 data bits + parity bit from `swd_data_reg` to target.
       - `4'hA`: `SWD_LOAD <byte_idx>` — Load `acc` into byte 0..3 of `swd_data_reg`.
+       - `4'hB`: `QSPI_CFG <en>, <width>, <cpol>` — Master enable and bus width configuration (`width`: 1=Single, 2=Dual, 4=Quad, 8=Octal).
+       - `4'hC`: `QSPI_CS <0|1>` — Assert (`0`) or deassert (`1`) SPI Chip Select.
+       - `4'hD`: `QSPI_CMD` — Transmit 8-bit command in `acc` on Lane 0 (MOSI).
+       - `4'hE`: `QSPI_DUMMY <cycles>` — Clock $N$ dummy wait cycles (0..15) with bus in Hi-Z.
+       - `4'hF`: `QSPI_ADDR <24|32>` / `QSPI_LOAD_ADDR <0..3>` — Serialize address or load address bytes from `acc`.
     - `instr[9:8] = 10`: `I2C_SLAVE_CFG <addr7> [, stretch=0|1]` — Configures 7-bit slave address `instr[6:0]` and clock stretch enable `instr[7]`.
     - `instr[9:8] = 11`: `I2C_RELEASE_SCL` — Releases hardware SCL stretch hold.
   - `SS = 10`: `ASSIST READ`
