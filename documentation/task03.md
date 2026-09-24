@@ -161,5 +161,5 @@ The complete bidirectional transceiver executes in just **10 microcode instructi
 
 ### 5.3. Physical Hardware Validation
 * Build bitstream: `.\build_console60k.bat -Flash sram`.
-* Open serial terminal: `.\serial_monitor_console60k.bat`.
+* Open serial terminal: `.\scripts\serial_monitor_console60k.bat`.
 * Type characters into the console and observe instant echo in the terminal and binary ASCII patterns on the PMOD LEDs.
