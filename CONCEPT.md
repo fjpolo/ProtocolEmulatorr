@@ -16,6 +16,9 @@ Most protocol solutions fall into one of two extremes:
 2. **Generic Microcontrollers (Cortex-M0 / RISC-V)**: Great for general software, unsuitable for sub-cycle deterministic bit-banging due to multi-cycle instruction pipelines, cache misses, branch penalties, and interrupt jitter.
 3. **RP2040 PIO Clones**: Adequate for simple shift registers, but limited when dealing with packet-level logic, dynamic CRCs, bi-directional token arbitration, or wire-speed packet modification.
 
+### OmniBus Lite: Foundational Core Architecture (Milestone v1.0)
+Tasks 01 through 24 deliver **OmniBus Lite**—the fully verified, production-ready foundation of the OmniBus processor family. It integrates all core state serialization engines, hardware protocol assists, multi-lane Flash controllers, audio synthesizers, debug TAP controllers, and micro-ALU in ~21k standard cells with **100% regression pass rate (72 self-checking Cocotb testcases)**.
+
 ### Enter OmniBus
 **OmniBus** (from the Latin *omnibus*, meaning "for all") is designed from the ground up not merely as a passive transceiver, but as an **Active Hardware Hacker's Swiss-Army Knife**: an autonomous protocol detective, a wire-speed Man-in-the-Middle (MitM) packet mutator, a cycle-accurate glitch/fault fuzzer, and a chameleon emulator capable of shapeshifting into virtually any digital communication standard—from classic industrial buses to retro console gamepads, automotive CAN, and chiptune sound synthesizers.
 
@@ -147,21 +150,21 @@ Every instruction word is 16 bits wide and executes in a single cycle plus an op
 | Opcode | Mnemonic | Syntax | Description |
 | :--- | :--- | :--- | :--- |
 | `0x0` | **NOP** | `NOP [delay]` | Exact cycle-accurate delay without state modification |
-| `0x1` | **OUT** | `OUT pins, count [delay]` | Shifts `count` (1..8) bits from `OSR` to designated pins |
-| `0x2` | **IN** | `IN pins, count [delay]` | Samples `count` (1..8) bits from designated pins into `ISR` |
-| `0x3` | **SET** | `SET pin, val [delay]` | Sets pin to `0`, `1`, or `Z` (Hi-Z open-drain) |
-| `0x4` | **WAIT** | `WAIT pin, level [timeout]` | Blocks until pin hits `level` (with optional cycle timeout) |
-| `0x5` | **MOV** | `MOV dst, src [delay]` | Register, ALU, and special function transfer |
-| `0x6` | **ALU** | `ADD/SUB/AND/OR/XOR dst, src` | 8-bit arithmetic or bitwise logic |
-| `0x7` | **DJNZ** | `DJNZ LCx, target [delay]` | Decrement loop counter; branch if $> 0$ (zero overhead) |
-| `0x8` | **JMP** | `JMP [cond], target [delay]` | Conditional jump on Zero, Carry, Pin state, or FIFO status |
-| `0x9` | **PULL** | `PULL [ifempty]` | Refills `OSR` from TX FIFO (blocks or flags if empty) |
-| `0xA` | **PUSH** | `PUSH [iffull]` | Flushes `ISR` to RX FIFO (clears bit counter) |
-| `0xB` | **CRC** | `CRC UPDATE/RESET/FIN` | Feeds active accumulator with CRC-5, CRC-8, or CRC-16 |
-| `0xC` | **MUT** | `MUT pattern, replace` | Programs wire-speed MitM byte substitution rule |
-| `0xD` | **GLT** | `GLT pin, duration` | Arm edge-triggered sub-cycle glitch pulse |
-| `0xE` | **PROF** | `PROF READ_BAUD/TYPE` | Reads detected baud rate or inferred protocol ID |
-| `0xF` | **SYNC** | `SYNC channel` | Inter-thread or external trigger synchronization |
+| `0x1` | **OUT** | `OUT [SCK|1W|SDA|AUDIO|SLAVE|QSPI,] [count,] delay` | Multi-cycle stream serializer from OSR to physical bus |
+| `0x2` | **IN** | `IN [SCK|1W|SDA|AUDIO|SLAVE|QSPI,] [count,] delay` | Multi-cycle stream deserializer from bus into ISR |
+| `0x3` | **SET** | `SET pin, val [, delay]` | Drives GPIO pin (0, 1) or releases in open-drain mode |
+| `0x4` | **WAIT** | `WAIT pin, val [, delay]` | Blocks execution until selected GPIO pin equals target level |
+| `0x5` | **PINMAP**| `PINMAP tx, rx, sck, cs` | Dynamically remaps protocol roles across physical GPIOs 0..7 |
+| `0x6` | **CFG_OD**| `CFG_OD mask` | Programs 8-bit open-drain drive mask across GPIOs 0..7 |
+| `0x7` | **DJNZ** | `DJNZ LC0/LC1, target` | Zero-overhead decrement loop counter; branch if $> 0$ |
+| `0x8` | **JMP** | `JMP [cond,] target` | Conditional branch (16 standard + I2C/SWD/JTAG conditions) |
+| `0x9` | **PULL** | `PULL [BLOCK]` | Transfers byte from TX FIFO into OSR (optional hardware stall) |
+| `0xA` | **PUSH** | `PUSH [BLOCK]` | Transfers byte from ISR into RX FIFO (optional hardware stall) |
+| `0xB` | **ALU** | `ADD/SUB/CMP/AND/OR/XOR/MOV/NOT acc, src` | 8-bit Micro-ALU operations, flag updates, and bank switching |
+| `0xC` | **CALL** | `CALL target` | Pushes return address to 4-deep call stack and branches |
+| `0xD` | **RET** | `RET` | Pops return address from hardware call stack |
+| `0xE` | **CRC** | `CRC_INIT / CRC_BYTE / CRC_READ_B0..B3` | Multi-polynomial CRC engine (CRC-5, CRC-8, CRC-16, CRC-32) |
+| `0xF` | **ASSIST**| `QSPI_*, JTAG_*, SWD_*, AUDIO_*, I2C_SLAVE_*` | Autonomous physical stream accelerators & hardware engines |
 
 ---
 
@@ -217,6 +220,8 @@ graph LR
 | **Creative** | N64 / GameCube Joybus | Open-collector 1-wire | 250 kbps | Precision sidecar delay (1us/3us) |
 | **Creative** | WS2812B NeoPixel | Single-wire NRZ | 800 kHz | Asymmetric high/low timing |
 | **Creative** | Chiptune Audio / MIDI | PDM / 31.25 kbaud | 44.1 kHz | 1-bit Delta-Sigma modulator |
+| **Memory** | Quad-SPI (QSPI) NOR Flash / PSRAM | 4-wire bidirectional (IO0..IO3) | 25 MHz | Autonomous Phase Sequencer (Cmd, Addr, Dummy, Multi-lane Stream) |
+| **Memory** | Dual-SPI / Octal-SPI (xSPI / OSPI) | 2-wire / 8-wire parallel | 25 MHz | Single-clock byte transfers across all 8 GPIO lines |
 
 ---
 

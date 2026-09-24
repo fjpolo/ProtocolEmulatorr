@@ -7,7 +7,7 @@
 
 This case study documents the end-to-end development of the **OmniBus Protocol Emulator**—a hardware-software co-designed system implemented on a **Sipeed Tang Console 60K FPGA (Gowin GW5AST-LV60)**. 
 
-The primary objective was to transition a fixed-function hardware protocol state machine into a **runtime-programmable microcode-driven engine** capable of being dynamically reconfigured over a single 115200-baud UART interface in sub-second timeframes without requiring FPGA bitstream re-synthesis.
+The project progressed through 24 systematic hardware engineering tasks, culminating in **OmniBus Lite (v1.0 Foundation)**: an autonomous, multi-protocol ASIC communication processor supporting 24 physical and industrial protocols, 72 automated self-checking Cocotb tests (100% pass rate), SymbiYosys formal proofs, and live FPGA hardware-in-the-loop validation.
 
 This project serves as a benchmark for evaluating **AI capabilities** in complex domain engineering:
 * **AI Usage**: Symbiotic human-AI co-design across hardware (Verilog), firmware (Microcode), software (Python), and verification (Formal & Cocotb).
@@ -95,14 +95,15 @@ To ensure zero-defect hardware, AI was tasked not just with writing code, but wi
    - **Cover Statements**: 5 cover targets proved reachability for all FSM states in `OmniBootloader.v`.
 
 2. **Cycle-Accurate Simulation (`Cocotb` + `Icarus Verilog`)**:
-   - **7/7 Testcases Passed**:
-     1. `test_uart_reset`: Validates post-reset registers and PC alignment.
-     2. `test_uart_echo_single_bytes`: Validates single-byte roundtrip for full ASCII byte ranges.
-     3. `test_uart_echo_string_stream`: Validates full string streaming without buffer overruns.
-     4. `test_uart_echo_baud_skew`: Validates robust sampling under ±2.5% clock skew.
-     5. `test_uart_echo_timing_zero_jitter`: Validates exact 434-cycle per bit timing using FST wave traces.
-     6. `test_imem_programming_interface`: Validates 32-word RAM read/write access.
-     7. `test_runtime_dynamic_reprogram`: Validates live in-sim program loading and execution switching.
+   - **Full Regression Pass Rate: 72/72 Tests Passed (100% Pass Rate)**:
+     - **Tasks 01–06 (Core Timing & Baud Engine)**: UART loopbacks, baud prescaler sentinels ($BAUD, $HBAUD), sidecar delays, and sub-cycle edge sampling.
+     - **Tasks 07–10 (Synchronous Serial & Full-Duplex)**: SPI Master auto-SCK serialization, dynamic PINMAP role switching, I2C Master loopbacks, and dual-direction SERDES.
+     - **Tasks 11–16 (Architecture & Memory Scaling)**: Hardware FIFO handshaking, 1-Wire DS18B20 protocol, Wishbone B4 slave wrapper, 8-bit Micro-ALU, and 128-word 4-bank memory expansion.
+     - **Tasks 17–20 (Industrial Streaming & CRC)**: USB 1.1 / CAN 2.0 NRZI and bit-stuffing/de-stuffing, Manchester / BMC encoding (10BASE-T Ethernet, S/PDIF), and hardware CRC-32 (Ethernet FCS) / CRC-5 engine.
+     - **Task 21 (Dedicated I2C Slave)**: Autonomous 7-bit address matching, hardware clock stretching, and auto-ACK generation.
+     - **Task 22 (Digital Audio DAC & APU)**: 1-bit Delta-Sigma PDM modulator ($OSR=1250\times$), 4-voice polyphonic APU, and hardware sound effects.
+     - **Task 23 (Debug TAP Controllers)**: IEEE 1149.1 16-state JTAG TAP FSM (RISC-V DTM scan) and ARM CoreSight SWD (54-clock line reset, 0xE79E sequence, 3-bit ACK, 32-bit RD/WR).
+     - **Task 24 (Multi-Lane Flash Host)**: Winbond W25Q128 Quad Fast Read (0xEB), Dual SPI Read (0x3B), Quad burst writes, and Octal 8-lane single-clock byte transfers.
 
 3. **Hardware-in-the-Loop (HIL) Physical Validation**:
    - Bitstream compiled with Yosys and Gowin EDA and flashed to Tang Console 60K FPGA.

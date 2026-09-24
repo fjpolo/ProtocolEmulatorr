@@ -1,13 +1,14 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.6 (Architecture Release — Tasks 01 through 24)
+**Document Revision**: 1.6 (Architecture Release — Tasks 01 through 24)  
+**Architecture Milestone**: OmniBus Lite (v1.0 Foundation)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
 
 ---
 
 ## 1. Device Overview & Key Features
 
-The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable physical-layer communications processor designed to replace dedicated fixed-function protocol controllers (UART, SPI, I2C Master/Slave, SMBus, 1-Wire, USB 1.1, CAN 2.0, WS2812B, NES/SNES Gamepad, 10BASE-T Ethernet, S/PDIF, DALI, 1-Bit Delta-Sigma Audio DAC, IEEE 1149.1 JTAG, ARM Serial Wire Debug SWD) with a unified, high-speed ASIC architecture.
+The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable physical-layer communications processor designed to replace dedicated fixed-function protocol controllers (UART, SPI, I2C Master/Slave, SMBus, 1-Wire, USB 1.1, CAN 2.0, WS2812B, NES/SNES Gamepad, 10BASE-T Ethernet, S/PDIF, DALI, 1-Bit Delta-Sigma Audio DAC, IEEE 1149.1 JTAG, ARM Serial Wire Debug SWD, Quad-SPI & Octal-SPI Multi-Lane Flash/PSRAM Host) with a unified, high-speed ASIC architecture.
 
 ```
                            +---------------------------------------+
