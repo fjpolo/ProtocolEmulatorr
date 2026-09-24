@@ -113,8 +113,14 @@ if "%MODE%"=="glitch" (
         echo [ERROR] Assembly failed!
         exit /b 1
     )
-    echo [LOAD] Loading %DEMO_HEX% into OmniBus IMEM...
-    call "%~dp0load_microcode.bat" "%DEMO_HEX%" %EXTRA_ARGS%
+    echo [LOAD] Loading %DEMO_ASM% into OmniBus IMEM and launching Interactive Console Terminal...
+    echo [*] Interactive Terminal Instructions:
+    echo     - Type any text: characters are echoed back over UART.
+    echo     - Type '!': character is MUTATED to '*' on-the-fly!
+    echo     - A 5-clock-cycle (100 ns) crowbar glitch pulse fires on GPIO 4!
+    echo     - Core prints ' [G]' to confirm hardware glitch execution.
+    echo.
+    python "%~dp0python\omnibus_loader.py" --file "%DEMO_ASM%" --terminal %EXTRA_ARGS%
     goto :done
 )
 

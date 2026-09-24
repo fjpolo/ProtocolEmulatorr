@@ -3,7 +3,7 @@
 ; Module    : OmniBus Protocol Emulator
 ; Task      : Task 25 - Hardware Glitch / Fault Injection & Wire-Speed MitM Engine
 ; Target    : Hardware Security Evaluation, Fault Injection & Active Wire Fuzzing
-; Operation : Autonomous Pattern-Triggered Crowbar Pulse & Real-Time Byte Mutation
+; Operation : Interactive Serial Terminal with Real-Time Mutation & Glitch Pulse
 ; =============================================================================
 
     ; 1. Configure Hardware Glitch Generator:
@@ -17,12 +17,12 @@
     GLITCH_DELAY 10
 
     ; 2. Configure Wire-Speed MitM Fuzzing Engine:
-    ; Match pattern: 0xA5
-    MOV acc, 0xA5
+    ; Match pattern: ASCII '!' (0x21)
+    MOV acc, 0x21
     MITM_MATCH
 
-    ; Replacement byte: 0x55 (fuzzed payload)
-    MOV acc, 0x55
+    ; Replacement byte: ASCII '*' (0x2A) (fuzzed payload)
+    MOV acc, 0x2A
     MITM_REPLACE
 
     ; Bitmask: 0xFF (exact 8-bit match)
@@ -55,10 +55,27 @@ rx_loop:
     JMP rx_loop
 
 glitch_success:
-    ; Glitch fired and completed successfully
-    MOV acc, 0x01
+    ; Print notification tag: ' ' (0x20), '[' (0x5B), 'G' (0x47), ']' (0x5D)
+    MOV acc, 0x20
     MOV OSR, acc
-    OUT 8, $BAUD
+    CALL tx_char
+    MOV acc, 0x5B
+    MOV OSR, acc
+    CALL tx_char
+    MOV acc, 0x47
+    MOV OSR, acc
+    CALL tx_char
+    MOV acc, 0x5D
+    MOV OSR, acc
+    CALL tx_char
 
-halt:
-    JMP halt
+    ; Rearm glitch generator & clear sticky flags for continuous testing
+    MITM_CLR
+    GLITCH_ARM 1
+    JMP rx_loop
+
+tx_char:
+    SET 0, 0, $BAUD
+    OUT 8, $BAUD
+    SET 0, 1, $BAUD
+    RET

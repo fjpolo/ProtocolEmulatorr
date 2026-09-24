@@ -119,6 +119,7 @@ OPCODES = {
     "MITM_ENABLE":       0xF,
     "MITM_DISABLE":      0xF,
     "MITM_RESET":        0xF,
+    "MITM_CLR":          0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -868,7 +869,7 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
-            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD", "GLITCH_CFG", "GLITCH_WIDTH", "GLITCH_DELAY", "GLITCH_DELAY_LO", "GLITCH_DELAY_HI", "GLITCH_ARM", "GLITCH_TRIG", "GLITCH_TRIGGER", "GLITCH_DISARM", "MITM_MATCH", "MITM_REPLACE", "MITM_MASK", "MITM_ENABLE", "MITM_DISABLE", "MITM_RESET"):
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD", "GLITCH_CFG", "GLITCH_WIDTH", "GLITCH_DELAY", "GLITCH_DELAY_LO", "GLITCH_DELAY_HI", "GLITCH_ARM", "GLITCH_TRIG", "GLITCH_TRIGGER", "GLITCH_DISARM", "MITM_MATCH", "MITM_REPLACE", "MITM_MASK", "MITM_ENABLE", "MITM_DISABLE", "MITM_RESET", "MITM_CLR"):
                 # Sub-operations:
                 # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
                 # 2'b01: ASSIST RESET
@@ -1240,7 +1241,7 @@ class OmnibusAssembler:
                 elif sub_cmd in ("MITM_DISABLE", "MITM_DIS"):
                     word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 6
 
-                elif sub_cmd in ("MITM_RESET",):
+                elif sub_cmd in ("MITM_RESET", "MITM_CLR"):
                     word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 7
 
                 elif sub_cmd in ("READ", "STATUS"):
