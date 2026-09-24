@@ -117,7 +117,7 @@ if "%MODE%"=="glitch" (
     echo [*] Interactive Terminal Instructions:
     echo     - Type any text: characters are echoed back over UART.
     echo     - Type '!': character is MUTATED to '*' on-the-fly!
-    echo     - A 5-clock-cycle (100 ns) crowbar glitch pulse fires on GPIO 4!
+    echo     - A 5-clock-cycle [100 ns] crowbar glitch pulse fires on GPIO 4!
     echo     - Core prints ' [G]' to confirm hardware glitch execution.
     echo.
     python "%~dp0python\omnibus_loader.py" --file "%DEMO_ASM%" --terminal %EXTRA_ARGS%
