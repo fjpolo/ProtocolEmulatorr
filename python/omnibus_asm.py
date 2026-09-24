@@ -103,6 +103,22 @@ OPCODES = {
     "QSPI_ADDR":         0xF,
     "QSPI_LOAD_ADDR":    0xF,
     "QSPI_LOAD":         0xF,
+    "GLITCH_CFG":        0xF,  # Task 25: Hardware Glitch & MitM Fuzzing Engine
+    "GLITCH_WIDTH":      0xF,
+    "GLITCH_DELAY":      0xF,
+    "GLITCH_DELAY_LO":   0xF,
+    "GLITCH_DELAY_HI":   0xF,
+    "GLITCH_ARM":        0xF,
+    "GLITCH_TRIG":       0xF,
+    "GLITCH_TRIGGER":    0xF,
+    "GLITCH_DISARM":     0xF,
+    "MITM_CFG":          0xF,
+    "MITM_MATCH":        0xF,
+    "MITM_REPLACE":      0xF,
+    "MITM_MASK":         0xF,
+    "MITM_ENABLE":       0xF,
+    "MITM_DISABLE":      0xF,
+    "MITM_RESET":        0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -201,6 +217,38 @@ class OmnibusAssembler:
             # Check for origin directive: "@04"
             if line.startswith("@"):
                 current_addr = int(line[1:], 0)
+                continue
+
+            # Macro expansion for multi-word Task 25 commands
+            macro_tokens = re.split(r"[,\s]+", line.strip())
+            macro_op = macro_tokens[0].upper()
+            if macro_op == "MITM_CFG" and len(macro_tokens) >= 3:
+                m_match = macro_tokens[1]
+                m_repl = macro_tokens[2]
+                m_mask = macro_tokens[3] if len(macro_tokens) >= 4 else "0xFF"
+                macro_lines = [
+                    f"MOV acc, {m_match}",
+                    "MITM_MATCH",
+                    f"MOV acc, {m_repl}",
+                    "MITM_REPLACE",
+                    f"MOV acc, {m_mask}",
+                    "MITM_MASK",
+                    "MITM_ENABLE"
+                ]
+                for ml in macro_lines:
+                    parsed_instructions.append((line_num, current_addr, ml))
+                    current_addr += 1
+                continue
+            elif macro_op == "GLITCH_CFG" and len(macro_tokens) >= 4:
+                g_pin = macro_tokens[1]
+                g_pol = macro_tokens[2]
+                g_w = macro_tokens[3]
+                parsed_instructions.append((line_num, current_addr, f"GLITCH_CFG {g_pin}, {g_pol}"))
+                current_addr += 1
+                parsed_instructions.append((line_num, current_addr, f"MOV acc, {g_w}"))
+                current_addr += 1
+                parsed_instructions.append((line_num, current_addr, "GLITCH_WIDTH 0"))
+                current_addr += 1
                 continue
 
             parsed_instructions.append((line_num, current_addr, line))
@@ -546,6 +594,9 @@ class OmnibusAssembler:
                     "SWD_WAIT": (1, 9), "ACK_WAIT": (1, 9),
                     "SWD_FAULT": (1, 10), "ACK_FAULT": (1, 10),
                     "JTAG_IDLE": (1, 11), "TAP_IDLE": (1, 11),
+                    # Task 25: Extended Glitch & MitM Condition Codes
+                    "GLITCH_DONE": (1, 12), "GLITCH_FIRED": (1, 12),
+                    "MATCH_FOUND": (1, 13), "MITM_MATCH": (1, 13),
                 }
                 if len(tokens) >= 3:
                     cond_name = tokens[1].strip().upper()
@@ -817,7 +868,7 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
-            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD"):
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD", "GLITCH_CFG", "GLITCH_WIDTH", "GLITCH_DELAY", "GLITCH_DELAY_LO", "GLITCH_DELAY_HI", "GLITCH_ARM", "GLITCH_TRIG", "GLITCH_TRIGGER", "GLITCH_DISARM", "MITM_MATCH", "MITM_REPLACE", "MITM_MASK", "MITM_ENABLE", "MITM_DISABLE", "MITM_RESET"):
                 # Sub-operations:
                 # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
                 # 2'b01: ASSIST RESET
@@ -1132,8 +1183,70 @@ class OmnibusAssembler:
                     idx = eval_arg(arg_tokens[0]) & 3 if arg_tokens else 0
                     word = (0xF << 12) | (1 << 10) | (1 << 8) | (0xF << 4) | (0 << 3) | (idx & 3)
 
+                elif sub_cmd in ("GLITCH_CFG",):
+                    # GLITCH_CFG pin, pol
+                    pin = 0
+                    pol = 0
+                    if arg_tokens:
+                        tok0 = arg_tokens[0].strip().upper()
+                        if tok0 in PIN_NAMES: pin = PIN_NAMES[tok0]
+                        else: pin = eval_arg(tok0) & 7
+                    if len(arg_tokens) > 1:
+                        tok1 = arg_tokens[1].strip().upper()
+                        if tok1 in ("LOW", "ACTIVE_LOW", "CROWBAR", "1"): pol = 1
+                        else: pol = eval_arg(tok1) & 1
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (1 << 4) | (pol << 3) | (pin & 7)
+
+                elif sub_cmd in ("GLITCH_WIDTH",):
+                    w = eval_arg(arg_tokens[0]) & 0xF if arg_tokens else 1
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (2 << 4) | (w & 0xF)
+
+                elif sub_cmd in ("GLITCH_DELAY_LO",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (3 << 4)
+
+                elif sub_cmd in ("GLITCH_DELAY_HI",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (4 << 4)
+
+                elif sub_cmd in ("GLITCH_DELAY",):
+                    d = eval_arg(arg_tokens[0]) & 0xF if arg_tokens else 0
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (5 << 4) | (d & 0xF)
+
+                elif sub_cmd in ("GLITCH_ARM",):
+                    on_match = 0
+                    if arg_tokens:
+                        tok = arg_tokens[0].strip().upper()
+                        if tok in ("MATCH", "1", "TRUE", "PATTERN", "ON_MATCH"):
+                            on_match = 1
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | (3 if on_match else 2)
+
+                elif sub_cmd in ("GLITCH_TRIG", "GLITCH_TRIGGER"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 1
+
+                elif sub_cmd in ("GLITCH_DISARM",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 4
+
+                elif sub_cmd in ("MITM_MATCH",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (6 << 4)
+
+                elif sub_cmd in ("MITM_REPLACE",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (7 << 4)
+
+                elif sub_cmd in ("MITM_MASK",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (8 << 4)
+
+                elif sub_cmd in ("MITM_ENABLE", "MITM_EN"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 5
+
+                elif sub_cmd in ("MITM_DISABLE", "MITM_DIS"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 6
+
+                elif sub_cmd in ("MITM_RESET",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 7
+
                 elif sub_cmd in ("READ", "STATUS"):
-                    if any("I2C_ADDR" in a.upper() or "ADDR" in a.upper() for a in arg_tokens):
+                    if any("GLITCH" in a.upper() or "MITM" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (2 << 8) | (0 << 6) | (1 << 5)
+                    elif any("I2C_ADDR" in a.upper() or "ADDR" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (3 << 8)
                     elif any("I2C" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (1 << 8)

@@ -1,6 +1,6 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.6 (Architecture Release — Tasks 01 through 24)  
+**Document Revision**: 1.7 (Architecture Release — Tasks 01 through 25)  
 **Architecture Milestone**: OmniBus Lite (v1.0 Foundation)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
 
@@ -27,6 +27,11 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
 ### Key Architectural Specifications
 - **Deterministic Zero-Jitter Execution Engine**: Microcode instructions execute in single clock cycles with precision cycle-accurate sidecar delays (up to 5,110 cycles per bit or runtime dynamic baud divisor).
 - **1-Bit Delta-Sigma Audio DAC & 4-Voice Chiptune APU Synthesizer**: 50 MHz 1st-order Delta-Sigma ($\Sigma$-$\Delta$) PDM modulator with $OSR = 1250\times$, single-ended and differential BTL outputs on GPIO pins, 4 polyphonic synthesizer voices (Pulse 1, Pulse 2 with 4 duty cycles, 16-step Triangle, 15-bit/7-bit Galois LFSR Noise), saturation-clamped mixer ($V \le 255$), autonomous hardware sound effects (`BEEP`, `BLIP`, `ERROR`, `COIN`, `LASER`, `SIREN`, `NOISE`), and single-cycle PCM streaming (`OUT AUDIO`).
+- **Hardware Glitch / Fault Injection & Active Wire-Speed MitM Fuzzing Engine**:
+  - **Sub-Cycle Precision Crowbar & Glitch Pulse Generation**: 16-bit countdown delay (0 to 65,535 clock cycles, 20 ns resolution @ 50 MHz), 8-bit pulse width duration (1 to 255 clock cycles), selectable polarity (active-High trigger pulse or active-Low crowbar pulldown), and independent target pin routing (any GPIO 0..7).
+  - **Autonomous Wire-Speed Pattern Matcher**: Single-cycle pattern comparison (`mitm_match_byte[7:0]`) with configurable wildcard bitmask (`mitm_mask[7:0]`). Immediate zero-jitter autonomous trigger-on-match starts glitch countdown upon detecting matching payload byte in deserialized or serialized streams.
+  - **Real-Time Wire-Speed Payload Mutation**: In-flight payload byte substitution (`mitm_replace_byte[7:0]`) or bitwise inversion (`~payload`) during live stream deserialization (`IN` / `PUSH`) and serialization (`PULL` / `OUT`) without bus stalling or CPU intervention.
+  - **Hardware Status & Extended Jump Conditions**: Telemetry register (`ADDR_GLITCH = 0x24`) and zero-overhead conditional branch opcodes (`JMP GLITCH_DONE`, `JMP MATCH_FOUND`).
 - **Quad-SPI (QSPI), Dual-SPI & Octal-SPI Multi-Lane Flash & PSRAM Hardware Host Controller**:
   - High-throughput multi-lane serial interface supporting Single (1-bit), Dual (2-bit), Quad (4-bit IO0..IO3), and Octal (8-bit across all 8 GPIO pins) modes.
   - **Autonomous Protocol Phase Sequencer**: Hardware automation of Instruction Phase (`QSPI_CMD`), Address Phase (`QSPI_ADDR 24|32` across active lanes), Dummy Clock Phase (`QSPI_DUMMY 0..15` with bus in Hi-Z), and multi-byte stream transfers (`IN QSPI`, `OUT QSPI`) with auto-clock toggling.
@@ -331,6 +336,7 @@ The ProtocolEmulator provides a standard 32-bit pipelined Wishbone B4 slave inte
 | **`0x18`** | `WB_REG_AUDIO` | R/W | 32 bits | Audio DAC & Chiptune Synthesizer control & telemetry:<br>`[0]`: `audio_en`<br>`[2:1]`: `audio_mode` (0=Off, 1=PCM, 2=Synth)<br>`[5:3]`: `audio_pin` (GPIO 0..7)<br>`[6]`: `audio_diff` (BTL complementary enable)<br>`[14:7]`: `audio_sample` (8-bit PCM sample)<br>`[18:15]`: `audio_preset` (Active preset ID)<br>`[31]`: `pdm_bit` (Instantaneous 1-bit PDM output monitor). |
 | **`0x1C`** | `WB_REG_DEBUG` | R/W | 32 bits | Hardware JTAG TAP & ARM SWD Host status & telemetry:<br>`[0]`: `jtag_en`<br>`[4:1]`: `jtag_state[3:0]` (16-state TAP FSM)<br>`[5]`: `jtag_tms` (current TMS pin level)<br>`[6]`: `jtag_tck` (current TCK pin level)<br>`[7]`: `jtag_tdo_sampled` (last sampled TDO level)<br>`[8]`: `swd_en`<br>`[11:9]`: `swd_last_ack[2:0]` (`001`=OK, `010`=WAIT, `100`=FAULT)<br>`[12]`: `swd_parity_err` (sticky data parity error)<br>`[13]`: `swd_oe` (SWDIO output drive enable)<br>`[17:14]`: `swd_state[3:0]` (SWD hardware sequencer state). |
 | **`0x20`** | `WB_REG_QSPI` | R | 32 bits | Hardware Quad-SPI Host status and telemetry:<br>`[0]`: `qspi_en`<br>`[2:1]`: `qspi_width[1:0]` (`00`=Single, `01`=Dual, `10`=Quad, `11`=Octal)<br>`[3]`: `qspi_cpol`<br>`[7:4]`: `qspi_state[3:0]` (`1`=CMD, `2`=ADDR, `3`=DUMMY, `4`=RX, `5`=TX)<br>`[15:8]`: `qspi_rx_byte[7:0]` (last byte deserialized across multi-lane bus)<br>`[31:16]`: `qspi_addr_reg[15:0]` (lower 16 bits of physical address register). |
+| **`0x24`** | `WB_REG_GLITCH` | R | 32 bits | Hardware Glitch & MitM Fuzzing status and telemetry:<br>`[2:0]`: `glitch_pin[2:0]` (target GPIO 0..7)<br>`[3]`: `glitch_pol` (0=Active High, 1=Active Low crowbar)<br>`[4]`: `glitch_active` (countdown/pulse in progress)<br>`[5]`: `glitch_armed` (armed state)<br>`[6]`: `mitm_match_found` (sticky pattern match flag)<br>`[7]`: `glitch_fired` (sticky pulse completion flag)<br>`[15:8]`: `mitm_replace_byte[7:0]`<br>`[23:16]`: `glitch_timer[7:0]` (countdown timer lower byte)<br>`[31:24]`: `mitm_match_count[7:0]` (total match events detected). |
 | **`0x80 – 0xFF`**| `WB_IMEM_APERTURE` | R/W | 16 bits | Direct access to 128 microcode memory words (Words 0..127 across banks). |
 
 ---
@@ -437,6 +443,8 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
       - `4'h9` (`0x9`): `JMP SWD_WAIT, <addr>` — Branch if ARM SWD target returned ACK `010` (WAIT).
       - `4'hA` (`0xA`): `JMP SWD_FAULT, <addr>` — Branch if ARM SWD target returned ACK `100` (FAULT).
       - `4'hB` (`0xB`): `JMP JTAG_IDLE, <addr>` — Branch if JTAG TAP controller is in Run-Test/Idle state (`jtag_state == 4'h1`).
+      - `4'hC` (`0xC`): `JMP GLITCH_DONE, <addr>` — Branch if hardware glitch pulse has fired and completed (`glitch_fired == 1`).
+      - `4'hD` (`0xD`): `JMP MATCH_FOUND, <addr>` — Branch if MitM pattern match has occurred (`mitm_match_found == 1`).
 
 #### Opcode `0xB` — `ALU` (8-Bit Arithmetic & Logic Unit)
 - **Format**: `16'b1011_CCCC_DDDDDDDD`
@@ -519,7 +527,9 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
     - `instr[9:8] = 00`: Read status into `acc`: `{stuff_error, manch_error, manch_mode[1:0], manch_en, stuff_mode[1:0], nrzi_en}`
     - `instr[9:8] = 01`: Read upper byte of 16-bit SNES gamepad (`pad_shift_reg[15:8]`) into `acc`
     - `instr[9:8] = 10`:
-      - `instr[7:6] = 00`: Gamepad upper byte
+      - `instr[7:6] = 00`:
+        - `instr[5] = 0`: Gamepad upper byte (`pad_shift_reg[15:8]`)
+        - `instr[5] = 1`: `ASSIST READ, GLITCH` — Read `{mitm_match_found, glitch_fired, glitch_armed, glitch_active, 1'b0, glitch_pin[2:0]}` into `acc`
       - `instr[7:6] = 01`: `ASSIST READ, JTAG` — Read `{jtag_tdo, jtag_state[3:0], jtag_tms, jtag_tck, jtag_en}` into `acc`
       - `instr[7:6] = 10`: `ASSIST READ, SWD_STATUS` — Read `{swd_last_ack[2:0], swd_parity_err, swd_en, 3'b0}` into `acc`
       - `instr[7:6] = 11`: `ASSIST READ, SWD_DATA, <0..3>` — Read byte 0..3 of `swd_data_reg` into `acc`, `isr`, and `o_data`
@@ -529,6 +539,20 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
     - `instr[9:8] = 01`: `ASSIST GAMEPAD_CFG, <NES | SNES> [, LATCH=<cycles>]`
     - `instr[9:8] = 10`: `ASSIST PULSE_TIME0, <t_act_0>`
     - `instr[9:8] = 11`: `ASSIST PULSE_TIME1, <t_act_1>`
+  - `SS = 01`, `instr[9:8] = 00`: Task 25 Hardware Glitch & MitM Engine Configurations:
+    - `instr[7:0] = 0x00`: `GLITCH_DISARM` — Disarm glitch trigger
+    - `instr[7:0] = 0x01`: `GLITCH_TRIG` — Manual software trigger glitch countdown
+    - `instr[7:0] = 0x02`: `GLITCH_ARM 0` — Arm glitch engine for manual software trigger
+    - `instr[7:0] = 0x03`: `GLITCH_ARM 1` — Arm glitch engine for autonomous trigger-on-match
+    - `instr[7:0] = 0x04`: `MITM_DISABLE` — Disable wire-speed MitM engine
+    - `instr[7:0] = 0x05`: `MITM_ENABLE` — Enable wire-speed MitM substitution engine
+    - `instr[7:0] = 0x06`: `MITM_CLR` — Reset MitM match counter and sticky match flag
+    - `instr[7:4] = 0x1`: `GLITCH_CFG <pin>, <pol>` — Configure glitch target pin (0..7) and polarity (0=High, 1=Low crowbar)
+    - `instr[7:4] = 0x2`: `GLITCH_WIDTH <w>` — Configure glitch pulse width duration (1..15 or `acc`)
+    - `instr[7:4] = 0x5`: `GLITCH_DELAY <d>` — Configure glitch countdown delay (1..15 or `acc`)
+    - `instr[7:0] = 0x60`: `MITM_MATCH` — Load `mitm_match_byte <= acc`
+    - `instr[7:0] = 0x70`: `MITM_REPLACE` — Load `mitm_replace_byte <= acc`
+    - `instr[7:0] = 0x80`: `MITM_MASK` — Load `mitm_mask <= acc`
 
 ---
 

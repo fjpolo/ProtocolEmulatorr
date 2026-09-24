@@ -233,6 +233,33 @@ module ProtocolEmulator(
     reg        qspi_phase;        // Clock phase: 0=drive/setup, 1=sample/hold
     reg [7:0]  qspi_rx_byte;      // Assembled received byte
 
+    // =========================================================================
+    // Hardware Glitch / Fault Injection & Wire-Speed MitM Fuzzing Engine (Task 25)
+    // =========================================================================
+    // Glitch Generator State
+    reg        glitch_en;          // 1=Enable hardware glitch pulse engine
+    reg [2:0]  glitch_pin;         // Target GPIO pin for glitch pulse (0..7)
+    reg        glitch_pol;         // Glitch polarity: 0=Active-High, 1=Active-Low (crowbar)
+    reg [7:0]  glitch_width;       // Pulse width in clock cycles (1..255)
+    reg [15:0] glitch_delay;       // Trigger-to-pulse countdown reload value
+    reg [15:0] glitch_timer;       // Active countdown timer
+    reg [7:0]  glitch_pulse_cnt;   // Active pulse duration counter
+    reg        glitch_armed;       // 1=Engine armed and waiting for trigger
+    reg        glitch_fired;       // Sticky status: pulse was delivered
+    reg        glitch_active;      // 1=Glitch pulse currently driven on glitch_pin
+    reg        glitch_on_match;    // 1=Autonomous trigger on pattern match
+    reg [1:0]  glitch_fsm;         // 0=IDLE, 1=DELAY, 2=PULSE
+    reg        glitch_trig_strobe; // 1-cycle manual software trigger strobe
+
+    // Wire-Speed Man-in-the-Middle (MitM) Match & Mutate State
+    reg        mitm_en;            // 1=Enable wire-speed MitM engine
+    reg [7:0]  mitm_match_byte;    // Pattern match byte
+    reg [7:0]  mitm_mask;          // Bitmask for pattern match (1=care, 0=wildcard)
+    reg [7:0]  mitm_replace_byte;  // Replacement byte to inject
+    reg [1:0]  mitm_mode;          // 00=Trigger only, 01=Substitute, 10=Invert
+    reg        mitm_match_found;   // Sticky flag: pattern match occurred
+    reg [7:0]  mitm_match_count;   // Match event counter
+
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
     reg [2:0]  rx_pin;          // Pin index for IN deserializer / default WAIT (default 0)
@@ -565,7 +592,10 @@ module ProtocolEmulator(
                                  is_qspi_lane2 ? qspi_data_out[2] :
                                  is_qspi_lane3 ? qspi_data_out[3] : 1'b0;
 
-            assign i2c_gpio_out[p] = is_audio_main ? pdm_bit :
+            wire is_glitch = glitch_en && glitch_active && (p == glitch_pin);
+
+            assign i2c_gpio_out[p] = is_glitch     ? (glitch_pol ? 1'b0 : 1'b1) :
+                                     is_audio_main ? pdm_bit :
                                      is_audio_diff ? ~pdm_bit :
                                      is_jtag_tck   ? jtag_tck :
                                      is_jtag_tms   ? jtag_tms :
@@ -580,7 +610,8 @@ module ProtocolEmulator(
                                      (i2c_slave_en && (is_tx || is_sck)) ? 1'b1 :
                                      gpio_out_reg[p];
 
-            assign i2c_gpio_oe[p]  = is_audio_main ? 1'b1 :
+            assign i2c_gpio_oe[p]  = is_glitch     ? 1'b1 :
+                                     is_audio_main ? 1'b1 :
                                      is_audio_diff ? 1'b1 :
                                      is_jtag_tck   ? 1'b1 :
                                      is_jtag_tms   ? 1'b1 :
@@ -637,6 +668,7 @@ module ProtocolEmulator(
     wire [15:0] eff_hdelay    = (eff_delay >> 1);
     wire [15:0] debug_hdelay  = (i_baud_div <= 16'd24) ? 16'd3 : (i_baud_div >> 3);
 
+
     // -------------------------------------------------------------------------
     // 2-stage input synchronizer for all 8 GPIO pins
     // Supports backward compatibility: merges i_rx with i_gpio[rx_pin] and i_gpio[0]
@@ -685,6 +717,17 @@ module ProtocolEmulator(
     // Stream Accelerator RX Decoding: NRZI transition detector
     wire nrzi_rx_bit = (gpio_in[rx_pin] == nrzi_rx_prev) ? 1'b1 : 1'b0;
     wire dec_rx_bit  = assist_nrzi_en ? nrzi_rx_bit : gpio_in[rx_pin];
+
+    // Wire-speed MitM & Glitch Triggers (Task 25)
+    wire in_byte_done     = (opcode == 4'h2) && (rx_bit_cnt == 4'd1) && (delay_cnt == 16'd0);
+    wire [7:0] in_fin_byte = {dec_rx_bit, isr[7:1]};
+    wire in_mitm_match    = mitm_en && in_byte_done && ((in_fin_byte & mitm_mask) == (mitm_match_byte & mitm_mask));
+
+    wire pull_byte_done   = (opcode == 4'h9) && (!instr[0] || i_tx_valid);
+    wire pull_mitm_match  = mitm_en && pull_byte_done && ((i_data & mitm_mask) == (mitm_match_byte & mitm_mask));
+
+    wire mitm_match_pulse = in_mitm_match || pull_mitm_match;
+    wire glitch_trigger   = glitch_trig_strobe || (glitch_armed && glitch_on_match && mitm_match_pulse);
 
     // Asymmetric Single-Wire Serializer bit selector
     wire cur_pulse_bit = pulse_msb_first ? osr[7] : osr[0];
@@ -1013,10 +1056,68 @@ module ProtocolEmulator(
             qspi_data_out     <= 8'h00;
             qspi_phase        <= 1'b0;
             qspi_rx_byte      <= 8'h00;
+            glitch_en         <= 1'b0;
+            glitch_pin        <= 3'd0;
+            glitch_pol        <= 1'b0;
+            glitch_width      <= 8'd1;
+            glitch_delay      <= 16'd0;
+            glitch_timer      <= 16'd0;
+            glitch_pulse_cnt  <= 8'd0;
+            glitch_armed      <= 1'b0;
+            glitch_fired      <= 1'b0;
+            glitch_active     <= 1'b0;
+            glitch_on_match   <= 1'b0;
+            glitch_fsm        <= 2'b00;
+            glitch_trig_strobe<= 1'b0;
+            mitm_en           <= 1'b0;
+            mitm_match_byte   <= 8'h00;
+            mitm_mask         <= 8'hFF;
+            mitm_replace_byte <= 8'h00;
+            mitm_mode         <= 2'b01;
+            mitm_match_found  <= 1'b0;
+            mitm_match_count  <= 8'd0;
         end else begin
             // Default: clear single-cycle pop/push strobes
-            o_tx_pop  <= 1'b0;
-            o_rx_push <= 1'b0;
+            o_tx_pop           <= 1'b0;
+            o_rx_push          <= 1'b0;
+            glitch_trig_strobe <= 1'b0;
+
+            // -------------------------------------------------------------
+            // Hardware Glitch Pulse Generator FSM (Task 25)
+            // -------------------------------------------------------------
+            if (mitm_match_pulse) begin
+                mitm_match_found <= 1'b1;
+                mitm_match_count <= mitm_match_count + 8'd1;
+            end
+
+            if (glitch_trigger && (glitch_fsm == 2'b00)) begin
+                glitch_armed <= 1'b0;
+                glitch_fired <= 1'b0;
+                if (glitch_delay == 16'd0) begin
+                    glitch_active    <= 1'b1;
+                    glitch_pulse_cnt <= (glitch_width > 8'd0) ? glitch_width : 8'd1;
+                    glitch_fsm       <= 2'b10;
+                end else begin
+                    glitch_timer <= glitch_delay - 16'd1;
+                    glitch_fsm   <= 2'b01;
+                end
+            end else if (glitch_fsm == 2'b01) begin // DELAY countdown
+                if (glitch_timer == 16'd0) begin
+                    glitch_active    <= 1'b1;
+                    glitch_pulse_cnt <= (glitch_width > 8'd0) ? glitch_width : 8'd1;
+                    glitch_fsm       <= 2'b10;
+                end else begin
+                    glitch_timer <= glitch_timer - 16'd1;
+                end
+            end else if (glitch_fsm == 2'b10) begin // PULSE active
+                if (glitch_pulse_cnt <= 8'd1) begin
+                    glitch_active <= 1'b0;
+                    glitch_fired  <= 1'b1;
+                    glitch_fsm    <= 2'b00;
+                end else begin
+                    glitch_pulse_cnt <= glitch_pulse_cnt - 8'd1;
+                end
+            end
 
             // Track edge transitions on SCL & SDA
             scl_prev <= i2c_scl_in;
@@ -1872,6 +1973,11 @@ module ProtocolEmulator(
                                     pc         <= pc;
                                 end else if (rx_bit_cnt == 4'd1) begin
                                     rx_bit_cnt <= 4'd0;
+                                    if (in_mitm_match && (mitm_mode == 2'b01)) begin
+                                        isr <= mitm_replace_byte;
+                                    end else if (in_mitm_match && (mitm_mode == 2'b10)) begin
+                                        isr <= ~in_fin_byte;
+                                    end
                                     pc         <= pc + 7'd1;
                                 end else begin
                                     rx_bit_cnt <= rx_bit_cnt - 4'd1;
@@ -2066,6 +2172,11 @@ module ProtocolEmulator(
                                     pc         <= (in_count_init == 4'd0) ? pc + 7'd1 : pc;
                                 end else if (rx_bit_cnt == 4'd1) begin
                                     rx_bit_cnt <= 4'd0;
+                                    if (in_mitm_match && (mitm_mode == 2'b01)) begin
+                                        isr <= mitm_replace_byte;
+                                    end else if (in_mitm_match && (mitm_mode == 2'b10)) begin
+                                        isr <= ~in_fin_byte;
+                                    end
                                     pc         <= pc + 7'd1;
                                 end else begin
                                     rx_bit_cnt <= rx_bit_cnt - 4'd1;
@@ -2096,7 +2207,13 @@ module ProtocolEmulator(
                             pc       <= pc;
                             o_tx_pop <= 1'b0;
                         end else begin
-                            osr      <= i_data;
+                            if (pull_mitm_match && (mitm_mode == 2'b01)) begin
+                                osr <= mitm_replace_byte;
+                            end else if (pull_mitm_match && (mitm_mode == 2'b10)) begin
+                                osr <= ~i_data;
+                            end else begin
+                                osr <= i_data;
+                            end
                             o_tx_pop <= i_tx_valid; // 1-cycle pop strobe when data is consumed
                             pc       <= pc + 7'd1;
                         end
@@ -2554,6 +2671,8 @@ module ProtocolEmulator(
                                 4'h9: pc <= (swd_last_ack == 3'b010) ? target : pc + 7'd1;          // JMP SWD_WAIT
                                 4'hA: pc <= (swd_last_ack == 3'b100) ? target : pc + 7'd1;          // JMP SWD_FAULT
                                 4'hB: pc <= (jtag_state == 4'h1) ? target : pc + 7'd1;              // JMP JTAG_IDLE
+                                4'hC: pc <= glitch_fired ? target : pc + 7'd1;                      // JMP GLITCH_DONE
+                                4'hD: pc <= mitm_match_found ? target : pc + 7'd1;                  // JMP MATCH_FOUND
                                 default: pc <= target;
                             endcase
                         end else begin
@@ -2938,20 +3057,106 @@ module ProtocolEmulator(
                             end
                             2'b01: begin
                                 case (instr[9:8])
-                                    2'b00: begin // ASSIST RESET (clear counters, error flags, reset states)
-                                        tx_stuff_cnt    <= 3'd0;
-                                        rx_stuff_cnt    <= 3'd0;
-                                        stuff_error     <= 1'b0;
-                                        nrzi_tx_state   <= 1'b1;
-                                        nrzi_rx_prev    <= 1'b1;
-                                        tx_last_bit     <= 1'b1;
-                                        rx_last_bit     <= 1'b1;
-                                        manch_tx_phase  <= 1'b0;
-                                        manch_rx_phase  <= 1'b0;
-                                        manch_tx_state  <= 1'b0;
-                                        manch_error     <= 1'b0;
-                                        i2c_start_flag  <= 1'b0;
-                                        i2c_stop_flag   <= 1'b0;
+                                    2'b00: begin
+                                        case (instr[7:4])
+                                            4'h0: begin
+                                                case (instr[3:0])
+                                                    4'h0: begin // ASSIST RESET (clear counters, error flags, reset states)
+                                                        tx_stuff_cnt    <= 3'd0;
+                                                        rx_stuff_cnt    <= 3'd0;
+                                                        stuff_error     <= 1'b0;
+                                                        nrzi_tx_state   <= 1'b1;
+                                                        nrzi_rx_prev    <= 1'b1;
+                                                        tx_last_bit     <= 1'b1;
+                                                        rx_last_bit     <= 1'b1;
+                                                        manch_tx_phase  <= 1'b0;
+                                                        manch_rx_phase  <= 1'b0;
+                                                        manch_tx_state  <= 1'b0;
+                                                        manch_error     <= 1'b0;
+                                                        i2c_start_flag  <= 1'b0;
+                                                        i2c_stop_flag   <= 1'b0;
+                                                        pc              <= pc + 7'd1;
+                                                    end
+                                                    4'h1: begin // GLITCH_TRIG: manual software glitch trigger
+                                                        glitch_trig_strobe <= 1'b1;
+                                                        pc <= pc + 7'd1;
+                                                    end
+                                                    4'h2: begin // GLITCH_ARM: manual arm
+                                                        glitch_armed    <= 1'b1;
+                                                        glitch_fired    <= 1'b0;
+                                                        glitch_on_match <= 1'b0;
+                                                        pc <= pc + 7'd1;
+                                                    end
+                                                    4'h3: begin // GLITCH_ARM_MATCH: arm on pattern match
+                                                        glitch_armed    <= 1'b1;
+                                                        glitch_fired    <= 1'b0;
+                                                        glitch_on_match <= 1'b1;
+                                                        pc <= pc + 7'd1;
+                                                    end
+                                                    4'h4: begin // GLITCH_DISARM: disarm and cancel active pulse
+                                                        glitch_armed  <= 1'b0;
+                                                        glitch_active <= 1'b0;
+                                                        glitch_fsm    <= 2'b00;
+                                                        pc <= pc + 7'd1;
+                                                    end
+                                                    4'h5: begin // MITM_ENABLE: substitute mode
+                                                        mitm_en   <= 1'b1;
+                                                        mitm_mode <= 2'b01;
+                                                        pc <= pc + 7'd1;
+                                                    end
+                                                    4'h6: begin // MITM_DISABLE
+                                                        mitm_en <= 1'b0;
+                                                        pc <= pc + 7'd1;
+                                                    end
+                                                    4'h7: begin // MITM_RESET: clear match flag & match count
+                                                        mitm_match_found <= 1'b0;
+                                                        mitm_match_count <= 8'd0;
+                                                        pc <= pc + 7'd1;
+                                                    end
+                                                    default: pc <= pc + 7'd1;
+                                                endcase
+                                            end
+                                            4'h1: begin // GLITCH_CFG <pin>, <pol>: instr[3]=pol, instr[2:0]=pin
+                                                glitch_en   <= 1'b1;
+                                                glitch_pol  <= instr[3];
+                                                glitch_pin  <= instr[2:0];
+                                                if (acc != 8'd0)
+                                                    glitch_width <= acc;
+                                                pc <= pc + 7'd1;
+                                            end
+                                            4'h2: begin // GLITCH_WIDTH: instr[3:0] (if != 0) or acc
+                                                glitch_width <= (instr[3:0] != 4'd0) ? {4'd0, instr[3:0]} : (acc != 8'd0 ? acc : 8'd1);
+                                                pc <= pc + 7'd1;
+                                            end
+                                            4'h3: begin // GLITCH_DELAY_LO: glitch_delay[7:0] <= acc
+                                                glitch_delay[7:0] <= acc;
+                                                pc <= pc + 7'd1;
+                                            end
+                                            4'h4: begin // GLITCH_DELAY_HI: glitch_delay[15:8] <= acc
+                                                glitch_delay[15:8] <= acc;
+                                                pc <= pc + 7'd1;
+                                            end
+                                            4'h5: begin // GLITCH_DELAY: immediate 1..15 or from acc (low 8b, hi 0)
+                                                if (instr[3:0] != 4'd0)
+                                                    glitch_delay <= {12'd0, instr[3:0]};
+                                                else
+                                                    glitch_delay <= {8'd0, acc};
+                                                pc <= pc + 7'd1;
+                                            end
+                                            4'h6: begin // MITM_MATCH: load match_byte from acc
+                                                mitm_match_byte <= acc;
+                                                pc <= pc + 7'd1;
+                                            end
+                                            4'h7: begin // MITM_REPLACE: load replace_byte from acc
+                                                mitm_replace_byte <= acc;
+                                                pc <= pc + 7'd1;
+                                            end
+                                            4'h8: begin // MITM_MASK: load mask from acc
+                                                mitm_mask <= acc;
+                                                pc <= pc + 7'd1;
+                                            end
+                                            default: pc <= pc + 7'd1;
+                                        endcase
                                     end
                                     2'b01: begin
                                         case (instr[7:4])
@@ -3169,10 +3374,16 @@ module ProtocolEmulator(
                                     end
                                     2'b10: begin
                                         case (instr[7:6])
-                                            2'b00: begin // Gamepad upper byte (Task 18)
-                                                acc        <= pad_shift_reg[15:8];
-                                                zero_flag  <= (pad_shift_reg[15:8] == 8'h00);
-                                                carry_flag <= 1'b0;
+                                            2'b00: begin // Gamepad upper byte (Task 18) or Glitch status
+                                                if (instr[5]) begin
+                                                    acc        <= {mitm_match_found, glitch_fired, glitch_armed, glitch_active, 1'b0, glitch_pin};
+                                                    zero_flag  <= !glitch_fired;
+                                                    carry_flag <= mitm_match_found;
+                                                end else begin
+                                                    acc        <= pad_shift_reg[15:8];
+                                                    zero_flag  <= (pad_shift_reg[15:8] == 8'h00);
+                                                    carry_flag <= 1'b0;
+                                                end
                                             end
                                             2'b01: begin // JTAG Status (Task 23)
                                                 acc        <= {jtag_tdo_sampled, jtag_state, jtag_tms, jtag_tck, jtag_en};

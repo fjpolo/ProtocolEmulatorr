@@ -5065,3 +5065,224 @@ halt:
     assert len(octal_sampled_out) >= 1 and octal_sampled_out[0] == 0x55, f"Expected 0x55 on Octal out, got {[hex(b) for b in octal_sampled_out]}"
     assert pushed_bytes == [0xAA], f"Expected [0xAA] on Octal in, got {[hex(b) for b in pushed_bytes]}"
     dut._log.info("Test 24D: Octal-SPI 8-lane transfer PASSED!")
+
+
+# =============================================================================
+# Task 25: Hardware Glitch / Fault Injection & Wire-Speed MitM Fuzzing Engine
+# =============================================================================
+
+@cocotb.test()
+async def test_glitch_pattern_match_trigger(dut):
+    """Task 25A: Cycle-accurate pattern match triggered glitch pulse with exact delay and width."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+    dut.i_baud_div.value = 4
+
+    # Setup glitch on Pin 4 (unassigned GPIO, default Hi-Z): active-High, width=5 cycles, delay=10 cycles, armed on match
+    # MitM pattern match byte = 0xA5
+    asm_source = """
+    GLITCH_CFG 4, 0
+    GLITCH_WIDTH 5
+    GLITCH_DELAY 10
+    GLITCH_ARM 1
+    MOV acc, 0xA5
+    MITM_MATCH
+    MITM_ENABLE
+stream_loop:
+    PULL
+    OUT 0, 4
+    JMP stream_loop
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    await load_program_direct(dut, prog)
+
+    # Monitor Pin 4 (o_gpio[4])
+    glitch_samples = []
+    mon_active = True
+
+    async def pin_monitor():
+        while mon_active:
+            await RisingEdge(dut.i_clk)
+            val = (int(dut.o_gpio.value) >> 4) & 1 if dut.o_gpio.value.is_resolvable else 0
+            oe = (int(dut.o_gpio_oe.value) >> 4) & 1 if dut.o_gpio_oe.value.is_resolvable else 0
+            glitch_samples.append((val, oe))
+
+    mon_task = cocotb.start_soon(pin_monitor())
+
+    # Send non-matching byte first (0x33)
+    dut.i_data.value = 0x33
+    dut.i_tx_valid.value = 1
+    await ClockCycles(dut.i_clk, 30)
+
+    # Verify no glitch occurred for 0x33
+    high_count = sum(1 for v, oe in glitch_samples if v == 1 and oe == 1)
+    assert high_count == 0, f"Glitch pulse triggered on non-matching byte! high_count={high_count}"
+
+    # Now send matching byte (0xA5)
+    glitch_samples.clear()
+    dut.i_data.value = 0xA5
+    dut.i_tx_valid.value = 1
+
+    # Wait for match and pulse delivery
+    for _ in range(60):
+        await RisingEdge(dut.i_clk)
+        if int(dut.glitch_fired.value) == 1:
+            break
+
+    await ClockCycles(dut.i_clk, 5)
+    mon_active = False
+    mon_task.cancel()
+
+    # Analyze glitch pulse timing
+    # Find contiguous run of high samples where oe == 1
+    pulse_runs = []
+    current_run = 0
+    for v, oe in glitch_samples:
+        if v == 1 and oe == 1:
+            current_run += 1
+        elif current_run > 0:
+            pulse_runs.append(current_run)
+            current_run = 0
+    if current_run > 0:
+        pulse_runs.append(current_run)
+
+    dut._log.info(f"Glitch pulse runs observed: {pulse_runs}")
+    assert len(pulse_runs) == 1, f"Expected exactly 1 glitch pulse, got {len(pulse_runs)} runs: {pulse_runs}"
+    assert pulse_runs[0] == 5, f"Expected exact pulse width of 5 cycles (100ns @ 50MHz), got {pulse_runs[0]} cycles"
+    assert int(dut.mitm_match_count.value) == 1, f"Expected mitm_match_count == 1, got {int(dut.mitm_match_count.value)}"
+    assert int(dut.mitm_match_found.value) == 1, "Expected mitm_match_found == 1"
+    assert int(dut.glitch_fired.value) == 1, "Expected glitch_fired == 1"
+    dut._log.info("Test 25A: Cycle-accurate pattern match triggered glitch pulse PASSED!")
+
+
+@cocotb.test()
+async def test_mitm_wire_speed_byte_substitution(dut):
+    """Task 25B: Real-time wire-speed Man-in-the-Middle payload byte mutation."""
+    start_clock(dut.i_clk, CLK_PERIOD_NS)
+    await reset_dut(dut)
+
+    # Use default fast baud for test (baud_div = 10 -> 11 cycles per bit)
+    dut.i_baud_div.value = 10
+    cpb = 11
+
+    # Configure MitM: match 0x42 ('B'), substitute with 0x58 ('X')
+    # Run UART echo transceiver: receives byte, pushes to o_data, and echoes on o_tx
+    asm_source = """
+    MOV acc, 0x42
+    MITM_MATCH
+    MOV acc, 0x58
+    MITM_REPLACE
+    MOV acc, 0xFF
+    MITM_MASK
+    MITM_ENABLE
+echo_loop:
+    WAIT 0, 0, $HBAUD
+    NOP $BAUD
+    IN 8, $BAUD
+    WAIT 0, 1, 0
+    PUSH
+    SET 0, 0, $BAUD
+    OUT 8, $BAUD
+    SET 0, 1, $BAUD
+    JMP echo_loop
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    await load_program_direct(dut, prog)
+
+    tx_host = UARTTransmitter(dut, dut.i_clk, dut.i_rx, cycles_per_bit=cpb)
+    rx_host = UARTReceiver(dut, dut.i_clk, dut.o_tx, cycles_per_bit=cpb)
+
+    test_stream = [0x41, 0x42, 0x43] # 'A', 'B', 'C'
+    received_stream = []
+
+    for expected in test_stream:
+        rx_task = cocotb.start_soon(rx_host.receive_byte_midpoint_sampled())
+        await tx_host.transmit_byte(expected, cycles_per_bit=cpb)
+        byte_val, frame_valid, _ = await rx_task
+        assert frame_valid, f"Framing error on byte 0x{expected:02X}"
+        received_stream.append(byte_val)
+        await ClockCycles(dut.i_clk, 20)
+
+    dut._log.info(f"Captured Echoed Bytes: {[hex(b) for b in received_stream]}")
+    # 'A' (0x41) -> untouched (0x41)
+    # 'B' (0x42) -> MUTATED on-the-fly to 'X' (0x58)!
+    # 'C' (0x43) -> untouched (0x43)
+    assert received_stream == [0x41, 0x58, 0x43], f"Expected [0x41, 0x58, 0x43], got {[hex(b) for b in received_stream]}"
+    assert int(dut.mitm_match_count.value) == 1, f"Expected 1 match count, got {int(dut.mitm_match_count.value)}"
+    assert int(dut.mitm_match_found.value) == 1, "Expected mitm_match_found == 1"
+    dut._log.info("Test 25B: Real-time wire-speed MitM byte mutation PASSED!")
+
+
+@cocotb.test()
+async def test_glitch_manual_software_trigger(dut):
+    """Task 25C: Manual microcode software trigger with active-Low crowbar pulse and JMP GLITCH_DONE."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Pin 3, active-Low (crowbar, pol=1), width=4 cycles, delay=6 cycles
+    asm_source = """
+    GLITCH_CFG 3, 1
+    GLITCH_WIDTH 4
+    GLITCH_DELAY 6
+    GLITCH_ARM 0
+    NOP 2
+    GLITCH_TRIG
+wait_glitch:
+    JMP GLITCH_DONE, glitch_finished
+    JMP wait_glitch
+glitch_finished:
+    NOP 5
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    await load_program_direct(dut, prog)
+
+    # Monitor Pin 3 (o_gpio[3])
+    samples = []
+    mon_active = True
+
+    async def crowbar_monitor():
+        while mon_active:
+            await RisingEdge(dut.i_clk)
+            val = (int(dut.o_gpio.value) >> 3) & 1 if dut.o_gpio.value.is_resolvable else 1
+            oe = (int(dut.o_gpio_oe.value) >> 3) & 1 if dut.o_gpio_oe.value.is_resolvable else 0
+            samples.append((val, oe))
+
+    mon_task = cocotb.start_soon(crowbar_monitor())
+
+    for _ in range(200):
+        await RisingEdge(dut.i_clk)
+        if int(dut.glitch_fired.value) == 1:
+            break
+
+    await ClockCycles(dut.i_clk, 10)
+    mon_active = False
+    mon_task.cancel()
+
+    # Find low pulse where oe == 1 and val == 0 (crowbar active)
+    crowbar_runs = []
+    cur = 0
+    for val, oe in samples:
+        if val == 0 and oe == 1:
+            cur += 1
+        elif cur > 0:
+            crowbar_runs.append(cur)
+            cur = 0
+    if cur > 0:
+        crowbar_runs.append(cur)
+
+    dut._log.info(f"Crowbar runs observed: {crowbar_runs}")
+    assert len(crowbar_runs) == 1, f"Expected 1 crowbar pulse, got {len(crowbar_runs)}: {crowbar_runs}"
+    assert crowbar_runs[0] == 4, f"Expected 4 cycles pulse width, got {crowbar_runs[0]}"
+    assert int(dut.glitch_fired.value) == 1, "glitch_fired should be 1"
+    dut._log.info("Test 25C: Manual software trigger with active-Low crowbar pulse PASSED!")
