@@ -86,6 +86,16 @@ OPCODES = {
     "AUDIO_NOTE_HI":     0xF,
     "AUDIO_PLAY":        0xF,
     "AUDIO_STOP":        0xF,
+    "JTAG_CFG":          0xF,  # Task 23: Dedicated JTAG & SWD Sequencer
+    "JTAG_TMS":          0xF,
+    "JTAG_NAV":          0xF,
+    "JTAG_SHIFT":        0xF,
+    "SWD_CFG":           0xF,
+    "SWD_REQ":           0xF,
+    "SWD_RESET":         0xF,
+    "SWD_RD32":          0xF,
+    "SWD_WR32":          0xF,
+    "SWD_LOAD":          0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -520,6 +530,11 @@ class OmnibusAssembler:
                     "I2C_ACK": (1, 5),
                     "I2C_NACK": (1, 6),
                     "I2C_BUS_ACTIVE": (1, 7), "I2C_ACTIVE": (1, 7),
+                    # Task 23: Extended JTAG & SWD Condition Codes
+                    "SWD_OK": (1, 8), "ACK_OK": (1, 8),
+                    "SWD_WAIT": (1, 9), "ACK_WAIT": (1, 9),
+                    "SWD_FAULT": (1, 10), "ACK_FAULT": (1, 10),
+                    "JTAG_IDLE": (1, 11), "TAP_IDLE": (1, 11),
                 }
                 if len(tokens) >= 3:
                     cond_name = tokens[1].strip().upper()
@@ -791,7 +806,7 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
-            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP"):
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD"):
                 # Sub-operations:
                 # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
                 # 2'b01: ASSIST RESET
@@ -957,11 +972,97 @@ class OmnibusAssembler:
                 elif sub_cmd in ("I2C_RELEASE_SCL", "RELEASE_SCL", "RELEASE"):
                     word = (0xF << 12) | (1 << 10) | (3 << 8)
 
+                elif sub_cmd in ("JTAG_CFG", "JTAG"):
+                    en = 1
+                    if arg_tokens and arg_tokens[0].strip().upper() in ("0", "OFF", "DISABLE"):
+                        en = 0
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (1 << 4) | (en & 1)
+
+                elif sub_cmd in ("JTAG_TMS",):
+                    cnt = eval_arg(arg_tokens[0]) & 0xF if arg_tokens else 1
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (2 << 4) | (cnt & 0xF)
+
+                elif sub_cmd in ("JTAG_NAV",):
+                    NAV_MAP = {
+                        "RESET": 0, "TLR": 0, "TEST_LOGIC_RESET": 0,
+                        "IDLE": 1, "RTI": 1, "RUN_TEST_IDLE": 1,
+                        "SHIFT_DR": 2, "DR": 2,
+                        "SHIFT_IR": 3, "IR": 3,
+                        "EXIT_TO_IDLE": 4, "EXIT": 4, "UPDATE": 4,
+                    }
+                    target_preset = 1
+                    if arg_tokens:
+                        tok = arg_tokens[0].strip().upper()
+                        if tok in NAV_MAP:
+                            target_preset = NAV_MAP[tok]
+                        else:
+                            target_preset = eval_arg(tok) & 0xF
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (3 << 4) | (target_preset & 0xF)
+
+                elif sub_cmd in ("JTAG_SHIFT",):
+                    cnt = 8
+                    exit_on_last = 0
+                    for a in arg_tokens:
+                        item = a.strip().upper()
+                        if "=" in item:
+                            k, v = item.split("=", 1)
+                            if k.strip() in ("EXIT", "EXIT_ON_LAST"):
+                                exit_on_last = 1 if v.strip() in ("1", "TRUE", "ENABLE") else 0
+                        elif item in ("EXIT", "EXIT1"):
+                            exit_on_last = 1
+                        else:
+                            cnt = eval_arg(item) & 0x7
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (7 << 4) | ((exit_on_last & 1) << 3) | (cnt & 0x7)
+
+                elif sub_cmd in ("SWD_CFG", "SWD"):
+                    en = 1
+                    if arg_tokens and arg_tokens[0].strip().upper() in ("0", "OFF", "DISABLE"):
+                        en = 0
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (4 << 4) | (en & 1)
+
+                elif sub_cmd in ("SWD_REQ",):
+                    ap = 0
+                    rnw = 1
+                    swd_addr = 0
+                    if len(arg_tokens) >= 3:
+                        ap = 1 if arg_tokens[0].strip().upper() in ("AP", "1") else 0
+                        rnw = 1 if arg_tokens[1].strip().upper() in ("READ", "RD", "R", "1") else 0
+                        swd_addr = (eval_arg(arg_tokens[2]) >> 2) & 0x3
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (5 << 4) | ((ap & 1) << 3) | ((rnw & 1) << 2) | (swd_addr & 3)
+
+                elif sub_cmd in ("SWD_RESET",):
+                    sw = 1
+                    if arg_tokens and arg_tokens[0].strip().upper() in ("0", "OFF", "NO_SWITCH"):
+                        sw = 0
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (6 << 4) | (sw & 1)
+
+                elif sub_cmd in ("SWD_RD32",):
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (8 << 4)
+
+                elif sub_cmd in ("SWD_WR32",):
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (9 << 4)
+
+                elif sub_cmd in ("SWD_LOAD", "SWD_LOAD_BYTE"):
+                    idx = eval_arg(arg_tokens[0]) & 0x3 if arg_tokens else 0
+                    word = (0xF << 12) | (1 << 10) | (1 << 8) | (10 << 4) | (idx & 0x3)
+
                 elif sub_cmd in ("READ", "STATUS"):
                     if any("I2C_ADDR" in a.upper() or "ADDR" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (3 << 8)
                     elif any("I2C" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (1 << 8)
+                    elif any("JTAG" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (2 << 8) | (1 << 6)
+                    elif any("SWD_DATA" in a.upper() or "DATA" in a.upper() for a in arg_tokens):
+                        b_idx = 0
+                        for a in arg_tokens:
+                            if "0" in a: b_idx = 0
+                            elif "1" in a: b_idx = 1
+                            elif "2" in a: b_idx = 2
+                            elif "3" in a: b_idx = 3
+                        word = (0xF << 12) | (2 << 10) | (2 << 8) | (3 << 6) | (b_idx << 4)
+                    elif any("SWD" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (2 << 8) | (2 << 6)
                     elif any("PAD" in a.upper() or "SNES" in a.upper() or "HIGH" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (2 << 8)
                     else:

@@ -4210,6 +4210,412 @@ halt2:
     dut._log.info("Test 22D: Hardware sound effect presets and AUDIO_STOP PASSED!")
 
 
+# =============================================================================
+# Task 23: Dedicated Hardware JTAG TAP Controller & ARM SWD Hardware Sequencer
+# Supporting RISC-V DTM (Debug Transport Module) & ARM CoreSight
+# =============================================================================
+
+class JTAGTargetModel:
+    """Simulates an IEEE 1149.1 JTAG Target (e.g. RISC-V DTM)."""
+    def __init__(self, dut, idcode=0x10E319, ir_len=5):
+        self.dut = dut
+        self.idcode = idcode
+        self.ir_len = ir_len
+        self.state = 0  # TAP_RESET
+        self.ir = 0x01  # Default IDCODE instruction
+        self.dr = idcode
+        self.tck_pin = 1
+        self.tms_pin = 2
+        self.tdi_pin = 0
+        self.tdo_pin = 3
+        self.running = False
+        self._task = None
+
+    def start(self):
+        self._task = cocotb.start_soon(self.run())
+
+    def stop(self):
+        self.running = False
+        if self._task:
+            self._task.cancel()
+
+    async def run(self):
+        self.running = True
+        prev_tck = 0
+        while self.running:
+            await RisingEdge(self.dut.i_clk)
+            gpio_out = int(self.dut.o_gpio.value)
+            tck = (gpio_out >> self.tck_pin) & 1
+            tms = (gpio_out >> self.tms_pin) & 1
+            tdi = (gpio_out >> self.tdi_pin) & 1
+
+            if prev_tck == 0 and tck == 1:
+                # Rising edge: state transitions & shift in
+                prev_st = self.state
+                self.state = self.next_tap_state(self.state, tms)
+                if self.state == 3:  # CAPTURE_DR
+                    self.dr = self.idcode
+                elif prev_st == 4 and self.state in (4, 5):  # SHIFT_DR shift on subsequent clocks
+                    self.dr = ((self.dr >> 1) | (tdi << 31)) & 0xFFFFFFFF
+                elif self.state == 10:  # CAPTURE_IR
+                    self.ir = 0x01
+                elif prev_st == 11 and self.state in (11, 12):  # SHIFT_IR shift on subsequent clocks
+                    self.ir = ((self.ir >> 1) | (tdi << (self.ir_len - 1))) & ((1 << self.ir_len) - 1)
+
+            elif prev_tck == 1 and tck == 0:
+                # Falling edge: drive TDO on rx_pin
+                if self.state in (3, 4, 5):  # CAPTURE_DR, SHIFT_DR or EXIT1_DR
+                    tdo_bit = self.dr & 1
+                    curr_in = int(self.dut.i_gpio.value)
+                    new_in = (curr_in & ~(1 << self.tdo_pin)) | (tdo_bit << self.tdo_pin)
+                    self.dut.i_gpio.value = new_in
+                    self.dut.i_rx.value = tdo_bit
+                elif self.state in (10, 11, 12):  # CAPTURE_IR, SHIFT_IR or EXIT1_IR
+                    tdo_bit = self.ir & 1
+                    curr_in = int(self.dut.i_gpio.value)
+                    new_in = (curr_in & ~(1 << self.tdo_pin)) | (tdo_bit << self.tdo_pin)
+                    self.dut.i_gpio.value = new_in
+                    self.dut.i_rx.value = tdo_bit
+
+            prev_tck = tck
+
+    def next_tap_state(self, state, tms):
+        LUT = [
+            (1, 0),   # 0: RESET
+            (1, 2),   # 1: IDLE
+            (3, 9),   # 2: SELECT_DR
+            (4, 5),   # 3: CAPTURE_DR
+            (4, 5),   # 4: SHIFT_DR
+            (6, 8),   # 5: EXIT1_DR
+            (6, 7),   # 6: PAUSE_DR
+            (4, 8),   # 7: EXIT2_DR
+            (1, 2),   # 8: UPDATE_DR
+            (10, 0),  # 9: SELECT_IR
+            (11, 12), # 10: CAPTURE_IR
+            (11, 12), # 11: SHIFT_IR
+            (13, 15), # 12: EXIT1_IR
+            (13, 14), # 13: PAUSE_IR
+            (11, 15), # 14: EXIT2_IR
+            (1, 2),   # 15: UPDATE_IR
+        ]
+        return LUT[state][tms]
+
+
+class SWDTargetModel:
+    """Simulates an ARM CoreSight SWD Target (e.g. Cortex-M / RP2350 DP)."""
+    def __init__(self, dut, dp_idcode=0x0BA01477):
+        self.dut = dut
+        self.dp_idcode = dp_idcode
+        self.sclk_pin = 1
+        self.swdio_pin = 0
+        self.running = False
+        self.requests = []
+        self._task = None
+
+    def start(self):
+        self._task = cocotb.start_soon(self.run())
+
+    def stop(self):
+        self.running = False
+        if self._task:
+            self._task.cancel()
+
+    async def run(self):
+        self.running = True
+        prev_sclk = 0
+        req_bits = []
+        state = "IDLE"
+        bit_cnt = 0
+        ack_bits = [1, 0, 0]  # OK: ACK[0]=1, ACK[1]=0, ACK[2]=0
+        data_bits = [(self.dp_idcode >> i) & 1 for i in range(32)]
+        parity = sum(data_bits) % 2
+        data_bits.append(parity)
+
+        out_stream = []
+        out_idx = 0
+
+        while self.running:
+            await RisingEdge(self.dut.i_clk)
+            gpio_out = int(self.dut.o_gpio.value)
+            oe = int(self.dut.o_gpio_oe.value)
+            sclk = (gpio_out >> self.sclk_pin) & 1
+            swdio_out = (gpio_out >> self.swdio_pin) & 1
+            swdio_oe = (oe >> self.swdio_pin) & 1
+
+            # Rising edge of SWCLK
+            if prev_sclk == 0 and sclk == 1:
+                if state == "IDLE":
+                    if swdio_oe == 1 and swdio_out == 1:
+                        # Start bit detected
+                        req_bits = [1]
+                        state = "REQ"
+                elif state == "REQ":
+                    req_bits.append(swdio_out)
+                    if len(req_bits) == 8:
+                        self.requests.append(req_bits)
+                        state = "TRN"
+                        # ACK (1,0,0) + 32-bit Data (LSB-first) + 1 Even Parity bit
+                        out_stream = [1, 0, 0] + [(self.dp_idcode >> i) & 1 for i in range(32)]
+                        out_stream.append(sum(out_stream[3:]) % 2)
+                        out_idx = 0
+                elif state == "TRN":
+                    state = "ACTIVE"
+
+            # Falling edge of SWCLK: target drives SWDIO during turnaround, ACK and Data
+            elif prev_sclk == 1 and sclk == 0:
+                if state == "ACTIVE":
+                    if out_idx < len(out_stream):
+                        curr_in = int(self.dut.i_gpio.value)
+                        bit_to_drive = out_stream[out_idx]
+                        self.dut.i_gpio.value = (curr_in & ~(1 << self.swdio_pin)) | (bit_to_drive << self.swdio_pin)
+                        out_idx += 1
+                    else:
+                        state = "IDLE"
+                        curr_in = int(self.dut.i_gpio.value)
+                        self.dut.i_gpio.value = curr_in & ~(1 << self.swdio_pin)
+
+            prev_sclk = sclk
+
+
+@cocotb.test()
+async def test_jtag_tap_reset_and_navigation(dut):
+    """Task 23A: Verifies IEEE 1149.1 JTAG TAP controller state transitions and JTAG_NAV."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+    dut.i_baud_div.value = 2  # Fast simulation: 1 cycle per half-clock
+
+    asm_source = """
+    JTAG_CFG 1
+    JTAG_NAV RESET
+    JTAG_NAV IDLE
+    JTAG_NAV SHIFT_DR
+    JTAG_NAV IDLE
+    JTAG_NAV SHIFT_IR
+    JTAG_NAV IDLE
+    JMP JTAG_IDLE, reached_idle
+    MOV acc, 0xEE
+    JMP halt
+reached_idle:
+    MOV acc, 0xAA
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+    await load_program_direct(dut, prog)
+
+    # Monitor TAP states during execution
+    observed_states = set()
+    for _ in range(800):
+        await RisingEdge(dut.i_clk)
+        observed_states.add(int(dut.jtag_state.value))
+        if int(dut.pc.value) >= 11:
+            break
+
+    await ClockCycles(dut.i_clk, 10)
+
+    # State 0 (RESET), 1 (IDLE), 4 (SHIFT_DR), 11 (SHIFT_IR) must have been visited
+    assert 0 in observed_states, "TAP_RESET (state 0) must be visited"
+    assert 1 in observed_states, "TAP_IDLE (state 1) must be visited"
+    assert 4 in observed_states, "TAP_SHIFT_DR (state 4) must be visited"
+    assert 11 in observed_states, "TAP_SHIFT_IR (state 11) must be visited"
+    assert int(dut.jtag_state.value) == 1, f"TAP must end in IDLE (state 1), got {int(dut.jtag_state.value)}"
+    assert int(dut.acc.value) == 0xAA, f"0xAA must be in acc indicating JMP JTAG_IDLE succeeded (got 0x{int(dut.acc.value):02X})"
+    dut._log.info("Test 23A: JTAG TAP controller reset, autonomous navigation, and JMP JTAG_IDLE PASSED!")
+
+
+@cocotb.test()
+async def test_jtag_riscv_idcode_scan(dut):
+    """Task 23B: Verifies RISC-V 32-bit IDCODE scan via JTAG TAP controller."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+    dut.i_baud_div.value = 2  # Fast simulation
+
+    jtag_target = JTAGTargetModel(dut, idcode=0x10E319)
+    jtag_target.start()
+
+    asm_source = """
+    JTAG_CFG 1
+    JTAG_NAV RESET
+    JTAG_NAV IDLE
+    JTAG_NAV SHIFT_DR
+    JTAG_SHIFT 8, EXIT=0
+    PUSH
+    JTAG_SHIFT 8, EXIT=0
+    PUSH
+    JTAG_SHIFT 8, EXIT=0
+    PUSH
+    JTAG_SHIFT 8, EXIT=1
+    PUSH
+    JTAG_NAV IDLE
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    pushed_bytes = []
+    async def monitor_rx():
+        while len(pushed_bytes) < 4:
+            await RisingEdge(dut.i_clk)
+            if int(dut.o_rx_push.value) == 1:
+                pushed_bytes.append(int(dut.o_data.value))
+
+    mon = cocotb.start_soon(monitor_rx())
+    await load_program_direct(dut, prog)
+
+    for _ in range(800):
+        await RisingEdge(dut.i_clk)
+        if len(pushed_bytes) == 4:
+            break
+
+    mon.cancel()
+    jtag_target.stop()
+
+    assert len(pushed_bytes) == 4, f"Expected 4 bytes from IDCODE scan, got {len(pushed_bytes)}: {pushed_bytes}"
+    idcode_scanned = pushed_bytes[0] | (pushed_bytes[1] << 8) | (pushed_bytes[2] << 16) | (pushed_bytes[3] << 24)
+    dut._log.info(f"Scanned RISC-V JTAG IDCODE: 0x{idcode_scanned:08X} (bytes: {[hex(b) for b in pushed_bytes]})")
+    assert idcode_scanned == 0x10E319, f"Expected RISC-V IDCODE 0x0010E319, got 0x{idcode_scanned:08X}"
+    dut._log.info("Test 23B: RISC-V DTM IDCODE scan via JTAG TAP controller PASSED!")
+
+
+@cocotb.test()
+async def test_swd_line_reset_and_switching(dut):
+    """Task 23C: Verifies ARM SWD line reset (54 clocks high) and 0xE79E JTAG-to-SWD sequence."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+    dut.i_baud_div.value = 2  # Fast simulation
+
+    asm_source = """
+    SWD_CFG 1
+    SWD_RESET 1
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    swdio_sampled = []
+    prev_sclk = 0
+
+    async def sample_swd():
+        nonlocal prev_sclk
+        while True:
+            await RisingEdge(dut.i_clk)
+            sclk = (int(dut.o_gpio.value) >> 1) & 1
+            swdio = (int(dut.o_gpio.value) >> 0) & 1
+            if prev_sclk == 0 and sclk == 1:
+                swdio_sampled.append(swdio)
+            prev_sclk = sclk
+
+    sampler = cocotb.start_soon(sample_swd())
+    await load_program_direct(dut, prog)
+
+    # Wait for SWD_RESET to complete and core to reach halt (PC=2)
+    for _ in range(1200):
+        await RisingEdge(dut.i_clk)
+        if int(dut.pc.value) == 2 and int(dut.swd_state.value) == 0:
+            break
+
+    sampler.cancel()
+
+    # Sequence structure:
+    # 54 clocks SWDIO=1 (line reset)
+    # 16 clocks 0xE79E (LSB-first: 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1)
+    # 54 clocks SWDIO=1 (post-switch line reset)
+    # 4 clocks SWDIO=0 (post-sync idle)
+    total_clocks = len(swdio_sampled)
+    dut._log.info(f"Captured {total_clocks} SWCLK cycles during SWD_RESET sequence")
+    assert total_clocks >= 120, f"Expected at least 120 SWCLK cycles, got {total_clocks}"
+
+    # Verify first 54 clocks are all 1s
+    assert all(b == 1 for b in swdio_sampled[:50]), "First 50+ clocks must be SWDIO=1 line reset"
+
+    # Extract 16 bits of switch sequence (clocks 54..69)
+    switch_bits = swdio_sampled[54:70]
+    switch_val = 0
+    for idx, bit in enumerate(switch_bits):
+        switch_val |= (bit << idx)
+    dut._log.info(f"Captured JTAG-to-SWD Switch Sequence: 0x{switch_val:04X}")
+    assert switch_val == 0xE79E, f"Expected 0xE79E switch sequence, got 0x{switch_val:04X}"
+
+    dut._log.info("Test 23C: ARM SWD line reset and 0xE79E switching sequence PASSED!")
+
+
+@cocotb.test()
+async def test_swd_request_and_ack_sampling(dut):
+    """Task 23D: Verifies ARM SWD Request packet generation, ACK sampling, and SWD_RD32."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+    dut.i_baud_div.value = 2  # Fast simulation
+
+    swd_target = SWDTargetModel(dut, dp_idcode=0x0BA01477)
+    swd_target.start()
+
+    asm_source = """
+    SWD_CFG 1
+    SWD_REQ DP, READ, 0x00
+    JMP SWD_OK, is_ok
+    MOV acc, 0xFF
+    PUSH
+    JMP halt
+is_ok:
+    SWD_RD32
+    ASSIST READ, SWD_DATA, 0
+    PUSH
+    ASSIST READ, SWD_DATA, 1
+    PUSH
+    ASSIST READ, SWD_DATA, 2
+    PUSH
+    ASSIST READ, SWD_DATA, 3
+    PUSH
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    pushed_bytes = []
+    async def monitor_rx():
+        while len(pushed_bytes) < 4:
+            await RisingEdge(dut.i_clk)
+            if int(dut.o_rx_push.value) == 1:
+                pushed_bytes.append(int(dut.o_data.value))
+
+    mon = cocotb.start_soon(monitor_rx())
+    await load_program_direct(dut, prog)
+
+    for _ in range(1200):
+        await RisingEdge(dut.i_clk)
+        if len(pushed_bytes) == 4:
+            break
+
+    mon.cancel()
+    swd_target.stop()
+
+    assert len(swd_target.requests) >= 1, "Target model must have received at least 1 SWD request"
+    req = swd_target.requests[0]
+    dut._log.info(f"Received SWD request header bits: {req}")
+    # Header format: [1, APnDP, RnW, A2, A3, Parity, 0, 1]
+    # For DP Read addr 0x00: APnDP=0, RnW=1, A2=0, A3=0, Parity=(0^1^0^0)=1 -> [1, 0, 1, 0, 0, 1, 0, 1]
+    assert req == [1, 0, 1, 0, 0, 1, 0, 1], f"Expected DP-IDCODE read request [1,0,1,0,0,1,0,1], got {req}"
+
+    # Verify ACK and data bytes
+    assert int(dut.swd_last_ack.value) == 1, f"Expected SWD ACK=001 (OK), got {int(dut.swd_last_ack.value)}"
+    assert int(dut.swd_parity_err.value) == 0, "SWD parity check must pass with 0 errors"
+
+    assert len(pushed_bytes) == 4, f"Expected 4 bytes from DP-IDCODE read, got {len(pushed_bytes)}: {pushed_bytes}"
+    dp_idcode_read = pushed_bytes[0] | (pushed_bytes[1] << 8) | (pushed_bytes[2] << 16) | (pushed_bytes[3] << 24)
+    dut._log.info(f"Read ARM CoreSight DP-IDCODE: 0x{dp_idcode_read:08X} (bytes: {[hex(b) for b in pushed_bytes]})")
+    assert dp_idcode_read == 0x0BA01477, f"Expected DP-IDCODE 0x0BA01477, got 0x{dp_idcode_read:08X}"
+    dut._log.info("Test 23D: ARM SWD Request generation, ACK sampling, and 32-bit data read PASSED!")
+
+
+
 
 
 
