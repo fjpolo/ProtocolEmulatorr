@@ -49,15 +49,17 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 * [Task 22 — 1-Bit Delta-Sigma Audio DAC & Chiptune PDM Synthesizer Engine](task22.md)
 * [Task 23 — Dedicated Hardware JTAG TAP Controller & ARM SWD Sequencer](task23.md)
 * [Task 24 — Quad-SPI & Multi-Lane Flash/PSRAM Hardware Host Controller](task24.md)
+* [Task 25 — Hardware Glitch / Fault Injection & Active Wire-Speed MitM Fuzzing Engine](task25.md)
 
 ---
 
-## OmniBus Lite: The Complete Architectural Foundation (Tasks 01–24)
+## OmniBus Lite: The Complete Architectural Foundation (Tasks 01–25)
 
-Tasks 01 through 24 establish **OmniBus Lite**—a production-grade, self-contained, silicon-ready protocol processor core:
-* **100% Regression Pass Rate**: All **72 self-checking Cocotb testcases** pass with 0 failures, 0 skips, and 0 regressions.
-* **Proven Silicon Footprint**: ~21,000 standard cells, fitting comfortably within the Tiny Tapeout 6×4 tile allocation on IHP 130nm CMOS5L (~0.72 mm²).
+Tasks 01 through 25 establish **OmniBus Lite**—a production-grade, self-contained, silicon-ready protocol processor core:
+* **100% Regression Pass Rate**: All **82 self-checking Cocotb testcases** (75 core + 7 Wishbone) pass with 0 failures, 0 skips, and 0 regressions.
+* **Proven Silicon Footprint**: ~22,000 standard cells, fitting comfortably within the Tiny Tapeout 6×4 tile allocation on IHP 130nm CMOS5L (~0.72 mm²).
 * **Broad Physical Protocol Coverage**:
+  - **Hardware Security & Fuzzing**: Sub-cycle precision crowbar & glitch pulse generation (1..255 cycles, 20 ns resolution @ 50 MHz), 16-bit countdown delay (0..65535 cycles), autonomous wire-speed pattern matching with wildcard bitmask, real-time in-flight byte mutation, and Wishbone telemetry (`0x24`).
   - **Serial & Industrial**: UART (300 baud – 25 Mbps), SPI (Modes 0–3 up to 25 MHz), I2C Master & Autonomous Hardware Slave with Clock Stretching, 1-Wire, USB 1.1 (NRZI & Bit-Stuffing), CAN 2.0.
   - **High-Speed Multi-Lane**: Single, Dual, Quad, and Octal-SPI (xSPI / OSPI) NOR Flash and PSRAM host engine.
   - **Embedded Debug**: IEEE 1149.1 16-State JTAG TAP Controller & ARM SWD (ADIv5) with RISC-V DTM and ARM CoreSight compatibility.

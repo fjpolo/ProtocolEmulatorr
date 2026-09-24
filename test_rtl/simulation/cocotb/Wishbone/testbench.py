@@ -9,6 +9,14 @@
 #                 5. Interrupt generation & watermark triggers
 # =============================================================================
 
+import sys
+import os
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.."))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
+from python.omnibus_asm import OmnibusAssembler
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles, Timer
@@ -368,3 +376,66 @@ async def test_wb_imem_banking(dut):
     await wb.write(ADDR_CTRL, 0x00) # prog_en = 0
     dut._log.info("Wishbone IMEM Bank Switching test PASSED across all 4 banks!")
 
+
+
+# -----------------------------------------------------------------------------
+# Test 7: Hardware Glitch & Wire-Speed MitM Telemetry Register (0x24)
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_glitch_telemetry(dut):
+    """Test 25D: Verify Wishbone ADDR_GLITCH (0x24) register readback and telemetry."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+
+    ADDR_GLITCH = 0x24
+
+    # 1. Read default ADDR_GLITCH -> should be 0x00000000
+    val = await wb.read(ADDR_GLITCH)
+    dut._log.info(f"Default ADDR_GLITCH: 0x{val:08X}")
+    assert val == 0x00000000, f"Expected 0x00000000 on default ADDR_GLITCH, got 0x{val:08X}"
+
+    # 2. Program core via Wishbone window (0x80) with Glitch & MitM config
+    # Bank 0:
+    # 0: GLITCH_CFG 4, 1 (pin 4, pol 1)
+    # 1: MOV acc, 0xBE
+    # 2: MITM_REPLACE
+    # 3: GLITCH_ARM 0
+    # 4: JMP 4
+    asm_source = """
+    GLITCH_CFG 4, 1
+    MOV acc, 0xBE
+    MITM_REPLACE
+    GLITCH_ARM 0
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    # Halt core and program
+    await wb.write(ADDR_CTRL, 0x02) # prog_en = 1
+    await wb.write(ADDR_IMEM_BANK, 0)
+    for idx, word in enumerate(prog):
+        await wb.write(ADDR_IMEM + (idx * 4), word)
+
+    # Release prog_en to run
+    await wb.write(ADDR_CTRL, 0x00)
+    await ClockCycles(dut.i_wb_clk, 15)
+
+    # Read ADDR_GLITCH:
+    # [31:24] mitm_match_count: 0
+    # [23:16] glitch_timer[7:0]: 0
+    # [15:8]  mitm_replace_byte: 0xBE
+    # [7]     glitch_fired: 0
+    # [6]     mitm_match_found: 0
+    # [5]     glitch_armed: 1
+    # [4]     glitch_active: 0
+    # [3]     glitch_pol: 1
+    # [2:0]   glitch_pin: 4 -> [7:0] = 0010_1100b = 0x2C
+    # Expected word: {0x00, 0x00, 0xBE, 0x2C} = 0x0000BE2C
+    val = await wb.read(ADDR_GLITCH)
+    dut._log.info(f"Configured ADDR_GLITCH: 0x{val:08X}")
+    assert val == 0x0000BE2C, f"Expected 0x0000BE2C, got 0x{val:08X}"
+    dut._log.info("Wishbone Glitch & MitM Telemetry Register (0x24) test PASSED!")

@@ -58,6 +58,7 @@ module OmniBus_Wishbone #(
     localparam [7:0] ADDR_AUDIO     = 8'h18;  // RW: Audio sample, mode, APU control, and telemetry
     localparam [7:0] ADDR_DEBUG     = 8'h1C;  // RO: Hardware JTAG TAP state, SWD ACK, parity error & telemetry
     localparam [7:0] ADDR_QSPI      = 8'h20;  // RO: Hardware Quad-SPI state, width, cpol, rx_byte & addr_reg telemetry
+    localparam [7:0] ADDR_GLITCH    = 8'h24;  // RO: Hardware Glitch status, timer & MitM telemetry
     localparam [7:0] ADDR_IMEM      = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
 
     // =========================================================================
@@ -243,6 +244,7 @@ module OmniBus_Wishbone #(
                 ADDR_AUDIO:     wb_rdata_comb = {core.audio_sample, core.audio_en, core.audio_mode, core.audio_pin, core.audio_preset, core.pdm_bit, 11'd0};
                 ADDR_DEBUG:     wb_rdata_comb = {16'h0000, core.swd_last_ack, core.swd_parity_err, core.swd_en, 3'b000, core.jtag_tdo_sampled, core.jtag_state, core.jtag_tms, core.jtag_tck, core.jtag_en};
                 ADDR_QSPI:      wb_rdata_comb = {core.qspi_addr_reg[15:0], core.qspi_rx_byte, core.qspi_state, core.qspi_cpol, core.qspi_width, core.qspi_en};
+                ADDR_GLITCH:    wb_rdata_comb = {core.mitm_match_count, core.glitch_timer[7:0], core.mitm_replace_byte, core.glitch_fired, core.mitm_match_found, core.glitch_armed, core.glitch_active, core.glitch_pol, core.glitch_pin};
                 default:        wb_rdata_comb = 32'h00000000;
             endcase
         end
