@@ -56,6 +56,7 @@ module OmniBus_Wishbone #(
     localparam [7:0] ADDR_GPIO      = 8'h10;  // RO: GPIO pin readback [i_gpio, o_gpio, o_oe]
     localparam [7:0] ADDR_IMEM_BANK = 8'h14;  // RW: Active IMEM bank for programming window (0..3)
     localparam [7:0] ADDR_AUDIO     = 8'h18;  // RW: Audio sample, mode, APU control, and telemetry
+    localparam [7:0] ADDR_DEBUG     = 8'h1C;  // RO: Hardware JTAG TAP state, SWD ACK, parity error & telemetry
     localparam [7:0] ADDR_IMEM      = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
 
     // =========================================================================
@@ -239,6 +240,7 @@ module OmniBus_Wishbone #(
                 ADDR_GPIO:      wb_rdata_comb = reg_gpio_read;
                 ADDR_IMEM_BANK: wb_rdata_comb = {14'd0, core.active_bank, 1'b0, core.pc, 6'd0, reg_imem_bank};
                 ADDR_AUDIO:     wb_rdata_comb = {core.audio_sample, core.audio_en, core.audio_mode, core.audio_pin, core.audio_preset, core.pdm_bit, 11'd0};
+                ADDR_DEBUG:     wb_rdata_comb = {16'h0000, core.swd_last_ack, core.swd_parity_err, core.swd_en, 3'b000, core.jtag_tdo_sampled, core.jtag_state, core.jtag_tms, core.jtag_tck, core.jtag_en};
                 default:        wb_rdata_comb = 32'h00000000;
             endcase
         end

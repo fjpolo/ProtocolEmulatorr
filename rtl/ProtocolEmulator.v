@@ -178,6 +178,40 @@ module ProtocolEmulator(
     reg [19:0] preset_timer;    // Preset duration timer
     reg [3:0]  preset_step;     // Preset progression step counter
 
+    // =========================================================================
+    // Dedicated Hardware JTAG TAP Controller & ARM SWD Sequencer State (Task 23)
+    // =========================================================================
+    // JTAG TAP Controller State
+    reg        jtag_en;           // 1=Enable JTAG hardware master mode
+    reg [3:0]  jtag_state;        // Current 16-state JTAG TAP FSM state (0=RESET, 1=IDLE, etc.)
+    reg [7:0]  jtag_tms_shifter;  // TMS bit shift register
+    reg [3:0]  jtag_tms_cnt;      // Number of TMS bits remaining to clock
+    reg        jtag_tms;          // Current TMS bit level driven to cs_pin
+    reg        jtag_tck;          // Current TCK clock level driven to sck_pin
+    reg        jtag_tdi;          // Current TDI bit level driven to tx_pin
+    reg        jtag_tdo_sampled;  // Last sampled TDO bit from rx_pin
+    reg [31:0] jtag_dr_reg;       // 32-bit Data Register shift storage (IDCODE / DTMCS / DMI)
+    reg [7:0]  jtag_ir_reg;       // 8-bit Instruction Register shift storage
+    reg [5:0]  jtag_shift_cnt;    // Bit counter for JTAG IR/DR shifts
+    reg        jtag_exit_on_last; // 1=Assert TMS high on final shifted bit to exit Shift state
+    reg        jtag_phase;        // 0=Setup TDI/TMS, TCK low; 1=TCK high, sample TDO, step TAP state
+
+    // ARM SWD Sequencer State
+    reg        swd_en;            // 1=Enable ARM SWD hardware host mode
+    reg [3:0]  swd_state;         // 0=IDLE, 1=REQ, 2=TRN_IN, 3=ACK, 4=TRN_OUT, 5=DATA_TX, 6=DATA_RX, 7=RESET_SYNC, 8=RESET_SWITCH, 9=RESET_POST
+    reg [7:0]  swd_req_byte;      // 8-bit Request Header: [1, APnDP, RnW, A2, A3, Parity, 0, 1]
+    reg [2:0]  swd_last_ack;      // Sampled 3-bit ACK from target (001=OK, 010=WAIT, 100=FAULT)
+    reg        swd_parity_err;    // Sticky flag: set on SWD data parity mismatch
+    reg        swd_swdio_out;     // Current SWDIO drive level
+    reg        swd_sclk;          // Current SWCLK clock level driven to sck_pin
+    reg        swd_oe;            // 1=Drive SWDIO, 0=Tri-state (Hi-Z during target ACK / Read)
+    reg [5:0]  swd_bit_cnt;       // Bit counter for SWD phases
+    reg [31:0] swd_data_reg;      // 32-bit SWD Data read/write storage
+    reg        swd_parity_bit;    // Calculated parity bit
+    reg [7:0]  swd_reset_cnt;     // Counter for 50+ line reset clocks
+    reg [15:0] swd_switch_seq;    // 16-bit JTAG-to-SWD select sequence (0xE79E)
+    reg        swd_phase;         // Clock phase: 0=Falling (drive), 1=Rising (sample)
+
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
     reg [2:0]  rx_pin;          // Pin index for IN deserializer / default WAIT (default 0)
@@ -483,11 +517,25 @@ module ProtocolEmulator(
         for (p = 0; p < 8; p = p + 1) begin : gen_i2c_gpio
             wire is_tx  = (p == tx_pin);
             wire is_sck = (p == sck_pin);
+            wire is_cs  = (p == cs_pin);
+            wire is_rx  = (p == rx_pin);
             wire is_audio_main = audio_en && (p == audio_pin);
             wire is_audio_diff = audio_en && audio_diff && (p == (audio_pin ^ 3'd1));
 
+            wire is_jtag_tck = jtag_en && is_sck;
+            wire is_jtag_tms = jtag_en && is_cs;
+            wire is_jtag_tdi = jtag_en && is_tx;
+
+            wire is_swd_sclk  = swd_en && is_sck;
+            wire is_swd_swdio = swd_en && is_tx;
+
             assign i2c_gpio_out[p] = is_audio_main ? pdm_bit :
                                      is_audio_diff ? ~pdm_bit :
+                                     is_jtag_tck   ? jtag_tck :
+                                     is_jtag_tms   ? jtag_tms :
+                                     is_jtag_tdi   ? jtag_tdi :
+                                     is_swd_sclk   ? swd_sclk :
+                                     is_swd_swdio  ? swd_swdio_out :
                                      (is_tx && slave_sda_drive) ? 1'b0 :
                                      (is_sck && slave_scl_drive) ? 1'b0 :
                                      (i2c_slave_en && (is_tx || is_sck)) ? 1'b1 :
@@ -495,6 +543,12 @@ module ProtocolEmulator(
 
             assign i2c_gpio_oe[p]  = is_audio_main ? 1'b1 :
                                      is_audio_diff ? 1'b1 :
+                                     is_jtag_tck   ? 1'b1 :
+                                     is_jtag_tms   ? 1'b1 :
+                                     is_jtag_tdi   ? 1'b1 :
+                                     (jtag_en && is_rx) ? 1'b0 :
+                                     is_swd_sclk   ? 1'b1 :
+                                     is_swd_swdio  ? swd_oe :
                                      (is_tx && slave_sda_drive) ? 1'b1 :
                                      (is_sck && slave_scl_drive) ? 1'b1 :
                                      (i2c_slave_en && (is_tx || is_sck)) ? 1'b0 :
@@ -538,6 +592,7 @@ module ProtocolEmulator(
     wire [15:0] eff_delay_10x = (eff_delay << 3) + (eff_delay << 1);
     wire [15:0] eff_delay_9x  = (eff_delay << 3) + eff_delay;
     wire [15:0] eff_hdelay    = (eff_delay >> 1);
+    wire [15:0] debug_hdelay  = (i_baud_div <= 16'd24) ? 16'd3 : (i_baud_div >> 3);
 
     // -------------------------------------------------------------------------
     // 2-stage input synchronizer for all 8 GPIO pins
@@ -547,7 +602,8 @@ module ProtocolEmulator(
     genvar g;
     generate
         for (g = 0; g < 8; g = g + 1) begin : gen_gpio_raw
-            assign gpio_raw[g] = (g == rx_pin || g == 3'd0) ? (i_gpio[g] & i_rx) : i_gpio[g];
+            assign gpio_raw[g] = (swd_en && g == tx_pin) ? i_gpio[g] :
+                                 (g == rx_pin || g == 3'd0) ? (i_gpio[g] & i_rx) : i_gpio[g];
         end
     endgenerate
 
@@ -682,6 +738,34 @@ module ProtocolEmulator(
                 c  = (c >> 1) ^ (fb ? 5'h14 : 5'h00);
             end
             fn_crc5_usb = {27'd0, c};
+        end
+    endfunction
+
+    // -------------------------------------------------------------------------
+    // IEEE 1149.1 Standard 16-State JTAG TAP Transition Function
+    // -------------------------------------------------------------------------
+    function [3:0] fn_tap_next;
+        input [3:0] cur;
+        input       tms;
+        begin
+            case (cur)
+                4'h0: fn_tap_next = tms ? 4'h0 : 4'h1; // TEST_LOGIC_RESET
+                4'h1: fn_tap_next = tms ? 4'h2 : 4'h1; // RUN_TEST_IDLE
+                4'h2: fn_tap_next = tms ? 4'h9 : 4'h3; // SELECT_DR_SCAN
+                4'h3: fn_tap_next = tms ? 4'h5 : 4'h4; // CAPTURE_DR
+                4'h4: fn_tap_next = tms ? 4'h5 : 4'h4; // SHIFT_DR
+                4'h5: fn_tap_next = tms ? 4'h8 : 4'h6; // EXIT1_DR
+                4'h6: fn_tap_next = tms ? 4'h6 : 4'h7; // PAUSE_DR
+                4'h7: fn_tap_next = tms ? 4'h8 : 4'h4; // EXIT2_DR
+                4'h8: fn_tap_next = tms ? 4'h2 : 4'h1; // UPDATE_DR
+                4'h9: fn_tap_next = tms ? 4'h0 : 4'hA; // SELECT_IR_SCAN
+                4'hA: fn_tap_next = tms ? 4'hC : 4'hB; // CAPTURE_IR
+                4'hB: fn_tap_next = tms ? 4'hC : 4'hB; // SHIFT_IR
+                4'hC: fn_tap_next = tms ? 4'hF : 4'hD; // EXIT1_IR
+                4'hD: fn_tap_next = tms ? 4'hD : 4'hE; // PAUSE_IR
+                4'hE: fn_tap_next = tms ? 4'hF : 4'hB; // EXIT2_IR
+                4'hF: fn_tap_next = tms ? 4'h2 : 4'h1; // UPDATE_IR
+            endcase
         end
     endfunction
 
@@ -834,6 +918,33 @@ module ProtocolEmulator(
             audio_preset      <= 4'd0;
             preset_timer      <= 20'd0;
             preset_step       <= 4'd0;
+            jtag_en           <= 1'b0;
+            jtag_state        <= 4'h0; // RESET
+            jtag_tms_shifter  <= 8'h00;
+            jtag_tms_cnt      <= 4'd0;
+            jtag_tms          <= 1'b1;
+            jtag_tck          <= 1'b0;
+            jtag_tdi          <= 1'b1;
+            jtag_tdo_sampled  <= 1'b0;
+            jtag_dr_reg       <= 32'd0;
+            jtag_ir_reg       <= 8'd0;
+            jtag_shift_cnt    <= 6'd0;
+            jtag_exit_on_last <= 1'b0;
+            jtag_phase        <= 1'b0;
+            swd_en            <= 1'b0;
+            swd_state         <= 4'd0;
+            swd_req_byte      <= 8'd0;
+            swd_last_ack      <= 3'd0;
+            swd_parity_err    <= 1'b0;
+            swd_swdio_out     <= 1'b1;
+            swd_sclk          <= 1'b0;
+            swd_oe            <= 1'b1;
+            swd_bit_cnt       <= 6'd0;
+            swd_data_reg      <= 32'd0;
+            swd_parity_bit    <= 1'b0;
+            swd_reset_cnt     <= 8'd0;
+            swd_switch_seq    <= 16'hE79E;
+            swd_phase         <= 1'b0;
         end else begin
             // Default: clear single-cycle pop/push strobes
             o_tx_pop  <= 1'b0;
@@ -1046,6 +1157,287 @@ module ProtocolEmulator(
 
             if (delay_cnt > 16'd0) begin
                 delay_cnt <= delay_cnt - 16'd1;
+            end else if (jtag_tms_cnt != 4'd0) begin
+                // -------------------------------------------------------------
+                // JTAG Hardware TMS Bit Clocking Sequencer
+                // -------------------------------------------------------------
+                if (jtag_phase == 1'b0) begin
+                    // Phase 0: Setup TMS on cs_pin, TCK low
+                    jtag_tms   <= jtag_tms_shifter[0];
+                    jtag_tck   <= 1'b0;
+                    jtag_phase <= 1'b1;
+                    delay_cnt  <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                end else begin
+                    // Phase 1: TCK high, step TAP FSM, sample TDO
+                    jtag_tck         <= 1'b1;
+                    jtag_state       <= fn_tap_next(jtag_state, jtag_tms_shifter[0]);
+                    jtag_tdo_sampled <= gpio_in[rx_pin];
+                    jtag_tms_shifter <= {1'b0, jtag_tms_shifter[7:1]};
+                    jtag_tms_cnt     <= jtag_tms_cnt - 4'd1;
+                    jtag_phase       <= 1'b0;
+                    delay_cnt        <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                    if (jtag_tms_cnt == 4'd1) begin
+                        pc <= pc + 7'd1;
+                    end
+                end
+            end else if (jtag_shift_cnt != 4'd0) begin
+                // -------------------------------------------------------------
+                // JTAG Hardware Data Shift Sequencer (DR / IR) (Task 23)
+                // -------------------------------------------------------------
+                if (jtag_phase == 1'b0) begin
+                    jtag_tdi   <= osr[0];
+                    jtag_tms   <= (jtag_shift_cnt == 4'd1 && jtag_exit_on_last) ? 1'b1 : 1'b0;
+                    jtag_tck   <= 1'b0;
+                    jtag_phase <= 1'b1;
+                    delay_cnt  <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                end else begin
+                    jtag_tck         <= 1'b1;
+                    jtag_state       <= fn_tap_next(jtag_state, (jtag_shift_cnt == 4'd1 && jtag_exit_on_last) ? 1'b1 : 1'b0);
+                    jtag_tdo_sampled <= gpio_in[rx_pin];
+                    isr              <= {gpio_in[rx_pin], isr[7:1]};
+                    osr              <= {1'b0, osr[7:1]};
+                    jtag_shift_cnt   <= jtag_shift_cnt - 4'd1;
+                    jtag_phase       <= 1'b0;
+                    delay_cnt        <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                    if (jtag_shift_cnt == 4'd1) begin
+                        acc    <= {gpio_in[rx_pin], isr[7:1]};
+                        o_data <= {gpio_in[rx_pin], isr[7:1]};
+                        pc     <= pc + 7'd1;
+                    end
+                end
+            end else if (swd_state != 4'd0) begin
+                // -------------------------------------------------------------
+                // ARM SWD Hardware Sequencer (Request / Turnaround / ACK / Reset)
+                // -------------------------------------------------------------
+                case (swd_state)
+                    4'd1: begin // REQ: Send 8-bit request header [1, APnDP, RnW, A2, A3, Parity, 0, 1]
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk      <= 1'b0;
+                            swd_oe        <= 1'b1;
+                            swd_swdio_out <= swd_req_byte[0];
+                            swd_phase     <= 1'b1;
+                            delay_cnt     <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk     <= 1'b1;
+                            swd_req_byte <= {1'b0, swd_req_byte[7:1]};
+                            swd_bit_cnt  <= swd_bit_cnt + 6'd1;
+                            swd_phase    <= 1'b0;
+                            delay_cnt    <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                            if (swd_bit_cnt == 6'd7) begin
+                                swd_state   <= 4'd2; // Move to Turnaround (Trn)
+                                swd_bit_cnt <= 6'd0;
+                            end
+                        end
+                    end
+
+                    4'd2: begin // TRN_IN: 1 turnaround cycle (Host drives low/releases to Hi-Z)
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk  <= 1'b0;
+                            swd_oe    <= 1'b0; // Float SWDIO to Hi-Z
+                            swd_phase <= 1'b1;
+                            delay_cnt <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk    <= 1'b1;
+                            swd_state   <= 4'd3; // Move to ACK sampling
+                            swd_bit_cnt <= 6'd0;
+                            swd_phase   <= 1'b0;
+                            delay_cnt   <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end
+                    end
+
+                    4'd3: begin // ACK: Sample 3-bit ACK from target on SWCLK rising edges
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk  <= 1'b0;
+                            swd_oe    <= 1'b0;
+                            swd_phase <= 1'b1;
+                            delay_cnt <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk     <= 1'b1;
+                            swd_last_ack <= {gpio_in[tx_pin], swd_last_ack[2:1]};
+                            swd_bit_cnt  <= swd_bit_cnt + 6'd1;
+                            swd_phase    <= 1'b0;
+                            delay_cnt    <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                            if (swd_bit_cnt == 6'd2) begin
+                                // 3 ACK bits sampled
+                                acc          <= {5'b00000, gpio_in[tx_pin], swd_last_ack[2:1]};
+                                zero_flag    <= ({gpio_in[tx_pin], swd_last_ack[2:1]} == 3'b001); // OK
+                                carry_flag   <= ({gpio_in[tx_pin], swd_last_ack[2:1]} != 3'b001); // Error
+                                swd_state    <= 4'd0; // Done
+                                swd_oe       <= 1'b0; // Keep SWDIO floating for target data phase
+                                pc           <= pc + 7'd1;
+                            end
+                        end
+                    end
+
+                    4'd4: begin // SWD_RD32: 32 data bits from target LSB-first
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk  <= 1'b0;
+                            swd_oe    <= 1'b0; // Target drives
+                            swd_phase <= 1'b1;
+                            delay_cnt <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk     <= 1'b1;
+                            swd_data_reg <= {gpio_in[tx_pin], swd_data_reg[31:1]};
+                            swd_bit_cnt  <= swd_bit_cnt + 6'd1;
+                            swd_phase    <= 1'b0;
+                            delay_cnt    <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                            if (swd_bit_cnt == 6'd31) begin
+                                swd_state   <= 4'd5; // Move to Parity read
+                                swd_bit_cnt <= 6'd0;
+                            end
+                        end
+                    end
+
+                    4'd5: begin // SWD_RD_PARITY: 1 parity bit from target
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk  <= 1'b0;
+                            swd_oe    <= 1'b0;
+                            swd_phase <= 1'b1;
+                            delay_cnt <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk       <= 1'b1;
+                            swd_parity_bit <= gpio_in[tx_pin];
+                            swd_parity_err <= (gpio_in[tx_pin] != ^swd_data_reg);
+                            swd_state      <= 4'd6; // Move to turnaround
+                            swd_phase      <= 1'b0;
+                            delay_cnt      <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end
+                    end
+
+                    4'd6: begin // SWD_RD_TRN: Host reclaims bus
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk      <= 1'b0;
+                            swd_oe        <= 1'b1;
+                            swd_swdio_out <= 1'b0;
+                            swd_phase     <= 1'b1;
+                            delay_cnt     <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk  <= 1'b1;
+                            swd_state <= 4'd0; // Done
+                            swd_phase <= 1'b0;
+                            acc       <= swd_data_reg[7:0];
+                            pc        <= pc + 7'd1;
+                        end
+                    end
+
+                    4'd7: begin // RESET_SYNC: 54 clocks with SWDIO=1
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk      <= 1'b0;
+                            swd_oe        <= 1'b1;
+                            swd_swdio_out <= 1'b1;
+                            swd_phase     <= 1'b1;
+                            delay_cnt     <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk      <= 1'b1;
+                            swd_reset_cnt <= swd_reset_cnt + 8'd1;
+                            swd_phase     <= 1'b0;
+                            delay_cnt     <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                            if (swd_reset_cnt == 8'd53) begin
+                                if (swd_switch_seq != 16'h0000) begin
+                                    swd_state      <= 4'd8; // Move to switch sequence
+                                    swd_bit_cnt    <= 6'd0;
+                                end else begin
+                                    swd_state      <= 4'd9; // Move to post-reset line sync
+                                    swd_reset_cnt  <= 8'd0;
+                                end
+                            end
+                        end
+                    end
+
+                    4'd8: begin // RESET_SWITCH: 16-bit JTAG-to-SWD select sequence (0xE79E LSB-first)
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk      <= 1'b0;
+                            swd_oe        <= 1'b1;
+                            swd_swdio_out <= swd_switch_seq[0];
+                            swd_phase     <= 1'b1;
+                            delay_cnt     <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk       <= 1'b1;
+                            swd_switch_seq <= {1'b0, swd_switch_seq[15:1]};
+                            swd_bit_cnt    <= swd_bit_cnt + 6'd1;
+                            swd_phase      <= 1'b0;
+                            delay_cnt      <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                            if (swd_bit_cnt == 6'd15) begin
+                                swd_state     <= 4'd9; // Move to post-reset line sync
+                                swd_reset_cnt <= 8'd0;
+                            end
+                        end
+                    end
+
+                    4'd9: begin // RESET_POST: 54 clocks SWDIO=1, then 4 clocks SWDIO=0
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk      <= 1'b0;
+                            swd_oe        <= 1'b1;
+                            swd_swdio_out <= (swd_reset_cnt < 8'd54) ? 1'b1 : 1'b0;
+                            swd_phase     <= 1'b1;
+                            delay_cnt     <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk      <= 1'b1;
+                            swd_reset_cnt <= swd_reset_cnt + 8'd1;
+                            swd_phase     <= 1'b0;
+                            delay_cnt     <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                            if (swd_reset_cnt >= 8'd57) begin
+                                swd_state     <= 4'd0; // Done
+                                swd_swdio_out <= 1'b1;
+                                pc            <= pc + 7'd1;
+                            end
+                        end
+                    end
+
+                    4'd10: begin // SWD_WR_TRN: Host drives bus after ACK
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk      <= 1'b0;
+                            swd_oe        <= 1'b1;
+                            swd_swdio_out <= 1'b0;
+                            swd_phase     <= 1'b1;
+                            delay_cnt     <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk    <= 1'b1;
+                            swd_state   <= 4'd11; // Move to data write
+                            swd_bit_cnt <= 6'd0;
+                            swd_phase   <= 1'b0;
+                            delay_cnt   <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end
+                    end
+
+                    4'd11: begin // SWD_WR32: Send 32 data bits LSB-first
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk      <= 1'b0;
+                            swd_oe        <= 1'b1;
+                            swd_swdio_out <= swd_data_reg[0];
+                            swd_phase     <= 1'b1;
+                            delay_cnt     <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk     <= 1'b1;
+                            swd_data_reg <= {1'b0, swd_data_reg[31:1]};
+                            swd_bit_cnt  <= swd_bit_cnt + 6'd1;
+                            swd_phase    <= 1'b0;
+                            delay_cnt    <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                            if (swd_bit_cnt == 6'd31) begin
+                                swd_state   <= 4'd12; // Move to parity bit
+                                swd_bit_cnt <= 6'd0;
+                            end
+                        end
+                    end
+
+                    4'd12: begin // SWD_WR_PARITY: Send parity bit
+                        if (swd_phase == 1'b0) begin
+                            swd_sclk      <= 1'b0;
+                            swd_oe        <= 1'b1;
+                            swd_swdio_out <= swd_parity_bit;
+                            swd_phase     <= 1'b1;
+                            delay_cnt     <= (debug_hdelay > 16'd0) ? debug_hdelay : 16'd1;
+                        end else begin
+                            swd_sclk      <= 1'b1;
+                            swd_state     <= 4'd0; // Done
+                            swd_swdio_out <= 1'b0;
+                            swd_phase     <= 1'b0;
+                            pc            <= pc + 7'd1;
+                        end
+                    end
+
+                    default: swd_state <= 4'd0;
+                endcase
             end else begin
                 case (opcode)
                     4'h4: begin // WAIT: Wait until gpio_in[pin_sel] == pin_val, then delay
@@ -1849,7 +2241,7 @@ module ProtocolEmulator(
                     4'h8: begin // JMP [cond], target: Conditional or Unconditional Jump
                         delay_cnt <= 16'd0;
                         if (instr[7]) begin
-                            // Extended I2C Slave Conditions (Task 21)
+                            // Extended I2C Slave Conditions (Task 21) & JTAG / SWD (Task 23)
                             case (instr[11:8])
                                 4'h0: pc <= i2c_addr_match ? target : pc + 7'd1;                    // JMP I2C_MATCH
                                 4'h1: pc <= i2c_start_flag ? target : pc + 7'd1;                    // JMP I2C_START
@@ -1859,6 +2251,10 @@ module ProtocolEmulator(
                                 4'h5: pc <= !i2c_master_ack ? target : pc + 7'd1;                   // JMP I2C_ACK
                                 4'h6: pc <= i2c_master_ack ? target : pc + 7'd1;                    // JMP I2C_NACK
                                 4'h7: pc <= i2c_bus_active ? target : pc + 7'd1;                    // JMP I2C_BUS_ACTIVE
+                                4'h8: pc <= (swd_last_ack == 3'b001) ? target : pc + 7'd1;          // JMP SWD_OK
+                                4'h9: pc <= (swd_last_ack == 3'b010) ? target : pc + 7'd1;          // JMP SWD_WAIT
+                                4'hA: pc <= (swd_last_ack == 3'b100) ? target : pc + 7'd1;          // JMP SWD_FAULT
+                                4'hB: pc <= (jtag_state == 4'h1) ? target : pc + 7'd1;              // JMP JTAG_IDLE
                                 default: pc <= target;
                             endcase
                         end else begin
@@ -2258,11 +2654,141 @@ module ProtocolEmulator(
                                         i2c_start_flag  <= 1'b0;
                                         i2c_stop_flag   <= 1'b0;
                                     end
-                                    2'b01: begin // I2C_SLAVE_DISABLE
-                                        i2c_slave_en     <= 1'b0;
-                                        i2c_stretch_hold <= 1'b0;
-                                        i2c_drive_ack    <= 1'b0;
-                                        i2c_addr_match   <= 1'b0;
+                                    2'b01: begin
+                                        case (instr[7:4])
+                                            4'h0: begin // I2C_SLAVE_DISABLE
+                                                i2c_slave_en     <= 1'b0;
+                                                i2c_stretch_hold <= 1'b0;
+                                                i2c_drive_ack    <= 1'b0;
+                                                i2c_addr_match   <= 1'b0;
+                                                pc               <= pc + 7'd1;
+                                            end
+                                            4'h1: begin // JTAG_CFG: instr[0]=en
+                                                jtag_en <= instr[0];
+                                                if (!instr[0]) begin
+                                                    jtag_state     <= 4'h0;
+                                                    jtag_tms_cnt   <= 4'd0;
+                                                    jtag_shift_cnt <= 4'd0;
+                                                    jtag_tck       <= 1'b0;
+                                                    jtag_tms       <= 1'b1;
+                                                end
+                                                pc <= pc + 7'd1;
+                                            end
+                                            4'h2: begin // JTAG_TMS <count>: instr[3:0]=cnt (1..8)
+                                                jtag_tms_shifter <= acc;
+                                                jtag_tms_cnt     <= (instr[3:0] == 4'd0) ? 4'd8 : instr[3:0];
+                                                jtag_phase       <= 1'b0;
+                                                pc               <= pc;
+                                            end
+                                            4'h3: begin // JTAG_NAV <preset>: instr[3:0]=preset
+                                                case (instr[3:0])
+                                                    4'h0: begin // RESET (5 ones from any state)
+                                                        jtag_tms_shifter <= 8'b0001_1111;
+                                                        jtag_tms_cnt     <= 4'd5;
+                                                    end
+                                                    4'h1: begin // IDLE
+                                                        if (jtag_state == 4'h4 || jtag_state == 4'hB) begin
+                                                            // From SHIFT: TMS=1(EXIT1), 1(UPDATE), 0(IDLE)
+                                                            jtag_tms_shifter <= 8'b0000_0011;
+                                                            jtag_tms_cnt     <= 4'd3;
+                                                        end else if (jtag_state == 4'h5 || jtag_state == 4'hC) begin
+                                                            // From EXIT1: TMS=1(UPDATE), 0(IDLE)
+                                                            jtag_tms_shifter <= 8'b0000_0001;
+                                                            jtag_tms_cnt     <= 4'd2;
+                                                        end else begin
+                                                            // From RESET or UPDATE: TMS=0(IDLE)
+                                                            jtag_tms_shifter <= 8'b0000_0000;
+                                                            jtag_tms_cnt     <= 4'd1;
+                                                        end
+                                                    end
+                                                    4'h2: begin // SHIFT_DR
+                                                        if (jtag_state == 4'h0) begin
+                                                            // From RESET: TMS=0(IDLE), 1, 0, 0
+                                                            jtag_tms_shifter <= 8'b0000_0010;
+                                                            jtag_tms_cnt     <= 4'd4;
+                                                        end else begin
+                                                            // From IDLE: TMS=1, 0, 0
+                                                            jtag_tms_shifter <= 8'b0000_0001;
+                                                            jtag_tms_cnt     <= 4'd3;
+                                                        end
+                                                    end
+                                                    4'h3: begin // SHIFT_IR
+                                                        if (jtag_state == 4'h0) begin
+                                                            // From RESET: TMS=0(IDLE), 1, 1, 0, 0
+                                                            jtag_tms_shifter <= 8'b0000_0110;
+                                                            jtag_tms_cnt     <= 4'd5;
+                                                        end else begin
+                                                            // From IDLE: TMS=1, 1, 0, 0
+                                                            jtag_tms_shifter <= 8'b0000_0011;
+                                                            jtag_tms_cnt     <= 4'd4;
+                                                        end
+                                                    end
+                                                    4'h4: begin // EXIT_TO_IDLE from EXIT1 (1, 0 -> UPDATE, IDLE)
+                                                        jtag_tms_shifter <= 8'b0000_0001;
+                                                        jtag_tms_cnt     <= 4'd2;
+                                                    end
+                                                    default: begin
+                                                        jtag_tms_shifter <= 8'b0000_0000;
+                                                        jtag_tms_cnt     <= 4'd1;
+                                                    end
+                                                endcase
+                                                jtag_phase <= 1'b0;
+                                                pc         <= pc;
+                                            end
+                                            4'h4: begin // SWD_CFG: instr[0]=en
+                                                swd_en <= instr[0];
+                                                if (!instr[0]) begin
+                                                    swd_state <= 4'd0;
+                                                    swd_oe    <= 1'b0;
+                                                    swd_sclk  <= 1'b0;
+                                                end
+                                                pc <= pc + 7'd1;
+                                            end
+                                            4'h5: begin // SWD_REQ <ap_ndp>, <rnw>, <addr2>: instr[3]=ap, instr[2]=rnw, instr[1:0]=addr2
+                                                // ADIv5 Request: [1, APnDP, RnW, A2, A3, Parity, 0, 1]
+                                                swd_req_byte <= {1'b1, 1'b0, (instr[3] ^ instr[2] ^ instr[1] ^ instr[0]), instr[0], instr[1], instr[2], instr[3], 1'b1};
+                                                swd_state    <= 4'd1; // REQ
+                                                swd_bit_cnt  <= 6'd0;
+                                                swd_phase    <= 1'b0;
+                                                pc           <= pc;
+                                            end
+                                            4'h6: begin // SWD_RESET: instr[0]=switch_jtag_to_swd
+                                                swd_state      <= 4'd7; // RESET_SYNC
+                                                swd_reset_cnt  <= 8'd0;
+                                                swd_switch_seq <= instr[0] ? 16'hE79E : 16'h0000;
+                                                swd_phase      <= 1'b0;
+                                                pc             <= pc;
+                                            end
+                                            4'h7: begin // JTAG_SHIFT: instr[2:0]=count (0=8), instr[3]=exit_on_last
+                                                jtag_shift_cnt    <= (instr[2:0] == 3'd0) ? 4'd8 : {1'b0, instr[2:0]};
+                                                jtag_exit_on_last <= instr[3];
+                                                jtag_phase        <= 1'b0;
+                                                pc                <= pc;
+                                            end
+                                            4'h8: begin // SWD_RD32: Read 32-bit data + parity
+                                                swd_state   <= 4'd4;
+                                                swd_bit_cnt <= 6'd0;
+                                                swd_phase   <= 1'b0;
+                                                pc          <= pc;
+                                            end
+                                            4'h9: begin // SWD_WR32: Write 32-bit data + parity
+                                                swd_state      <= 4'd10; // Trn then write
+                                                swd_bit_cnt    <= 6'd0;
+                                                swd_parity_bit <= ^swd_data_reg;
+                                                swd_phase      <= 1'b0;
+                                                pc             <= pc;
+                                            end
+                                            4'hA: begin // SWD_LOAD_BYTE <byte_idx>: instr[1:0]=idx, loads acc into swd_data_reg
+                                                case (instr[1:0])
+                                                    2'b00: swd_data_reg[7:0]   <= acc;
+                                                    2'b01: swd_data_reg[15:8]  <= acc;
+                                                    2'b10: swd_data_reg[23:16] <= acc;
+                                                    2'b11: swd_data_reg[31:24] <= acc;
+                                                endcase
+                                                pc <= pc + 7'd1;
+                                            end
+                                            default: pc <= pc + 7'd1;
+                                        endcase
                                     end
                                     2'b10: begin // I2C_SLAVE_CFG <addr7> [, stretch=0|1]
                                         i2c_slave_en     <= 1'b1;
@@ -2271,12 +2797,13 @@ module ProtocolEmulator(
                                         i2c_addr_match   <= 1'b0;
                                         i2c_stretch_hold <= 1'b0;
                                         i2c_drive_ack    <= 1'b0;
+                                        pc               <= pc + 7'd1;
                                     end
                                     2'b11: begin // I2C_RELEASE_SCL
                                         i2c_stretch_hold <= 1'b0;
+                                        pc               <= pc + 7'd1;
                                     end
                                 endcase
-                                pc <= pc + 7'd1;
                             end
                             2'b10: begin // ASSIST READ (read status into acc)
                                 case (instr[9:8])
@@ -2290,10 +2817,32 @@ module ProtocolEmulator(
                                         zero_flag  <= !i2c_addr_match;
                                         carry_flag <= i2c_master_ack;
                                     end
-                                    2'b10: begin // Gamepad upper byte
-                                        acc        <= pad_shift_reg[15:8];
-                                        zero_flag  <= (pad_shift_reg[15:8] == 8'h00);
-                                        carry_flag <= 1'b0;
+                                    2'b10: begin
+                                        case (instr[7:6])
+                                            2'b00: begin // Gamepad upper byte (Task 18)
+                                                acc        <= pad_shift_reg[15:8];
+                                                zero_flag  <= (pad_shift_reg[15:8] == 8'h00);
+                                                carry_flag <= 1'b0;
+                                            end
+                                            2'b01: begin // JTAG Status (Task 23)
+                                                acc        <= {jtag_tdo_sampled, jtag_state, jtag_tms, jtag_tck, jtag_en};
+                                                zero_flag  <= (jtag_state == 4'h1); // IDLE
+                                                carry_flag <= (jtag_state == 4'h0); // RESET
+                                            end
+                                            2'b10: begin // SWD Status & ACK (Task 23)
+                                                acc        <= {swd_last_ack, swd_parity_err, swd_en, 3'b000};
+                                                zero_flag  <= (swd_last_ack == 3'b001); // OK
+                                                carry_flag <= swd_parity_err;
+                                            end
+                                            2'b11: begin // SWD 32-bit Data Bytes (Task 23)
+                                                case (instr[5:4])
+                                                    2'b00: begin acc <= swd_data_reg[7:0];   isr <= swd_data_reg[7:0];   o_data <= swd_data_reg[7:0];   end
+                                                    2'b01: begin acc <= swd_data_reg[15:8];  isr <= swd_data_reg[15:8];  o_data <= swd_data_reg[15:8];  end
+                                                    2'b10: begin acc <= swd_data_reg[23:16]; isr <= swd_data_reg[23:16]; o_data <= swd_data_reg[23:16]; end
+                                                    2'b11: begin acc <= swd_data_reg[31:24]; isr <= swd_data_reg[31:24]; o_data <= swd_data_reg[31:24]; end
+                                                endcase
+                                            end
+                                        endcase
                                     end
                                     2'b11: begin // I2C Received Address & RW bit
                                         acc        <= {i2c_rx_addr, i2c_rw_bit};

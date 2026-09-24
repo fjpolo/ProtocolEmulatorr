@@ -1,13 +1,13 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.4 (Architecture Release — Tasks 01 through 22)  
+**Document Revision**: 1.5 (Architecture Release — Tasks 01 through 23)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
 
 ---
 
 ## 1. Device Overview & Key Features
 
-The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable physical-layer communications processor designed to replace dedicated fixed-function protocol controllers (UART, SPI, I2C Master/Slave, SMBus, 1-Wire, USB 1.1, CAN 2.0, WS2812B, NES/SNES Gamepad, 10BASE-T Ethernet, S/PDIF, DALI, 1-Bit Delta-Sigma Audio DAC) with a unified, high-speed ASIC architecture.
+The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable physical-layer communications processor designed to replace dedicated fixed-function protocol controllers (UART, SPI, I2C Master/Slave, SMBus, 1-Wire, USB 1.1, CAN 2.0, WS2812B, NES/SNES Gamepad, 10BASE-T Ethernet, S/PDIF, DALI, 1-Bit Delta-Sigma Audio DAC, IEEE 1149.1 JTAG, ARM Serial Wire Debug SWD) with a unified, high-speed ASIC architecture.
 
 ```
                            +---------------------------------------+
@@ -26,6 +26,10 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
 ### Key Architectural Specifications
 - **Deterministic Zero-Jitter Execution Engine**: Microcode instructions execute in single clock cycles with precision cycle-accurate sidecar delays (up to 5,110 cycles per bit or runtime dynamic baud divisor).
 - **1-Bit Delta-Sigma Audio DAC & 4-Voice Chiptune APU Synthesizer**: 50 MHz 1st-order Delta-Sigma ($\Sigma$-$\Delta$) PDM modulator with $OSR = 1250\times$, single-ended and differential BTL outputs on GPIO pins, 4 polyphonic synthesizer voices (Pulse 1, Pulse 2 with 4 duty cycles, 16-step Triangle, 15-bit/7-bit Galois LFSR Noise), saturation-clamped mixer ($V \le 255$), autonomous hardware sound effects (`BEEP`, `BLIP`, `ERROR`, `COIN`, `LASER`, `SIREN`, `NOISE`), and single-cycle PCM streaming (`OUT AUDIO`).
+- **Dedicated Hardware JTAG TAP Controller & ARM SWD Hardware Sequencer (Supporting RISC-V DTM & ARM CoreSight)**:
+  - **IEEE 1149.1 16-State JTAG TAP Controller**: Fully autonomous hardware FSM (`jtag_state`) with smart multi-clock TMS stepping (`JTAG_NAV RESET`, `IDLE`, `SHIFT_DR`, `SHIFT_IR`, `EXIT_TO_IDLE`), high-speed 1-to-8 bit Data/Instruction Register shifts with auto-Exit1-DR (`JTAG_SHIFT`), and RISC-V Debug Module (DTM) IDCODE/DTMCS/DMI scan support.
+  - **ARM Serial Wire Debug (SWD / ADIv5) Host Engine**: Autonomous 8-bit Request packet generation with hardware Even Parity, automatic 1-cycle bus turnaround (`Trn`), 3-bit target ACK sampling (`001`=OK, `010`=WAIT, `100`=FAULT), 32-bit data read/write (`SWD_RD32`, `SWD_WR32`) with hardware parity verification, and autonomous 54-clock line reset with 16-bit `0xE79E` JTAG-to-SWD select sequence (`SWD_RESET`).
+  - **Extended Debug Jump Conditions**: Zero-overhead conditional branches (`JMP SWD_OK`, `JMP SWD_WAIT`, `JMP SWD_FAULT`, `JMP JTAG_IDLE`).
 - **128-Word Instruction Memory (IMEM)**: Dual-port, runtime-reconfigurable memory divided into 4 selectable 32-word banks (`BANK 0` through `BANK 3`) with in-band or Wishbone programming.
 - **Dedicated Hardware I2C / SMBus Slave Engine**: Autonomous background SCL/SDA edge & framing detection (START, Repeated START, STOP), hardware 7-bit address comparator, automatic ACK assertion (leaving SDA floating on mismatch), hardware clock stretching holding SCL low until released, and microcode slave data transfers (`IN SLAVE`, `OUT SLAVE`).
 - **8-Bit Unified Bidirectional GPIO Bus**: Any protocol role (`TX`, `RX`, `SCK`, `CS`) dynamically mappable to any GPIO pin (`PINMAP`) with per-pin open-drain control (`CFG_OD`).
@@ -320,6 +324,7 @@ The ProtocolEmulator provides a standard 32-bit pipelined Wishbone B4 slave inte
 | **`0x10`** | `WB_REG_GPIO` | R/W | 32 bits | GPIO pin readback, output level, and output enable read/write. |
 | **`0x14`** | `WB_REG_IMEM_BANK` | R/W | 8 bits | Microcode memory bank select register (`[1:0]` = active bank 0..3). |
 | **`0x18`** | `WB_REG_AUDIO` | R/W | 32 bits | Audio DAC & Chiptune Synthesizer control & telemetry:<br>`[0]`: `audio_en`<br>`[2:1]`: `audio_mode` (0=Off, 1=PCM, 2=Synth)<br>`[5:3]`: `audio_pin` (GPIO 0..7)<br>`[6]`: `audio_diff` (BTL complementary enable)<br>`[14:7]`: `audio_sample` (8-bit PCM sample)<br>`[18:15]`: `audio_preset` (Active preset ID)<br>`[31]`: `pdm_bit` (Instantaneous 1-bit PDM output monitor). |
+| **`0x1C`** | `WB_REG_DEBUG` | R/W | 32 bits | Hardware JTAG TAP & ARM SWD Host status & telemetry:<br>`[0]`: `jtag_en`<br>`[4:1]`: `jtag_state[3:0]` (16-state TAP FSM)<br>`[5]`: `jtag_tms` (current TMS pin level)<br>`[6]`: `jtag_tck` (current TCK pin level)<br>`[7]`: `jtag_tdo_sampled` (last sampled TDO level)<br>`[8]`: `swd_en`<br>`[11:9]`: `swd_last_ack[2:0]` (`001`=OK, `010`=WAIT, `100`=FAULT)<br>`[12]`: `swd_parity_err` (sticky data parity error)<br>`[13]`: `swd_oe` (SWDIO output drive enable)<br>`[17:14]`: `swd_state[3:0]` (SWD hardware sequencer state). |
 | **`0x80 – 0xFF`**| `WB_IMEM_APERTURE` | R/W | 16 bits | Direct access to 128 microcode memory words (Words 0..127 across banks). |
 
 ---
@@ -422,6 +427,10 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
       - `3'b101` (`0x5`): `JMP I2C_ACK, <addr>` — Branch if master acknowledged last byte (`i2c_master_ack == 1`).
       - `3'b110` (`0x6`): `JMP I2C_NACK, <addr>` — Branch if master negative-acknowledged (`i2c_master_ack == 0`).
       - `3'b111` (`0x7`): `JMP I2C_BUS_ACTIVE, <addr>` — Branch if bus is currently between START and STOP.
+      - `4'h8` (`0x8`): `JMP SWD_OK, <addr>` — Branch if ARM SWD target returned ACK `001` (OK).
+      - `4'h9` (`0x9`): `JMP SWD_WAIT, <addr>` — Branch if ARM SWD target returned ACK `010` (WAIT).
+      - `4'hA` (`0xA`): `JMP SWD_FAULT, <addr>` — Branch if ARM SWD target returned ACK `100` (FAULT).
+      - `4'hB` (`0xB`): `JMP JTAG_IDLE, <addr>` — Branch if JTAG TAP controller is in Run-Test/Idle state (`jtag_state == 4'h1`).
 
 #### Opcode `0xB` — `ALU` (8-Bit Arithmetic & Logic Unit)
 - **Format**: `16'b1011_CCCC_DDDDDDDD`
@@ -481,12 +490,28 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
       - `3'b110` (`0x6`): `AUDIO_PLAY <preset>` — Trigger autonomous hardware sound effect preset (`BEEP`, `BLIP`, `ERROR`, `COIN`, `LASER`, `SIREN`, `NOISE`).
       - `3'b111` (`0x7`): `AUDIO_STOP` — Halt sound effect preset and silence voices.
   - `SS = 01`:
-    - `instr[9] = 0`: `ASSIST RESET` (Clears bit-stuff counters, `stuff_error`, `manch_error`, and phase trackers)
-    - `instr[9] = 1`: `I2C_SLAVE_CFG <addr7> [, stretch=0|1]` — Configures 7-bit slave address `instr[6:0]` and clock stretch enable `instr[7]`.
+    - `instr[9:8] = 00`: `ASSIST RESET` (Clears bit-stuff counters, `stuff_error`, `manch_error`, and phase trackers)
+    - `instr[9:8] = 01`: Hardware JTAG & ARM SWD Operations (`instr[7:4]`):
+      - `4'h1`: `JTAG_CFG <0|1>` — Enable/disable hardware JTAG engine.
+      - `4'h2`: `JTAG_TMS <count>, <pattern>` — Shift raw pattern out on TMS line.
+      - `4'h3`: `JTAG_NAV <RESET | IDLE | SHIFT_DR | SHIFT_IR | EXIT_TO_IDLE>` — Autonomous multi-clock TAP navigation.
+      - `4'h4`: `SWD_CFG <0|1>` — Enable/disable ARM SWD hardware host engine.
+      - `4'h5`: `SWD_REQ <AP|DP>, <RD|WR>, <addr2>` — 8-bit packet header, Trn, 3-bit ACK sampling.
+      - `4'h6`: `SWD_RESET [switch=0|1]` — 54-clock line reset and optional `0xE79E` JTAG-to-SWD sequence.
+      - `4'h7`: `JTAG_SHIFT <count> [, EXIT=0|1]` — Shift 1..8 bits on TDI/TDO with optional TMS assertion on last bit.
+      - `4'h8`: `SWD_RD32` — Read 32 data bits + parity bit + turnaround from target into `swd_data_reg`.
+      - `4'h9`: `SWD_WR32` — Write turnaround + 32 data bits + parity bit from `swd_data_reg` to target.
+      - `4'hA`: `SWD_LOAD <byte_idx>` — Load `acc` into byte 0..3 of `swd_data_reg`.
+    - `instr[9:8] = 10`: `I2C_SLAVE_CFG <addr7> [, stretch=0|1]` — Configures 7-bit slave address `instr[6:0]` and clock stretch enable `instr[7]`.
+    - `instr[9:8] = 11`: `I2C_RELEASE_SCL` — Releases hardware SCL stretch hold.
   - `SS = 10`: `ASSIST READ`
     - `instr[9:8] = 00`: Read status into `acc`: `{stuff_error, manch_error, manch_mode[1:0], manch_en, stuff_mode[1:0], nrzi_en}`
     - `instr[9:8] = 01`: Read upper byte of 16-bit SNES gamepad (`pad_shift_reg[15:8]`) into `acc`
-    - `instr[9:8] = 10`: `ASSIST READ I2C` — Read I2C status into `acc`: `{2'b00, i2c_bus_active, i2c_master_ack, i2c_rw_bit, i2c_addr_match, i2c_stop_flag, i2c_start_flag}`
+    - `instr[9:8] = 10`:
+      - `instr[7:6] = 00`: Gamepad upper byte
+      - `instr[7:6] = 01`: `ASSIST READ, JTAG` — Read `{jtag_tdo, jtag_state[3:0], jtag_tms, jtag_tck, jtag_en}` into `acc`
+      - `instr[7:6] = 10`: `ASSIST READ, SWD_STATUS` — Read `{swd_last_ack[2:0], swd_parity_err, swd_en, 3'b0}` into `acc`
+      - `instr[7:6] = 11`: `ASSIST READ, SWD_DATA, <0..3>` — Read byte 0..3 of `swd_data_reg` into `acc`, `isr`, and `o_data`
     - `instr[9:8] = 11`: `ASSIST READ ADDR` — Read received 7-bit slave address `i2c_rx_addr[6:0]` into `acc[6:0]`
   - `SS = 11`: Task 18 Pulse & Retro Gamepad Configurations:
     - `instr[9:8] = 00`: `ASSIST PULSE_CFG [, NEOPIXEL | JOYBUS]`
@@ -633,3 +658,72 @@ ALU MOV, isr, acc
 PUSH                            ; Send upper byte to host RX FIFO
 NOP
 ```
+
+### Complete Example 3: RISC-V DTM IDCODE Scan via JTAG TAP Controller
+```asm
+; ==============================================================================
+; OmniBus RISC-V JTAG DTM IDCODE Scan (IEEE 1149.1)
+; Pin 0 = TDI, Pin 1 = TCK, Pin 2 = TMS, Pin 3 = TDO
+; ==============================================================================
+PINMAP 0, 3, 1, 2
+JTAG_CFG 1
+JTAG_NAV RESET                  ; 5 clocks TMS=1 to Test-Logic-Reset
+JTAG_NAV IDLE                   ; Step to Run-Test/Idle
+JTAG_NAV SHIFT_DR               ; Select-DR -> Capture-DR -> Shift-DR
+
+; Scan 32-bit IDCODE (4 bytes)
+JTAG_SHIFT 8, EXIT=0            ; Byte 0 (bits 7:0)
+PUSH
+JTAG_SHIFT 8, EXIT=0            ; Byte 1 (bits 15:8)
+PUSH
+JTAG_SHIFT 8, EXIT=0            ; Byte 2 (bits 23:16)
+PUSH
+JTAG_SHIFT 8, EXIT=1            ; Byte 3 (bits 31:24) with auto-Exit1-DR
+PUSH
+
+JTAG_NAV IDLE                   ; Return to Run-Test/Idle
+halt:
+JMP halt
+```
+
+### Complete Example 4: ARM CoreSight & Hybrid RISC-V SWD Probe
+```asm
+; ==============================================================================
+; OmniBus ARM SWD / CoreSight Debug Port Probe
+; Pin 0 = SWDIO (Bidirectional), Pin 1 = SWCLK (Clock output)
+; ==============================================================================
+PINMAP 0, 0, 1, 2
+SWD_CFG 1
+SWD_RESET 1                     ; 54 clocks line reset + 0xE79E JTAG-to-SWD switch
+
+; Request DP IDCODE (APnDP=0, RnW=1, Addr=0x00)
+SWD_REQ DP, READ, 0x00
+JMP SWD_OK, read_idcode
+MOV acc, 0xFF                   ; Error indicator
+MOV isr, acc
+PUSH
+JMP halt
+
+read_idcode:
+SWD_RD32                        ; Read 32 bits + parity bit + turnaround
+JMP CARRY, parity_err
+
+; Push 4 DP IDCODE bytes to RX FIFO
+ASSIST READ, SWD_DATA, 0
+PUSH
+ASSIST READ, SWD_DATA, 1
+PUSH
+ASSIST READ, SWD_DATA, 2
+PUSH
+ASSIST READ, SWD_DATA, 3
+PUSH
+JMP halt
+
+parity_err:
+MOV acc, 0xEE
+MOV isr, acc
+PUSH
+halt:
+JMP halt
+```
+
