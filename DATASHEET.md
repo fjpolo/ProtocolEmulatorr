@@ -3,6 +3,7 @@
 **Document Revision**: 1.7 (Architecture Release — Tasks 01 through 25)  
 **Architecture Milestone**: OmniBus Lite (v1.0 Foundation)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
+**Dedicated User Guides**: [GLITCH_MITM_USER_GUIDE.md](GLITCH_MITM_USER_GUIDE.md) (Hardware Fault Injection & Wire-Speed MitM Fuzzing)  
 
 ---
 

@@ -4,6 +4,7 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 
 > Detailed Specifications:
 > - Hardware Datasheet & Terminal Specifications: [DATASHEET.md](DATASHEET.md)
+> - Glitch / Fault Injector & MitM Engine User Guide: [GLITCH_MITM_USER_GUIDE.md](GLITCH_MITM_USER_GUIDE.md)
 > - Architecture and Hardware ISA: [CONCEPT.md](CONCEPT.md)
 > - Assembler, Compiler, and Toolchain: [TOOLCHAIN_CONCEPT.md](TOOLCHAIN_CONCEPT.md)
 
