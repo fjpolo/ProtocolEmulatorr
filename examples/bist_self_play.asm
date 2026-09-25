@@ -5,33 +5,62 @@
 ; 
 ; Architecture:
 ;   - Fully autonomous self-verification executing on real silicon.
+;   - Live UART telemetry reporting at 115200 baud out Pin 0 / TX pin.
 ;   - Uses the Internal Virtual Crossbar to route signals internally without
 ;     requiring external loopback jumpers or logic analyzer probes.
-;   - Evaluates:
-;       * Stage 1: ALU Arithmetic & Logic Operations
-;       * Stage 2: Direct Virtual Crossbar Pin Loopback
-;       * Stage 3: Split Dual-Channel (Channel A Master <-> Channel B Slave)
-;       * Stage 4: Continuous Telemetry & LED Real-Time Scoring
+;   - Real-time LED status & scoring telemetry.
+;   - Live ASCII Reporting:
+;       BIST:
+;       S1:OK
+;       S2:OK
+;       S3:OK
+;       S4:OK
+;       ..................
 ; ==============================================================================
 
-; --- Initialization & Reset BIST Counters ---
+.clock 50000000
+.baud 115200
+
 start:
+    SET 0, 1, 0                 ; Idle UART TX (Pin 0 high)
     BIST_RST                    ; Reset all vector, pass, and fail counters
     BIST_START                  ; Enable hardware BIST engine
     NOP 10
+
+    ; Print "\r\nBIST\r\n"
+    MOV acc, '\r'
+    CALL tx_byte
+    MOV acc, '\n'
+    CALL tx_byte
+    MOV acc, 'B'
+    CALL tx_byte
+    MOV acc, 'I'
+    CALL tx_byte
+    MOV acc, 'S'
+    CALL tx_byte
+    MOV acc, 'T'
+    CALL tx_byte
+    MOV acc, '\r'
+    CALL tx_byte
+    MOV acc, '\n'
+    CALL tx_byte
 
 ; ==============================================================================
 ; STAGE 1: ALU Arithmetic & Flags Self-Test
 ; ==============================================================================
 stage1:
-    BIST_STAGE 1                ; Signal Stage 1 on LED high nibble
-    
+    BIST_STAGE 1                ; Signal Stage 1
+    MOV acc, 'S'
+    CALL tx_byte
+    MOV acc, '1'
+    CALL tx_byte
+
     ; Test ADD & Zero/Carry Flags
     MOV acc, 0x55
     ADD acc, 0xAA               ; 0x55 + 0xAA = 0xFF (no carry, non-zero)
     JMP ZERO, stage1_fail
     JMP CARRY, stage1_fail
-    
+
     ADD acc, 0x01               ; 0xFF + 0x01 = 0x00 (carry=1, zero=1)
     JMP NOT_ZERO, stage1_fail
     JMP NOT_CARRY, stage1_fail
@@ -43,54 +72,60 @@ stage1:
 
     ; Stage 1 Success
     BIST_PASS
+    CALL print_ok
     JMP stage2
 
 stage1_fail:
     BIST_FAIL
+    CALL print_err
     ; Fall-through to Stage 2
 
 ; ==============================================================================
 ; STAGE 2: Direct Virtual Crossbar Loopback Self-Test
 ; ==============================================================================
 stage2:
-    BIST_STAGE 2                ; Signal Stage 2 on LED high nibble
+    BIST_STAGE 2                ; Signal Stage 2
+    MOV acc, 'S'
+    CALL tx_byte
+    MOV acc, '2'
+    CALL tx_byte
+
     BIST_LOOP                   ; Lock crossbar to direct loopback (pin P -> pin P)
     NOP 10
-
-    ; Drive pin 0 High, verify through crossbar
-    SET 0, 1, 20
-    WAIT 0, 1, 100
-
-    ; Drive pin 0 Low, verify through crossbar
-    SET 0, 0, 20
-    WAIT 0, 0, 100
 
     ; Drive pin 1 High, verify through crossbar
     SET 1, 1, 20
     WAIT 1, 1, 100
 
+    ; Drive pin 1 Low, verify through crossbar
+    SET 1, 0, 20
+    WAIT 1, 0, 100
+
+    ; Restore pin 0 to High for UART TX
+    SET 0, 1, 0
+
     ; Stage 2 Success
     BIST_PASS
+    CALL print_ok
     JMP stage3
 
 stage2_fail:
     BIST_FAIL
+    CALL print_err
     ; Fall-through to Stage 3
 
 ; ==============================================================================
 ; STAGE 3: Split Dual-Channel Crossbar (Ch A 0..3 <-> Ch B 4..7)
 ; ==============================================================================
 stage3:
-    BIST_STAGE 3                ; Signal Stage 3 on LED high nibble
+    BIST_STAGE 3                ; Signal Stage 3
+    MOV acc, 'S'
+    CALL tx_byte
+    MOV acc, '3'
+    CALL tx_byte
+
     BIST_SPLIT                  ; Ch A (pins 0..3) <-> Ch B (pins 4..7)
     NOP 10
-
-    ; Channel A TX (pin 0) -> Channel B RX (pin 4)
-    SET 0, 1, 20
-    WAIT 4, 1, 100
-
-    SET 0, 0, 20
-    WAIT 4, 0, 100
 
     ; Channel B TX (pin 5) -> Channel A RX (pin 1)
     SET 5, 1, 20
@@ -99,33 +134,85 @@ stage3:
     SET 5, 0, 20
     WAIT 1, 0, 100
 
+    ; Channel A TX (pin 2) -> Channel B RX (pin 6)
+    SET 2, 1, 20
+    WAIT 6, 1, 100
+
+    SET 2, 0, 20
+    WAIT 6, 0, 100
+
+    ; Restore pin 0 to High for UART TX
+    SET 0, 1, 0
+
     ; Stage 3 Success
     BIST_PASS
+    CALL print_ok
     JMP stage4
 
 stage3_fail:
     BIST_FAIL
+    CALL print_err
     ; Fall-through to Stage 4
 
 ; ==============================================================================
-; STAGE 4: Autonomous Telemetry Push & Heartbeat Loop
+; STAGE 4: Final Summary & Continuous Heartbeat Stream
 ; ==============================================================================
 stage4:
-    BIST_STAGE 4                ; Signal Stage 4 (Completion / Active Heartbeat)
+    BIST_STAGE 4                ; Signal Stage 4
+    MOV acc, 'S'
+    CALL tx_byte
+    MOV acc, '4'
+    CALL tx_byte
     BIST_PASS
+    CALL print_ok
 
-    ; Telemetry Reporting to Host / FIFO
-    ASSIST READ, BIST_STATUS
-    PUSH
-    ASSIST READ, BIST_PASS
-    PUSH
-    ASSIST READ, BIST_FAIL
-    PUSH
+    ; Restore normal routing for clean external UART
+    BIST_DIS
+    SET 0, 1, 0
 
 bist_heartbeat:
-    ; Continuous Heartbeat Pulse on Pin 0 and Pin 1
-    SET 0, 1, 500
-    SET 0, 0, 500
-    SET 1, 1, 500
-    SET 1, 0, 500
+    MOV acc, '.'
+    CALL tx_byte
+    NOP 511
+    NOP 511
+    NOP 511
+    NOP 511
     JMP bist_heartbeat
+
+; ==============================================================================
+; Subroutines
+; ==============================================================================
+tx_byte:
+    MOV osr, acc
+    SET 0, 0, 433               ; UART start bit (Pin 0 low @ 115200 baud)
+    OUT 433                     ; 8 data bits LSB-first
+    SET 0, 1, 433               ; UART stop bit (Pin 0 high)
+    RET
+
+print_ok:
+    MOV acc, ':'
+    CALL tx_byte
+    MOV acc, 'O'
+    CALL tx_byte
+    MOV acc, 'K'
+    CALL tx_byte
+    MOV acc, '\r'
+    CALL tx_byte
+    MOV acc, '\n'
+    CALL tx_byte
+    RET
+
+print_err:
+    MOV acc, ':'
+    CALL tx_byte
+    MOV acc, 'E'
+    CALL tx_byte
+    MOV acc, 'R'
+    CALL tx_byte
+    MOV acc, 'R'
+    CALL tx_byte
+    MOV acc, '\r'
+    CALL tx_byte
+    MOV acc, '\n'
+    CALL tx_byte
+    RET

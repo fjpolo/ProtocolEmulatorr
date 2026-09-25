@@ -237,18 +237,16 @@ class OmnibusAssembler:
                     current_addr = int(parts[1], 0)
                 continue
 
-            # Check for labels: "label:"
-            while ":" in line:
-                label_part, rest = line.split(":", 1)
-                label_name = label_part.strip()
-                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", label_name):
-                    raise AssemblerError(f"Line {line_num}: Invalid label name '{label_name}'")
+            # Check for labels at line start: "label: ..."
+            while True:
+                m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:(.*)$", line)
+                if not m:
+                    break
+                label_name = m.group(1)
                 if label_name in labels:
                     raise AssemblerError(f"Line {line_num}: Duplicate label '{label_name}'")
                 labels[label_name] = current_addr
-                line = rest.strip()
-                if not line:
-                    break
+                line = m.group(2).strip()
 
             if not line:
                 continue
@@ -324,6 +322,19 @@ class OmnibusAssembler:
                     return labels[arg_clean]
                 if arg_clean in symbols:
                     return symbols[arg_clean]
+                # Character literals: 'A', "A", '\n', '\r'
+                if len(arg_clean) >= 3 and ((arg_clean[0] == "'" and arg_clean[-1] == "'") or (arg_clean[0] == '"' and arg_clean[-1] == '"')):
+                    inner = arg_clean[1:-1]
+                    if inner == r"\n":
+                        return 10
+                    elif inner == r"\r":
+                        return 13
+                    elif inner == r"\t":
+                        return 9
+                    elif inner == r"\0":
+                        return 0
+                    elif len(inner) == 1:
+                        return ord(inner)
                 try:
                     return int(arg_clean, 0)
                 except ValueError:
