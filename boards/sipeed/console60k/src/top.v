@@ -120,7 +120,29 @@ module top (
         .o_profiler_tmin     (),
         .o_profiler_tmax     (),
         .o_profiler_tmin_high(),
-        .o_profiler_tmin_low ()
+        .o_profiler_tmin_low (),
+        // Task 28 USB SIE
+        .i_usb_wb_sie_en          (1'b0),
+        .i_usb_wb_speed_mode      (1'b0),
+        .i_usb_wb_auto_ack        (1'b0),
+        .i_usb_wb_dev_addr        (7'd0),
+        .i_usb_wb_bit_div         (16'd4),
+        .i_usb_wb_ep_stall        (4'd0),
+        .i_usb_wb_ep_nak          (4'd0),
+        .i_usb_wb_ep_toggle       (4'd0),
+        .i_usb_wb_tx_token_req    (1'b0),
+        .i_usb_wb_tx_token_pid    (4'd0),
+        .i_usb_wb_tx_token_addr   (7'd0),
+        .i_usb_wb_tx_token_endp   (4'd0),
+        .i_usb_wb_tx_handshake_req(1'b0),
+        .i_usb_wb_tx_handshake_pid(4'd0),
+        .o_usb_status_byte        (),
+        .o_usb_token_pid          (),
+        .o_usb_token_endp         (),
+        .o_usb_token_addr         (),
+        .o_usb_rx_pid             (),
+        .o_usb_bus_reset          (),
+        .o_usb_bus_idle           ()
     );
 
     OmniBootloader #(

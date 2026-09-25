@@ -217,6 +217,7 @@ module OmniBus_USB_SIE #(
     reg [15:0] rx_crc16_reg;
     reg [15:0] rx_se0_cnt;
     reg [3:0]  latched_rx_pid;
+    reg        rx_trigger_auto_ack;
 
     // Consolidated Status Byte
     assign o_status_byte = {
@@ -287,8 +288,11 @@ module OmniBus_USB_SIE #(
             o_tx_done  <= 1'b0;
             o_tx_ready <= 1'b0;
 
+            if (rx_trigger_auto_ack)
+                tx_auto_ack_pending <= 1'b1;
+
             // Trigger autonomous ACK from receiver
-            if (tx_auto_ack_pending && tx_state == TX_IDLE) begin
+            if ((tx_auto_ack_pending || rx_trigger_auto_ack) && tx_state == TX_IDLE) begin
                 tx_auto_ack_pending <= 1'b0;
                 tx_state            <= TX_SYNC;
                 tx_div_cnt          <= 16'd0;
@@ -559,16 +563,19 @@ module OmniBus_USB_SIE #(
             o_rx_pid         <= 4'd0;
             o_rx_crc_err     <= 1'b0;
             o_rx_pid_err     <= 1'b0;
-            o_rx_stuff_err   <= 1'b0;
+            o_rx_stuff_err      <= 1'b0;
+            rx_trigger_auto_ack <= 1'b0;
         end else if (!i_sie_en) begin
-            rx_state         <= RX_IDLE;
-            o_token_valid    <= 1'b0;
-            o_rx_data_valid  <= 1'b0;
-            o_rx_packet_done <= 1'b0;
+            rx_state            <= RX_IDLE;
+            o_token_valid       <= 1'b0;
+            o_rx_data_valid     <= 1'b0;
+            o_rx_packet_done    <= 1'b0;
+            rx_trigger_auto_ack <= 1'b0;
         end else begin
-            o_token_valid    <= 1'b0;
-            o_rx_data_valid  <= 1'b0;
-            o_rx_packet_done <= 1'b0;
+            o_token_valid       <= 1'b0;
+            o_rx_data_valid     <= 1'b0;
+            o_rx_packet_done    <= 1'b0;
+            rx_trigger_auto_ack <= 1'b0;
 
             case (rx_state)
                 RX_IDLE: begin
@@ -705,7 +712,7 @@ module OmniBus_USB_SIE #(
                             o_rx_crc_err <= 1'b0;
                             // If auto-ACK enabled and endpoint not stalled/NAK'd, reply ACK!
                             if (i_auto_ack && !i_ep_stall[o_token_endp[1:0]] && !i_ep_nak[o_token_endp[1:0]]) begin
-                                tx_auto_ack_pending <= 1'b1;
+                                rx_trigger_auto_ack <= 1'b1;
                             end
                         end else begin
                             o_rx_crc_err <= 1'b1;
