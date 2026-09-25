@@ -185,12 +185,15 @@ module top (
     // TX output mux: Bootloader controls TX when programming; Core controls TX during normal execution
     assign uart_tx = prog_active ? bootloader_tx : core_tx;
 
-    // PMOD LEDs:
-    // LED 7: CS_n active (SPI transaction in progress) or BIST fail flag
-    // LED 6..4: SCK, ACK, core data OR BIST stage / activity
-    // Normal execution: {!core_cs_n, core_sck, slave_ack_pulse, core_data[4:0]}
-    assign o_led = prog_active ? {1'b1, prog_addr[6:0]} :
-                   bist_active ? {bist_fail_flag, bist_stage[2:0], bist_active, core_gpio_out[2:0]} :
-                                 {!core_cs_n, core_sck, slave_ack_pulse, core_data[4:0]};
+    // PMOD LEDs (Active-Low Hardware: PMOD cathode to FPGA, 0 = ON, 1 = OFF):
+    // Invert output vector so that positive logic 1 turns the corresponding LED ON.
+    // LED 7: BIST fail flag (1=FAIL -> LED ON, 0=PASS -> LED OFF)
+    // LED 6..4: BIST stage index
+    // LED 3: BIST active indicator
+    // LED 2..0: Activity / heartbeat
+    wire [7:0] led_positive = prog_active ? {1'b1, prog_addr[6:0]} :
+                              bist_active ? {bist_fail_flag, bist_stage[2:0], bist_active, core_gpio_out[2:0]} :
+                                            {!core_cs_n, core_sck, slave_ack_pulse, core_data[4:0]};
+    assign o_led = ~led_positive;
 
 endmodule
