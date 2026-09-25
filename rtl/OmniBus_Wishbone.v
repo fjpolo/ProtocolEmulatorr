@@ -88,6 +88,9 @@ module OmniBus_Wishbone #(
     localparam [7:0] ADDR_USB_STATUS      = 8'h64;  // RO: [7:0]=status_byte, [11:8]=token_pid, [15:12]=token_endp, [22:16]=token_addr, [27:24]=rx_pid, [28]=bus_reset, [29]=bus_idle
     localparam [7:0] ADDR_USB_EP_CTRL     = 8'h68;  // RW: [3:0]=ep_stall, [7:4]=ep_nak, [11:8]=ep_toggle
     localparam [7:0] ADDR_USB_TX_TOKEN    = 8'h6C;  // WO: [3:0]=token_pid, [10:4]=token_addr, [14:11]=token_endp, [15]=tx_req, [19:16]=handshake_pid, [20]=handshake_req
+    localparam [7:0] ADDR_BIST_CTRL       = 8'h70;  // RW: [1:0]=mode, [2]=jitter_en, [3]=bist_en, [4]=start, [5]=stop, [6]=rst, [11:8]=stage
+    localparam [7:0] ADDR_BIST_STATUS     = 8'h74;  // RO: [0]=active, [1]=fail_flag, [3:2]=mode, [7:4]=stage, [23:8]=fail_cnt[15:0]
+    localparam [7:0] ADDR_BIST_SCORES     = 8'h78;  // RO: [15:0]=vec_cnt, [31:16]=pass_cnt
     localparam [7:0] ADDR_IMEM        = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
 
     // =========================================================================
@@ -141,6 +144,14 @@ module OmniBus_Wishbone #(
     reg [3:0]  reg_usb_tx_token_endp;
     reg        reg_usb_tx_handshake_req;
     reg [3:0]  reg_usb_tx_handshake_pid;
+    // Task 29: BIST Control Registers
+    reg [1:0]  reg_bist_wb_mode;
+    reg        reg_bist_wb_jitter_en;
+    reg        reg_bist_wb_en;
+    reg        reg_bist_wb_start;
+    reg        reg_bist_wb_stop;
+    reg        reg_bist_wb_rst;
+    reg [3:0]  reg_bist_wb_stage;
 
     // Combined active-low reset for core and FIFOs
     wire core_rst_n = i_wb_rst_n && !reg_soft_rst;
@@ -241,6 +252,14 @@ module OmniBus_Wishbone #(
     wire [3:0] usb_rx_pid;
     wire       usb_bus_reset;
     wire       usb_bus_idle;
+    // Task 29: BIST Status Wires
+    wire        bist_active;
+    wire        bist_fail_flag;
+    wire [1:0]  bist_mode;
+    wire [3:0]  bist_stage;
+    wire [15:0] bist_vec_cnt;
+    wire [15:0] bist_pass_cnt;
+    wire [15:0] bist_fail_cnt;
 
     assign tx_fifo_pop   = core_tx_pop;
     assign rx_fifo_push  = core_rx_push;
@@ -312,6 +331,21 @@ module OmniBus_Wishbone #(
         .o_usb_rx_pid             (usb_rx_pid),
         .o_usb_bus_reset          (usb_bus_reset),
         .o_usb_bus_idle           (usb_bus_idle),
+        // Task 29 BIST
+        .i_bist_wb_en           (reg_bist_wb_en),
+        .i_bist_wb_mode         (reg_bist_wb_mode),
+        .i_bist_wb_jitter_en    (reg_bist_wb_jitter_en),
+        .i_bist_wb_start        (reg_bist_wb_start),
+        .i_bist_wb_stop         (reg_bist_wb_stop),
+        .i_bist_wb_rst          (reg_bist_wb_rst),
+        .i_bist_wb_stage        (reg_bist_wb_stage),
+        .o_bist_active          (bist_active),
+        .o_bist_fail_flag       (bist_fail_flag),
+        .o_bist_mode            (bist_mode),
+        .o_bist_stage           (bist_stage),
+        .o_bist_vec_cnt         (bist_vec_cnt),
+        .o_bist_pass_cnt        (bist_pass_cnt),
+        .o_bist_fail_cnt        (bist_fail_cnt),
         .i_prog_en    (core_prog_en),
         .i_prog_we    (wb_imem_we),
         .i_prog_addr  (wb_imem_addr),
@@ -458,6 +492,9 @@ module OmniBus_Wishbone #(
                 ADDR_USB_CTRL:        wb_rdata_comb = {6'd0, reg_usb_bit_div, reg_usb_dev_addr, reg_usb_auto_ack, reg_usb_speed_mode, reg_usb_sie_en};
                 ADDR_USB_STATUS:      wb_rdata_comb = {2'd0, usb_bus_idle, usb_bus_reset, usb_rx_pid, 1'b0, usb_token_addr, usb_token_endp, usb_token_pid, usb_status_byte};
                 ADDR_USB_EP_CTRL:     wb_rdata_comb = {20'd0, reg_usb_ep_toggle, reg_usb_ep_nak, reg_usb_ep_stall};
+                ADDR_BIST_CTRL:       wb_rdata_comb = {20'd0, reg_bist_wb_stage, 1'b0, 1'b0, 1'b0, reg_bist_wb_en, reg_bist_wb_jitter_en, reg_bist_wb_mode};
+                ADDR_BIST_STATUS:     wb_rdata_comb = {8'd0, bist_fail_cnt, bist_stage, bist_mode, bist_fail_flag, bist_active};
+                ADDR_BIST_SCORES:     wb_rdata_comb = {bist_pass_cnt, bist_vec_cnt};
                 default:          wb_rdata_comb = 32'h00000000;
             endcase
         end
@@ -518,6 +555,9 @@ module OmniBus_Wishbone #(
             reg_dma_rx_start  <= 1'b0;
             reg_usb_tx_token_req     <= 1'b0;
             reg_usb_tx_handshake_req <= 1'b0;
+            reg_bist_wb_start        <= 1'b0;
+            reg_bist_wb_stop         <= 1'b0;
+            reg_bist_wb_rst          <= 1'b0;
             reg_dma_abort     <= 1'b0;
             reg_profiler_arm  <= 1'b0;
             reg_profiler_stop <= 1'b0;
@@ -586,6 +626,15 @@ module OmniBus_Wishbone #(
                     reg_usb_tx_token_req     <= i_wb_data[15];
                     reg_usb_tx_handshake_pid <= i_wb_data[19:16];
                     reg_usb_tx_handshake_req <= i_wb_data[20];
+                end
+                ADDR_BIST_CTRL: begin
+                    reg_bist_wb_mode      <= i_wb_data[1:0];
+                    reg_bist_wb_jitter_en <= i_wb_data[2];
+                    reg_bist_wb_en        <= i_wb_data[3];
+                    reg_bist_wb_start     <= i_wb_data[4];
+                    reg_bist_wb_stop      <= i_wb_data[5];
+                    reg_bist_wb_rst       <= i_wb_data[6];
+                    reg_bist_wb_stage     <= i_wb_data[11:8];
                 end
                         default: ;
                     endcase

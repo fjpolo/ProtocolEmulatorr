@@ -880,3 +880,52 @@ async def test_wb_usb_sie_registers(dut):
     assert bus_idle == 1, "Expected bus_idle == 1"
 
     dut._log.info("Wishbone USB 1.1 SIE Control & Status test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 14: On-Chip Self-Play & Virtual Crossbar (BIST Engine) Registers (0x70..0x78)
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_bist_registers(dut):
+    """Test 29D: Verify Wishbone BIST control, status telemetry, and score readback."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+
+    ADDR_BIST_CTRL   = 0x70
+    ADDR_BIST_STATUS = 0x74
+    ADDR_BIST_SCORES = 0x78
+
+    # 1. Read default BIST Status
+    status = await wb.read(ADDR_BIST_STATUS)
+    dut._log.info(f"Default ADDR_BIST_STATUS: 0x{status:08X}")
+    assert (status & 0x01) == 0, "Expected bist_active=0 by default"
+
+    # 2. Configure BIST Control:
+    # mode = 2 (split crossbar, bits [1:0] = 0b10)
+    # jitter_en = 0 (bit 2)
+    # bist_en = 1 (bit 3)
+    # start = 1 (bit 4)
+    # stage = 5 (bits [11:8] = 0x5)
+    # Value: (5 << 8) | (1 << 4) | (1 << 3) | 2 = 0x051A
+    await wb.write(ADDR_BIST_CTRL, 0x051A)
+    await ClockCycles(dut.i_wb_clk, 5)
+
+    status_read = await wb.read(ADDR_BIST_STATUS)
+    dut._log.info(f"Active ADDR_BIST_STATUS: 0x{status_read:08X}")
+    assert (status_read & 0x01) == 1, "Expected bist_active == 1"
+    assert ((status_read >> 2) & 0x03) == 2, f"Expected bist_mode == 2, got {((status_read >> 2) & 0x03)}"
+    assert ((status_read >> 4) & 0x0F) == 5, f"Expected bist_stage == 5, got {((status_read >> 4) & 0x0F)}"
+
+    # 3. Read Scores
+    scores = await wb.read(ADDR_BIST_SCORES)
+    dut._log.info(f"ADDR_BIST_SCORES: 0x{scores:08X}")
+
+    # 4. Stop BIST
+    # stop = bit 5
+    await wb.write(ADDR_BIST_CTRL, 1 << 5)
+    await ClockCycles(dut.i_wb_clk, 5)
+    status_stopped = await wb.read(ADDR_BIST_STATUS)
+    assert (status_stopped & 0x01) == 0, "Expected bist_active == 0 after stop"
+
+    dut._log.info("Wishbone BIST Control & Status Registers (0x70..0x78) test PASSED!")

@@ -83,6 +83,10 @@ module top (
     assign core_gpio_in[6] = 1'b1;
     assign core_gpio_in[7] = 1'b1;
 
+    wire        bist_active;
+    wire        bist_fail_flag;
+    wire [3:0]  bist_stage;
+
     ProtocolEmulator DUT (
         .i_clk        (i_sys_clk),
         .i_reset_n    (sys_rst_n),
@@ -142,7 +146,22 @@ module top (
         .o_usb_token_addr         (),
         .o_usb_rx_pid             (),
         .o_usb_bus_reset          (),
-        .o_usb_bus_idle           ()
+        .o_usb_bus_idle           (),
+        // Task 29 BIST
+        .i_bist_wb_en           (1'b0),
+        .i_bist_wb_mode         (2'd0),
+        .i_bist_wb_jitter_en    (1'b0),
+        .i_bist_wb_start        (1'b0),
+        .i_bist_wb_stop         (1'b0),
+        .i_bist_wb_rst          (1'b0),
+        .i_bist_wb_stage        (4'd0),
+        .o_bist_active          (bist_active),
+        .o_bist_fail_flag       (bist_fail_flag),
+        .o_bist_mode            (),
+        .o_bist_stage           (bist_stage),
+        .o_bist_vec_cnt         (),
+        .o_bist_pass_cnt        (),
+        .o_bist_fail_cnt        ()
     );
 
     OmniBootloader #(
@@ -167,11 +186,11 @@ module top (
     assign uart_tx = prog_active ? bootloader_tx : core_tx;
 
     // PMOD LEDs:
-    // LED 7: CS_n active (SPI transaction in progress)
-    // LED 6: SCK (SPI clock visible on LED)
-    // LED 5: Programming Mode active
-    // LED 4..0: address during programming, or full byte during normal execution
+    // LED 7: CS_n active (SPI transaction in progress) or BIST fail flag
+    // LED 6..4: SCK, ACK, core data OR BIST stage / activity
+    // Normal execution: {!core_cs_n, core_sck, slave_ack_pulse, core_data[4:0]}
     assign o_led = prog_active ? {1'b1, prog_addr[6:0]} :
+                   bist_active ? {bist_fail_flag, bist_stage[2:0], bist_active, core_gpio_out[2:0]} :
                                  {!core_cs_n, core_sck, slave_ack_pulse, core_data[4:0]};
 
 endmodule

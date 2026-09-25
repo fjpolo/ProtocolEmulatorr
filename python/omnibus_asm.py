@@ -140,6 +140,24 @@ OPCODES = {
     "USB_STALL":         0xF,
     "USB_SIE_EN":        0xF,
     "USB_SIE_DIS":       0xF,
+    "BIST_CFG":          0xF,
+    "BIST_CONFIG":       0xF,
+    "BIST_DIS":          0xF,
+    "BIST_DISABLE":      0xF,
+    "BIST_LOOP":         0xF,
+    "BIST_LOOPBACK":     0xF,
+    "BIST_SPLIT":        0xF,
+    "BIST_CROSSBAR":     0xF,
+    "BIST_JITTER":       0xF,
+    "BIST_STRESS":       0xF,
+    "BIST_START":        0xF,
+    "BIST_EN":           0xF,
+    "BIST_STOP":         0xF,
+    "BIST_RST":          0xF,
+    "BIST_RESET":        0xF,
+    "BIST_PASS":         0xF,
+    "BIST_FAIL":         0xF,
+    "BIST_STAGE":        0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -900,7 +918,7 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
-            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD", "GLITCH_CFG", "GLITCH_WIDTH", "GLITCH_DELAY", "GLITCH_DELAY_LO", "GLITCH_DELAY_HI", "GLITCH_ARM", "GLITCH_TRIG", "GLITCH_TRIGGER", "GLITCH_DISARM", "MITM_MATCH", "MITM_REPLACE", "MITM_MASK", "MITM_ENABLE", "MITM_DISABLE", "MITM_RESET", "MITM_CLR", "PROFILER_CFG", "PROFILER_FILTER", "PROFILER_ARM", "PROFILER_STOP", "PROFILER_RST", "PROFILER_RESET", "USB_CFG", "USB_CONFIG", "USB_TX_TOKEN", "USB_TOKEN", "USB_TX_DATA", "USB_DATA_PKT", "USB_SEND_ACK", "USB_ACK", "USB_SEND_NAK", "USB_NAK", "USB_SEND_STALL", "USB_STALL", "USB_SIE_EN", "USB_SIE_DIS"):
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD", "GLITCH_CFG", "GLITCH_WIDTH", "GLITCH_DELAY", "GLITCH_DELAY_LO", "GLITCH_DELAY_HI", "GLITCH_ARM", "GLITCH_TRIG", "GLITCH_TRIGGER", "GLITCH_DISARM", "MITM_MATCH", "MITM_REPLACE", "MITM_MASK", "MITM_ENABLE", "MITM_DISABLE", "MITM_RESET", "MITM_CLR", "PROFILER_CFG", "PROFILER_FILTER", "PROFILER_ARM", "PROFILER_STOP", "PROFILER_RST", "PROFILER_RESET", "USB_CFG", "USB_CONFIG", "USB_TX_TOKEN", "USB_TOKEN", "USB_TX_DATA", "USB_DATA_PKT", "USB_SEND_ACK", "USB_ACK", "USB_SEND_NAK", "USB_NAK", "USB_SEND_STALL", "USB_STALL", "USB_SIE_EN", "USB_SIE_DIS", "BIST_CFG", "BIST_CONFIG", "BIST_DIS", "BIST_DISABLE", "BIST_LOOP", "BIST_LOOPBACK", "BIST_SPLIT", "BIST_CROSSBAR", "BIST_JITTER", "BIST_STRESS", "BIST_START", "BIST_EN", "BIST_STOP", "BIST_RST", "BIST_RESET", "BIST_PASS", "BIST_FAIL", "BIST_STAGE"):
                 # Sub-operations:
                 # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
                 # 2'b01: ASSIST RESET
@@ -1333,6 +1351,41 @@ class OmnibusAssembler:
                 elif sub_cmd in ("USB_SEND_STALL", "USB_STALL"):
                     word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 15
 
+                elif sub_cmd in ("BIST_DIS", "BIST_DISABLE"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (14 << 4) | 0
+
+                elif sub_cmd in ("BIST_LOOP", "BIST_LOOPBACK"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (14 << 4) | 1
+
+                elif sub_cmd in ("BIST_SPLIT", "BIST_CROSSBAR"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (14 << 4) | 2
+
+                elif sub_cmd in ("BIST_JITTER", "BIST_STRESS"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (14 << 4) | 3
+
+                elif sub_cmd in ("BIST_START", "BIST_EN"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (14 << 4) | 4
+
+                elif sub_cmd in ("BIST_STOP",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (14 << 4) | 5
+
+                elif sub_cmd in ("BIST_RST", "BIST_RESET"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (14 << 4) | 6
+
+                elif sub_cmd in ("BIST_PASS",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (14 << 4) | 7
+
+                elif sub_cmd in ("BIST_FAIL",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (14 << 4) | 8
+
+                elif sub_cmd in ("BIST_STAGE",):
+                    stage_val = eval_arg(arg_tokens[0]) & 0xF if arg_tokens else 1
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (15 << 4) | (stage_val & 0xF)
+
+                elif sub_cmd in ("BIST_CFG", "BIST_CONFIG"):
+                    mode_val = eval_arg(arg_tokens[0]) & 0x3 if arg_tokens else 1
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (14 << 4) | (mode_val & 0x3)
+
                 elif sub_cmd in ("READ", "STATUS"):
                     if any("PROFILER_TMIN_L" in a.upper() or "TMIN_L" in a.upper() or "TMIN_LO" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 7) | (0 << 5)
@@ -1350,6 +1403,14 @@ class OmnibusAssembler:
                         word = (0xF << 12) | (2 << 10) | (3 << 8) | (0 << 7) | (1 << 4) | (2 << 5)
                     elif any("USB_ADDR" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (3 << 8) | (0 << 7) | (1 << 4) | (3 << 5)
+                    elif any("BIST_STATUS" in a.upper() or "BIST_STAT" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 3) | 0
+                    elif any("BIST_PASS" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 3) | 1
+                    elif any("BIST_FAIL" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 3) | 2
+                    elif any("BIST_VEC" in a.upper() or "BIST_VECTORS" in a.upper() or "BIST_COUNT" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 3) | 3
                     elif any("GLITCH" in a.upper() or "MITM" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (2 << 8) | (0 << 6) | (1 << 5)
                     elif any("I2C_ADDR" in a.upper() or "ADDR" in a.upper() for a in arg_tokens):
