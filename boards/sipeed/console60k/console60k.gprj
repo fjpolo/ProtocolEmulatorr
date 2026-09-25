@@ -6,6 +6,7 @@
     <Device name="GW5AT-60B" pn="GW5AT-LV60PG484AC1/I0">gw5at60b-002</Device>
     <FileList>
         <File path="src/top.v" type="file.verilog" enable="1"/>
+        <File path="../../../rtl/OmniBus_Profiler.v" type="file.verilog" enable="1"/>
         <File path="../../../rtl/ProtocolEmulator.v" type="file.verilog" enable="1"/>
         <File path="../../../rtl/OmniBootloader.v" type="file.verilog" enable="1"/>
         <File path="../../../rtl/I2CSlaveStub.v" type="file.verilog" enable="1"/>
