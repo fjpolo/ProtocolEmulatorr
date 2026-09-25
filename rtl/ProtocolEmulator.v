@@ -62,6 +62,29 @@ module ProtocolEmulator(
     output  wire    [15:0]  o_profiler_tmin_high,
     output  wire    [15:0]  o_profiler_tmin_low,
 
+    // Task 28: USB 1.1 Autonomous Serial Interface Engine (SIE) External / Wishbone Interface
+    input   wire            i_usb_wb_sie_en,
+    input   wire            i_usb_wb_speed_mode,
+    input   wire            i_usb_wb_auto_ack,
+    input   wire    [6:0]   i_usb_wb_dev_addr,
+    input   wire    [15:0]  i_usb_wb_bit_div,
+    input   wire    [3:0]   i_usb_wb_ep_stall,
+    input   wire    [3:0]   i_usb_wb_ep_nak,
+    input   wire    [3:0]   i_usb_wb_ep_toggle,
+    input   wire            i_usb_wb_tx_token_req,
+    input   wire    [3:0]   i_usb_wb_tx_token_pid,
+    input   wire    [6:0]   i_usb_wb_tx_token_addr,
+    input   wire    [3:0]   i_usb_wb_tx_token_endp,
+    input   wire            i_usb_wb_tx_handshake_req,
+    input   wire    [3:0]   i_usb_wb_tx_handshake_pid,
+    output  wire    [7:0]   o_usb_status_byte,
+    output  wire    [3:0]   o_usb_token_pid,
+    output  wire    [3:0]   o_usb_token_endp,
+    output  wire    [6:0]   o_usb_token_addr,
+    output  wire    [3:0]   o_usb_rx_pid,
+    output  wire            o_usb_bus_reset,
+    output  wire            o_usb_bus_idle,
+
     // Runtime Microcode Programming Interface
     input   wire            i_prog_en,
     input   wire            i_prog_we,
@@ -285,6 +308,26 @@ module ProtocolEmulator(
     reg        profiler_arm_strobe;    // Arm single-cycle strobe from microcode
     reg        profiler_stop_strobe;   // Stop single-cycle strobe from microcode
     reg        profiler_rst_strobe;    // Reset single-cycle strobe from microcode
+
+    // =========================================================================
+    // USB 1.1 Autonomous Serial Interface Engine State (Task 28)
+    // =========================================================================
+    reg        usb_sie_en;
+    reg        usb_speed_mode;
+    reg        usb_auto_ack;
+    reg [6:0]  usb_dev_addr;
+    reg [15:0] usb_bit_div;
+    reg [3:0]  usb_ep_stall;
+    reg [3:0]  usb_ep_nak;
+    reg [3:0]  usb_ep_toggle;
+    reg        usb_tx_token_strobe;
+    reg [3:0]  usb_tx_token_pid;
+    reg [6:0]  usb_tx_token_addr;
+    reg [3:0]  usb_tx_token_endp;
+    reg        usb_tx_handshake_strobe;
+    reg [3:0]  usb_tx_handshake_pid;
+    reg        usb_tx_data_strobe;
+    reg [3:0]  usb_tx_data_pid;
 
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
@@ -583,6 +626,109 @@ module ProtocolEmulator(
     wire slave_sda_drive = i2c_drive_ack || (opcode == 4'h1 && instr[11:9] == 3'b111 && out_slave_phase == 2'd0 && osr[7] == 1'b0);
     wire slave_scl_drive = i2c_stretch_hold;
 
+    // =========================================================================
+    // USB 1.1 Autonomous Serial Interface Engine Instance (Task 28)
+    // =========================================================================
+    wire       usb_busy_w;
+    wire       usb_idle_w;
+    wire       usb_reset_w;
+    wire       usb_token_valid_w;
+    wire [3:0] usb_token_pid_w;
+    wire [3:0] usb_token_endp_w;
+    wire [6:0] usb_token_addr_w;
+    wire       usb_rx_data_valid_w;
+    wire [7:0] usb_rx_data_byte_w;
+    wire       usb_rx_packet_done_w;
+    wire [3:0] usb_rx_pid_w;
+    wire       usb_rx_crc_err_w;
+    wire       usb_rx_pid_err_w;
+    wire       usb_rx_stuff_err_w;
+    wire       usb_tx_done_w;
+    wire [7:0] usb_status_byte_w;
+    wire       usb_dp_out;
+    wire       usb_dm_out;
+    wire       usb_oe;
+
+    wire       usb_wb_sie_en_safe    = (i_usb_wb_sie_en === 1'b1);
+    wire       usb_wb_speed_safe     = (i_usb_wb_speed_mode === 1'b1);
+    wire       usb_wb_auto_ack_safe  = (i_usb_wb_auto_ack === 1'b1);
+    wire [6:0] usb_wb_dev_addr_safe  = (i_usb_wb_dev_addr[0] === 1'b0 || i_usb_wb_dev_addr[0] === 1'b1) ? i_usb_wb_dev_addr : 7'd0;
+    wire [15:0] usb_wb_bit_div_safe  = (i_usb_wb_bit_div[0] === 1'b0 || i_usb_wb_bit_div[0] === 1'b1) ? i_usb_wb_bit_div : 16'd4;
+    wire [3:0] usb_wb_ep_stall_safe  = (i_usb_wb_ep_stall[0] === 1'b0 || i_usb_wb_ep_stall[0] === 1'b1) ? i_usb_wb_ep_stall : 4'd0;
+    wire [3:0] usb_wb_ep_nak_safe    = (i_usb_wb_ep_nak[0] === 1'b0 || i_usb_wb_ep_nak[0] === 1'b1) ? i_usb_wb_ep_nak : 4'd0;
+    wire [3:0] usb_wb_ep_toggle_safe = (i_usb_wb_ep_toggle[0] === 1'b0 || i_usb_wb_ep_toggle[0] === 1'b1) ? i_usb_wb_ep_toggle : 4'd0;
+
+    wire       usb_active_en         = usb_sie_en || usb_wb_sie_en_safe;
+    wire       usb_active_speed      = usb_speed_mode || usb_wb_speed_safe;
+    wire       usb_active_auto_ack   = usb_auto_ack || usb_wb_auto_ack_safe;
+    wire [6:0] usb_active_dev_addr   = (usb_wb_dev_addr_safe != 7'd0) ? usb_wb_dev_addr_safe : usb_dev_addr;
+    wire [15:0] usb_active_bit_div   = (usb_wb_bit_div_safe != 16'd0) ? usb_wb_bit_div_safe : usb_bit_div;
+    wire [3:0] usb_active_ep_stall   = (usb_wb_ep_stall_safe != 4'd0) ? usb_wb_ep_stall_safe : usb_ep_stall;
+    wire [3:0] usb_active_ep_nak     = (usb_wb_ep_nak_safe != 4'd0) ? usb_wb_ep_nak_safe : usb_ep_nak;
+    wire [3:0] usb_active_ep_toggle  = (usb_wb_ep_toggle_safe != 4'd0) ? usb_wb_ep_toggle_safe : usb_ep_toggle;
+
+    wire       usb_tx_token_req_comb     = usb_tx_token_strobe || (i_usb_wb_tx_token_req === 1'b1);
+    wire [3:0] usb_tx_token_pid_comb     = (i_usb_wb_tx_token_req === 1'b1) ? i_usb_wb_tx_token_pid : usb_tx_token_pid;
+    wire [6:0] usb_tx_token_addr_comb    = (i_usb_wb_tx_token_req === 1'b1) ? i_usb_wb_tx_token_addr : usb_tx_token_addr;
+    wire [3:0] usb_tx_token_endp_comb    = (i_usb_wb_tx_token_req === 1'b1) ? i_usb_wb_tx_token_endp : usb_tx_token_endp;
+    wire       usb_tx_handshake_req_comb = usb_tx_handshake_strobe || (i_usb_wb_tx_handshake_req === 1'b1);
+    wire [3:0] usb_tx_handshake_pid_comb = (i_usb_wb_tx_handshake_req === 1'b1) ? i_usb_wb_tx_handshake_pid : usb_tx_handshake_pid;
+
+    OmniBus_USB_SIE #(
+        .CLK_FREQ_HZ(50_000_000)
+    ) usb_sie_inst (
+        .i_clk              (i_clk),
+        .i_rst_n            (i_reset_n),
+        .i_sie_en           (usb_active_en),
+        .i_speed_mode       (usb_active_speed),
+        .i_bit_div          (usb_active_bit_div),
+        .i_dev_addr         (usb_active_dev_addr),
+        .i_ep_stall         (usb_active_ep_stall),
+        .i_ep_nak           (usb_active_ep_nak),
+        .i_ep_toggle        (usb_active_ep_toggle),
+        .i_auto_ack         (usb_active_auto_ack),
+        .i_dp               (i_gpio[0]),
+        .i_dm               (i_gpio[1]),
+        .o_dp               (usb_dp_out),
+        .o_dm               (usb_dm_out),
+        .o_oe               (usb_oe),
+        .i_tx_token_req     (usb_tx_token_req_comb),
+        .i_tx_token_pid     (usb_tx_token_pid_comb),
+        .i_tx_token_addr    (usb_tx_token_addr_comb),
+        .i_tx_token_endp    (usb_tx_token_endp_comb),
+        .i_tx_handshake_req (usb_tx_handshake_req_comb),
+        .i_tx_handshake_pid (usb_tx_handshake_pid_comb),
+        .i_tx_data_req      (usb_tx_data_strobe),
+        .i_tx_data_pid      (usb_tx_data_pid),
+        .i_tx_byte          (acc),
+        .i_tx_valid         (usb_tx_data_strobe),
+        .o_tx_ready         (),
+        .i_tx_last          (1'b1),
+        .o_bus_idle         (usb_idle_w),
+        .o_bus_reset        (usb_reset_w),
+        .o_token_valid      (usb_token_valid_w),
+        .o_token_pid        (usb_token_pid_w),
+        .o_token_endp       (usb_token_endp_w),
+        .o_token_addr       (usb_token_addr_w),
+        .o_rx_data_valid    (usb_rx_data_valid_w),
+        .o_rx_data_byte     (usb_rx_data_byte_w),
+        .o_rx_packet_done   (usb_rx_packet_done_w),
+        .o_rx_pid           (usb_rx_pid_w),
+        .o_rx_crc_err       (usb_rx_crc_err_w),
+        .o_rx_pid_err       (usb_rx_pid_err_w),
+        .o_rx_stuff_err     (usb_rx_stuff_err_w),
+        .o_tx_done          (usb_tx_done_w),
+        .o_status_byte      (usb_status_byte_w)
+    );
+
+    assign o_usb_status_byte  = usb_status_byte_w;
+    assign o_usb_token_pid    = usb_token_pid_w;
+    assign o_usb_token_endp   = usb_token_endp_w;
+    assign o_usb_token_addr   = usb_token_addr_w;
+    assign o_usb_rx_pid       = usb_rx_pid_w;
+    assign o_usb_bus_reset    = usb_reset_w;
+    assign o_usb_bus_idle     = usb_idle_w;
+
     wire [7:0] i2c_gpio_out;
     wire [7:0] i2c_gpio_oe;
 
@@ -619,8 +765,12 @@ module ProtocolEmulator(
                                  is_qspi_lane3 ? qspi_data_out[3] : 1'b0;
 
             wire is_glitch = glitch_en && glitch_active && (p == glitch_pin);
+            wire is_usb_dp = usb_active_en && usb_oe && (p == 3'd0);
+            wire is_usb_dm = usb_active_en && usb_oe && (p == 3'd1);
 
-            assign i2c_gpio_out[p] = is_glitch     ? (glitch_pol ? 1'b0 : 1'b1) :
+            assign i2c_gpio_out[p] = is_usb_dp     ? usb_dp_out :
+                                     is_usb_dm     ? usb_dm_out :
+                                     is_glitch     ? (glitch_pol ? 1'b0 : 1'b1) :
                                      is_audio_main ? pdm_bit :
                                      is_audio_diff ? ~pdm_bit :
                                      is_jtag_tck   ? jtag_tck :
@@ -636,7 +786,8 @@ module ProtocolEmulator(
                                      (i2c_slave_en && (is_tx || is_sck)) ? 1'b1 :
                                      gpio_out_reg[p];
 
-            assign i2c_gpio_oe[p]  = is_glitch     ? 1'b1 :
+            assign i2c_gpio_oe[p]  = (is_usb_dp || is_usb_dm) ? 1'b1 :
+                                     is_glitch     ? 1'b1 :
                                      is_audio_main ? 1'b1 :
                                      is_audio_diff ? 1'b1 :
                                      is_jtag_tck   ? 1'b1 :
@@ -814,6 +965,7 @@ module ProtocolEmulator(
     assign o_profiler_tmax      = profiler_tmax_w;
     assign o_profiler_tmin_high = profiler_tmin_high_w;
     assign o_profiler_tmin_low  = profiler_tmin_low_w;
+
 
     // Asymmetric Single-Wire Serializer bit selector
     wire cur_pulse_bit = pulse_msb_first ? osr[7] : osr[0];
@@ -1167,6 +1319,22 @@ module ProtocolEmulator(
             profiler_arm_strobe    <= 1'b0;
             profiler_stop_strobe   <= 1'b0;
             profiler_rst_strobe    <= 1'b0;
+            usb_sie_en              <= 1'b0;
+            usb_speed_mode          <= 1'b0;
+            usb_auto_ack            <= 1'b1;
+            usb_dev_addr            <= 7'd0;
+            usb_bit_div             <= 16'd4;
+            usb_ep_stall            <= 4'd0;
+            usb_ep_nak              <= 4'd0;
+            usb_ep_toggle           <= 4'd0;
+            usb_tx_token_strobe     <= 1'b0;
+            usb_tx_token_pid        <= 4'd0;
+            usb_tx_token_addr       <= 7'd0;
+            usb_tx_token_endp       <= 4'd0;
+            usb_tx_handshake_strobe <= 1'b0;
+            usb_tx_handshake_pid    <= 4'd0;
+            usb_tx_data_strobe      <= 1'b0;
+            usb_tx_data_pid         <= 4'd0;
         end else begin
             // Default: clear single-cycle pop/push strobes
             o_tx_pop           <= 1'b0;
@@ -1175,6 +1343,9 @@ module ProtocolEmulator(
             profiler_arm_strobe  <= 1'b0;
             profiler_stop_strobe <= 1'b0;
             profiler_rst_strobe  <= 1'b0;
+            usb_tx_token_strobe     <= 1'b0;
+            usb_tx_handshake_strobe <= 1'b0;
+            usb_tx_data_strobe      <= 1'b0;
 
             // -------------------------------------------------------------
             // Hardware Glitch Pulse Generator FSM (Task 25)
@@ -3221,6 +3392,29 @@ module ProtocolEmulator(
                                                         profiler_rst_strobe <= 1'b1;
                                                         pc <= pc + 7'd1;
                                                     end
+                                                     4'hB: begin // USB_SIE_EN
+                                                         usb_sie_en <= 1'b1;
+                                                         pc <= pc + 7'd1;
+                                                     end
+                                                     4'hC: begin // USB_SIE_DIS
+                                                         usb_sie_en <= 1'b0;
+                                                         pc <= pc + 7'd1;
+                                                     end
+                                                     4'hD: begin // USB_SEND_ACK
+                                                         usb_tx_handshake_pid    <= 4'h2;
+                                                         usb_tx_handshake_strobe <= 1'b1;
+                                                         pc <= pc + 7'd1;
+                                                     end
+                                                     4'hE: begin // USB_SEND_NAK
+                                                         usb_tx_handshake_pid    <= 4'hA;
+                                                         usb_tx_handshake_strobe <= 1'b1;
+                                                         pc <= pc + 7'd1;
+                                                     end
+                                                     4'hF: begin // USB_SEND_STALL
+                                                         usb_tx_handshake_pid    <= 4'hE;
+                                                         usb_tx_handshake_strobe <= 1'b1;
+                                                         pc <= pc + 7'd1;
+                                                     end
                                                     default: pc <= pc + 7'd1;
                                                 endcase
                                             end
@@ -3273,6 +3467,23 @@ module ProtocolEmulator(
                                                  profiler_glitch_thresh <= (instr[3:0] != 4'd0) ? instr[3:0] : (acc[3:0] != 4'd0 ? acc[3:0] : 4'd1);
                                                  pc <= pc + 7'd1;
                                              end
+                                              4'hB: begin // USB_CFG <dev_addr>
+                                                  usb_dev_addr <= (instr[3:0] != 4'd0) ? {3'd0, instr[3:0]} : acc[6:0];
+                                                  usb_sie_en   <= 1'b1;
+                                                  pc <= pc + 7'd1;
+                                              end
+                                              4'hC: begin // USB_TX_TOKEN <pid>
+                                                  usb_tx_token_pid    <= instr[3:0];
+                                                  usb_tx_token_addr   <= acc[6:0];
+                                                  usb_tx_token_endp   <= 4'd0;
+                                                  usb_tx_token_strobe <= 1'b1;
+                                                  pc <= pc + 7'd1;
+                                              end
+                                              4'hD: begin // USB_TX_DATA <pid>
+                                                  usb_tx_data_pid    <= instr[3:0];
+                                                  usb_tx_data_strobe <= 1'b1;
+                                                  pc <= pc + 7'd1;
+                                              end
                                             default: pc <= pc + 7'd1;
                                         endcase
                                     end
@@ -3547,6 +3758,29 @@ module ProtocolEmulator(
                                                     carry_flag <= 1'b0;
                                                 end
                                             endcase
+                                         end else if (instr[4]) begin
+                                             case (instr[6:5])
+                                                 2'b00: begin // USB_STATUS
+                                                     acc        <= usb_status_byte_w;
+                                                     zero_flag  <= (usb_status_byte_w == 8'd0);
+                                                     carry_flag <= usb_rx_crc_err_w;
+                                                 end
+                                                 2'b01: begin // USB_TOKEN
+                                                     acc        <= {usb_token_pid_w, usb_token_endp_w};
+                                                     zero_flag  <= !usb_token_valid_w;
+                                                     carry_flag <= usb_reset_w;
+                                                 end
+                                                 2'b10: begin // USB_DATA
+                                                     acc        <= usb_rx_data_byte_w;
+                                                     zero_flag  <= (usb_rx_data_byte_w == 8'd0);
+                                                     carry_flag <= usb_rx_packet_done_w;
+                                                 end
+                                                 2'b11: begin // USB_ADDR
+                                                     acc        <= {1'b0, usb_token_addr_w};
+                                                     zero_flag  <= (usb_token_addr_w == 7'd0);
+                                                     carry_flag <= 1'b0;
+                                                 end
+                                             endcase
                                         end else begin
                                             acc        <= {i2c_rx_addr, i2c_rw_bit};
                                             zero_flag  <= (i2c_rx_addr == 7'd0);

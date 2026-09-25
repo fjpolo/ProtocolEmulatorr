@@ -819,3 +819,64 @@ async def test_wb_profiler_registers(dut):
     assert (st_stopped & 1) == 0, "Expected busy=0 after stop"
 
     dut._log.info("Wishbone Autonomous Profiler Register & Control test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 13: USB 1.1 Autonomous SIE Wishbone Registers & Telemetry (Task 28)
+# -----------------------------------------------------------------------------
+ADDR_USB_CTRL     = 0x60
+ADDR_USB_STATUS   = 0x64
+ADDR_USB_EP_CTRL  = 0x68
+ADDR_USB_TX_TOKEN = 0x6C
+
+@cocotb.test()
+async def test_wb_usb_sie_registers(dut):
+    """Test 28D: Verify Wishbone USB 1.1 SIE control registers, address config, and telemetry."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+
+    # 1. Default read of ADDR_USB_CTRL: sie_en=0, auto_ack=1, dev_addr=0, bit_div=4
+    ctrl = await wb.read(ADDR_USB_CTRL)
+    dut._log.info(f"Initial ADDR_USB_CTRL: 0x{ctrl:08X}")
+    assert (ctrl & 0x01) == 0, "Expected sie_en=0 by default"
+
+    # 2. Configure USB SIE:
+    # sie_en = 1 (bit 0)
+    # speed_mode = 0 (bit 1: Full Speed)
+    # auto_ack = 1 (bit 2)
+    # dev_addr = 0x1A = 26 (bits [9:3])
+    # bit_div = 10 (bits [25:10])
+    cfg_val = (10 << 10) | (0x1A << 3) | (1 << 2) | (0 << 1) | 1
+    await wb.write(ADDR_USB_CTRL, cfg_val)
+    await ClockCycles(dut.i_wb_clk, 5)
+
+    ctrl_read = await wb.read(ADDR_USB_CTRL)
+    dut._log.info(f"Configured ADDR_USB_CTRL: 0x{ctrl_read:08X}")
+    assert (ctrl_read & 0x01) == 1, "Expected sie_en=1"
+    assert ((ctrl_read >> 3) & 0x7F) == 0x1A, f"Expected dev_addr 0x1A, got {hex((ctrl_read >> 3) & 0x7F)}"
+    assert ((ctrl_read >> 10) & 0xFFFF) == 10, f"Expected bit_div 10, got {((ctrl_read >> 10) & 0xFFFF)}"
+
+    # 3. Configure Endpoint Controls (ADDR_USB_EP_CTRL):
+    # ep_stall = 0x01 (EP0 stall)
+    # ep_nak = 0x04 (EP2 nak)
+    # ep_toggle = 0x08 (EP3 DATA1)
+    ep_val = (0x8 << 8) | (0x4 << 4) | 0x1
+    await wb.write(ADDR_USB_EP_CTRL, ep_val)
+    await ClockCycles(dut.i_wb_clk, 5)
+
+    ep_read = await wb.read(ADDR_USB_EP_CTRL)
+    assert (ep_read & 0x0F) == 0x01, f"Expected ep_stall 0x01, got {hex(ep_read & 0x0F)}"
+    assert ((ep_read >> 4) & 0x0F) == 0x04, f"Expected ep_nak 0x04, got {hex((ep_read >> 4) & 0x0F)}"
+    assert ((ep_read >> 8) & 0x0F) == 0x08, f"Expected ep_toggle 0x08, got {hex((ep_read >> 8) & 0x0F)}"
+
+    # 4. Check Status (ADDR_USB_STATUS):
+    dut.i_gpio.value = 0xFD  # Idle J-state: Pin 0 (D+)=1, Pin 1 (D-)=0
+    await ClockCycles(dut.i_wb_clk, 10)
+    status = await wb.read(ADDR_USB_STATUS)
+    dut._log.info(f"ADDR_USB_STATUS: 0x{status:08X}")
+    # In idle, bus_idle (bit 29) should be 1
+    bus_idle = (status >> 29) & 1
+    assert bus_idle == 1, "Expected bus_idle == 1"
+
+    dut._log.info("Wishbone USB 1.1 SIE Control & Status test PASSED!")

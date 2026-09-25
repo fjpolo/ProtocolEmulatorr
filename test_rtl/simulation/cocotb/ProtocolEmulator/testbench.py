@@ -5496,3 +5496,227 @@ halt:
 
     assert int(dut.o_profiler_proto_id.value) == 2, f"Expected Protocol ID 2 (I2C), got {int(dut.o_profiler_proto_id.value)}"
     dut._log.info("Test 27C: Autonomous I2C Framing Signature Recognition PASSED!")
+
+
+# =============================================================================
+# Task 28: USB 1.1 Autonomous Serial Interface Engine (SIE)
+# =============================================================================
+
+@cocotb.test()
+async def test_usb_sie_token_rx(dut):
+    """Task 28A: Autonomous USB Token reception, address filtering, and CRC-5 verification."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Microcode:
+    # 1. Configure USB SIE for device address 5
+    # 2. Enable SIE
+    # 3. Read USB_TOKEN into accumulator and push
+    asm_source = """
+    USB_CFG 5
+    USB_SIE_EN
+wait_token:
+    ASSIST READ, USB_TOKEN
+    JMP ZERO, wait_token
+    PUSH
+    ASSIST READ, USB_STATUS
+    PUSH
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+    await load_program_direct(dut, prog)
+
+    # Default Full Speed: Pin 0=D+, Pin 1=D-
+    # Bit period: 4 clock cycles (e.g. 12 Mbps @ 50 MHz default)
+    bit_period = 4
+
+    # Set idle J-state: D+=1, D-=0
+    dut.i_gpio.value = 0xFD  # Pin 0=1, Pin 1=0
+    await ClockCycles(dut.i_clk, 20)
+
+    # Helper function to send NRZI bit
+    current_line = [1] # 1 = J, 0 = K
+    async def send_bit(b):
+        if not b:
+            current_line[0] = 1 - current_line[0] # Toggle on '0'
+        # Drive D+/D-
+        dp = current_line[0]
+        dm = 1 - current_line[0]
+        dut.i_gpio.value = (dut.i_gpio.value.integer & ~0x03) | (dm << 1) | dp
+        await ClockCycles(dut.i_clk, bit_period)
+
+    async def send_byte_lsb(byte_val):
+        for i in range(8):
+            await send_bit((byte_val >> i) & 1)
+
+    async def send_eop():
+        # SE0 for 2 bit periods
+        dut.i_gpio.value = dut.i_gpio.value.integer & ~0x03
+        await ClockCycles(dut.i_clk, bit_period * 2)
+        # J-state for 1 bit period
+        dut.i_gpio.value = (dut.i_gpio.value.integer & ~0x03) | 0x01
+        await ClockCycles(dut.i_clk, bit_period)
+
+    # Send SETUP Token to ADDR=5, ENDP=0:
+    # SYNC: 0x80 (LSB first: 0,0,0,0,0,0,0,1)
+    # PID SETUP: 0x2D (LSB first: 1,0,1,1,0,1,0,0)
+    # ADDR=5 (7b: 1,0,1,0,0,0,0)
+    # ENDP=0 (4b: 0,0,0,0)
+    # CRC5 for ADDR=5, ENDP=0: 0x08 -> inverted for transmission
+    await send_byte_lsb(0x80)
+    await send_byte_lsb(0x2D) # SETUP PID
+
+    # 11 bits of ADDR=5, ENDP=0
+    token_bits = [1, 0, 1, 0, 0, 0, 0,  0, 0, 0, 0] # 5 (7b) + 0 (4b)
+    # Compute CRC5 for these bits:
+    c = 0x1F
+    for b in token_bits:
+        fb = (c & 1) ^ b
+        c = (c >> 1) ^ (0x14 if fb else 0)
+    crc5 = c ^ 0x1F # CRC5 value
+
+    for b in token_bits:
+        await send_bit(b)
+    # Send inverted CRC5 LSB first
+    for i in range(5):
+        await send_bit((crc5 >> i) & 1)
+
+    await send_eop()
+    await ClockCycles(dut.i_clk, 40)
+
+    # Check token was latched
+    assert int(dut.o_usb_token_pid.value) == 0xD, f"Expected PID 0xD (SETUP), got {hex(int(dut.o_usb_token_pid.value))}"
+    assert int(dut.o_usb_token_addr.value) == 5, f"Expected ADDR 5, got {int(dut.o_usb_token_addr.value)}"
+    assert int(dut.o_usb_token_endp.value) == 0, f"Expected ENDP 0, got {int(dut.o_usb_token_endp.value)}"
+    dut._log.info("Test 28A: Autonomous USB Token reception & CRC-5 verification PASSED!")
+
+
+@cocotb.test()
+async def test_usb_sie_auto_ack(dut):
+    """Task 28B: Autonomous ACK handshake response on valid DATA0 reception."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Microcode:
+    # Configure USB SIE for ADDR=5, enable auto-ack
+    asm_source = """
+    USB_CFG 5
+    USB_SIE_EN
+loop:
+    JMP loop
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+    await load_program_direct(dut, prog)
+
+    bit_period = 4
+    dut.i_gpio.value = 0xFD # Idle J (dp=1, dm=0)
+    await ClockCycles(dut.i_clk, 20)
+
+    current_line = [1]
+    async def send_bit(b):
+        if not b:
+            current_line[0] = 1 - current_line[0]
+        dp = current_line[0]
+        dm = 1 - current_line[0]
+        dut.i_gpio.value = (dut.i_gpio.value.integer & ~0x03) | (dm << 1) | dp
+        await ClockCycles(dut.i_clk, bit_period)
+
+    async def send_byte_lsb(byte_val):
+        for i in range(8):
+            await send_bit((byte_val >> i) & 1)
+
+    async def send_eop():
+        dut.i_gpio.value = dut.i_gpio.value.integer & ~0x03
+        await ClockCycles(dut.i_clk, bit_period * 2)
+        dut.i_gpio.value = (dut.i_gpio.value.integer & ~0x03) | 0x01
+        await ClockCycles(dut.i_clk, bit_period)
+
+    # 1. Send OUT token (PID 0xE1) to ADDR=5, ENDP=0
+    await send_byte_lsb(0x80)
+    await send_byte_lsb(0xE1) # OUT
+    token_bits = [1, 0, 1, 0, 0, 0, 0,  0, 0, 0, 0]
+    c = 0x1F
+    for b in token_bits:
+        fb = (c & 1) ^ b
+        c = (c >> 1) ^ (0x14 if fb else 0)
+    crc5 = c ^ 0x1F
+    for b in token_bits:
+        await send_bit(b)
+    for i in range(5):
+        await send_bit((crc5 >> i) & 1)
+    await send_eop()
+    await ClockCycles(dut.i_clk, 10)
+
+    # 2. Send DATA0 packet with payload 0x41 ('A')
+    # SYNC 0x80
+    current_line[0] = 1
+    await send_byte_lsb(0x80)
+    await send_byte_lsb(0xC3) # DATA0 PID
+
+    # Payload byte 'A' = 0x41
+    payload = 0x41
+    # CRC16 for byte 0x41:
+    c16 = 0xFFFF
+    for i in range(8):
+        b = (payload >> i) & 1
+        fb = (c16 & 1) ^ b
+        c16 = (c16 >> 1) ^ (0xA001 if fb else 0)
+    crc16 = c16 ^ 0xFFFF
+
+    await send_byte_lsb(payload)
+    # Send inverted CRC16 LSB first
+    for i in range(16):
+        await send_bit((crc16 >> i) & 1)
+    await send_eop()
+
+    # Release bus to input so SIE can drive ACK
+    dut.i_gpio.value = 0xFD
+
+    # Wait for SIE to assert o_gpio_oe and drive ACK
+    # ACK packet: SYNC 0x80 + PID 0xD2 + EOP
+    ack_seen = False
+    for _ in range(200):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_gpio_oe.value) & 0x03 == 0x03: # SIE driving D+ and D-
+            ack_seen = True
+            break
+
+    assert ack_seen, "Expected SIE to autonomously drive ACK handshake response!"
+    dut._log.info("Test 28B: Autonomous USB Handshake (ACK) generation PASSED!")
+
+
+@cocotb.test()
+async def test_usb_sie_bus_reset(dut):
+    """Task 28C: USB Bus Reset detection on sustained SE0."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    asm_source = """
+    USB_CFG 0
+    USB_SIE_EN
+loop:
+    ASSIST READ, USB_STATUS
+    PUSH
+    JMP loop
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+    await load_program_direct(dut, prog)
+
+    # Idle J
+    dut.i_gpio.value = 0xFD
+    await ClockCycles(dut.i_clk, 20)
+    assert int(dut.o_usb_bus_reset.value) == 0
+
+    # Drive SE0: D+=0, D-=0 for >= 32 * bit_div cycles (32 * 4 = 128 cycles)
+    dut.i_gpio.value = 0xFC # Pin 0=0, Pin 1=0
+    await ClockCycles(dut.i_clk, 160)
+
+    assert int(dut.o_usb_bus_reset.value) == 1, "Expected USB bus reset flag asserted on sustained SE0!"
+    dut._log.info("Test 28C: USB Bus Reset detection PASSED!")

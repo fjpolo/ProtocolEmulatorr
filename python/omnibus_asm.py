@@ -126,6 +126,20 @@ OPCODES = {
     "PROFILER_STOP":     0xF,
     "PROFILER_RST":      0xF,
     "PROFILER_RESET":    0xF,
+    "USB_CFG":           0xF,
+    "USB_CONFIG":        0xF,
+    "USB_TX_TOKEN":      0xF,
+    "USB_TOKEN":         0xF,
+    "USB_TX_DATA":       0xF,
+    "USB_DATA_PKT":      0xF,
+    "USB_SEND_ACK":      0xF,
+    "USB_ACK":           0xF,
+    "USB_SEND_NAK":      0xF,
+    "USB_NAK":           0xF,
+    "USB_SEND_STALL":    0xF,
+    "USB_STALL":         0xF,
+    "USB_SIE_EN":        0xF,
+    "USB_SIE_DIS":       0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -886,7 +900,7 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
-            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD", "GLITCH_CFG", "GLITCH_WIDTH", "GLITCH_DELAY", "GLITCH_DELAY_LO", "GLITCH_DELAY_HI", "GLITCH_ARM", "GLITCH_TRIG", "GLITCH_TRIGGER", "GLITCH_DISARM", "MITM_MATCH", "MITM_REPLACE", "MITM_MASK", "MITM_ENABLE", "MITM_DISABLE", "MITM_RESET", "MITM_CLR", "PROFILER_CFG", "PROFILER_FILTER", "PROFILER_ARM", "PROFILER_STOP", "PROFILER_RST", "PROFILER_RESET"):
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD", "GLITCH_CFG", "GLITCH_WIDTH", "GLITCH_DELAY", "GLITCH_DELAY_LO", "GLITCH_DELAY_HI", "GLITCH_ARM", "GLITCH_TRIG", "GLITCH_TRIGGER", "GLITCH_DISARM", "MITM_MATCH", "MITM_REPLACE", "MITM_MASK", "MITM_ENABLE", "MITM_DISABLE", "MITM_RESET", "MITM_CLR", "PROFILER_CFG", "PROFILER_FILTER", "PROFILER_ARM", "PROFILER_STOP", "PROFILER_RST", "PROFILER_RESET", "USB_CFG", "USB_CONFIG", "USB_TX_TOKEN", "USB_TOKEN", "USB_TX_DATA", "USB_DATA_PKT", "USB_SEND_ACK", "USB_ACK", "USB_SEND_NAK", "USB_NAK", "USB_SEND_STALL", "USB_STALL", "USB_SIE_EN", "USB_SIE_DIS"):
                 # Sub-operations:
                 # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
                 # 2'b01: ASSIST RESET
@@ -1282,6 +1296,43 @@ class OmnibusAssembler:
                 elif sub_cmd in ("PROFILER_RST", "PROFILER_RESET"):
                     word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 10
 
+                elif sub_cmd in ("USB_CFG", "USB_CONFIG", "USB_ADDR"):
+                    addr = eval_arg(arg_tokens[0]) & 0x7F if arg_tokens else 0
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (11 << 4) | (addr & 0xF)
+
+                elif sub_cmd in ("USB_TX_TOKEN", "USB_TOKEN"):
+                    PID_MAP = {"OUT": 1, "IN": 9, "SOF": 5, "SETUP": 13, "0": 0}
+                    pid_val = 1
+                    if arg_tokens:
+                        tok = arg_tokens[0].strip().upper()
+                        if tok in PID_MAP: pid_val = PID_MAP[tok]
+                        else: pid_val = eval_arg(tok) & 0xF
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (12 << 4) | (pid_val & 0xF)
+
+                elif sub_cmd in ("USB_TX_DATA", "USB_DATA_PKT"):
+                    PID_DATA_MAP = {"DATA0": 3, "DATA1": 11, "DATA2": 7, "MDATA": 15, "0": 3, "1": 11}
+                    pid_val = 3
+                    if arg_tokens:
+                        tok = arg_tokens[0].strip().upper()
+                        if tok in PID_DATA_MAP: pid_val = PID_DATA_MAP[tok]
+                        else: pid_val = eval_arg(tok) & 0xF
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (13 << 4) | (pid_val & 0xF)
+
+                elif sub_cmd in ("USB_SIE_EN", "USB_ENABLE"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 11
+
+                elif sub_cmd in ("USB_SIE_DIS", "USB_DISABLE"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 12
+
+                elif sub_cmd in ("USB_SEND_ACK", "USB_ACK"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 13
+
+                elif sub_cmd in ("USB_SEND_NAK", "USB_NAK"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 14
+
+                elif sub_cmd in ("USB_SEND_STALL", "USB_STALL"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 15
+
                 elif sub_cmd in ("READ", "STATUS"):
                     if any("PROFILER_TMIN_L" in a.upper() or "TMIN_L" in a.upper() or "TMIN_LO" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 7) | (0 << 5)
@@ -1291,6 +1342,14 @@ class OmnibusAssembler:
                         word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 7) | (3 << 5)
                     elif any("PROFILER" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 7) | (2 << 5)
+                    elif any("USB_STATUS" in a.upper() or "USB_STAT" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (0 << 7) | (1 << 4) | (0 << 5)
+                    elif any("USB_TOKEN" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (0 << 7) | (1 << 4) | (1 << 5)
+                    elif any("USB_DATA" in a.upper() or "USB_RX" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (0 << 7) | (1 << 4) | (2 << 5)
+                    elif any("USB_ADDR" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (0 << 7) | (1 << 4) | (3 << 5)
                     elif any("GLITCH" in a.upper() or "MITM" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (2 << 8) | (0 << 6) | (1 << 5)
                     elif any("I2C_ADDR" in a.upper() or "ADDR" in a.upper() for a in arg_tokens):

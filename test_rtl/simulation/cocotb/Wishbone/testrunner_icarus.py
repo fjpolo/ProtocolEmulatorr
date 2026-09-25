@@ -16,6 +16,7 @@ def test_wishbone_runner():
     sources = [
         rtl_dir / "omnibus_fifo.v",
         rtl_dir / "OmniBus_Profiler.v",
+        rtl_dir / "OmniBus_USB_SIE.v",
         rtl_dir / "OmniBus_DMA.v",
         rtl_dir / "ProtocolEmulator.v",
         rtl_dir / "OmniBus_Wishbone.v",

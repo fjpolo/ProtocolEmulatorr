@@ -7,6 +7,7 @@
     <FileList>
         <File path="src/top.v" type="file.verilog" enable="1"/>
         <File path="../../../rtl/OmniBus_Profiler.v" type="file.verilog" enable="1"/>
+        <File path="../../../rtl/OmniBus_USB_SIE.v" type="file.verilog" enable="1"/>
         <File path="../../../rtl/ProtocolEmulator.v" type="file.verilog" enable="1"/>
         <File path="../../../rtl/OmniBootloader.v" type="file.verilog" enable="1"/>
         <File path="../../../rtl/I2CSlaveStub.v" type="file.verilog" enable="1"/>
