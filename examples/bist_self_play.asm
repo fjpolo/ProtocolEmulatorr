@@ -9,13 +9,13 @@
 ;   - Uses the Internal Virtual Crossbar to route signals internally without
 ;     requiring external loopback jumpers or logic analyzer probes.
 ;   - Real-time LED status & scoring telemetry.
-;   - Live ASCII Reporting:
-;       BIST:
+;   - Live ASCII Reporting over UART:
+;       BIST
 ;       S1:OK
 ;       S2:OK
 ;       S3:OK
 ;       S4:OK
-;       ..................
+;       .. (0.5s heartbeat dots)
 ; ==============================================================================
 
 .clock 50000000
@@ -173,10 +173,13 @@ stage4:
 bist_heartbeat:
     MOV acc, '.'
     CALL tx_byte
+    SET_LC LC1, 200
+hb_outer:
+    SET_LC LC0, 250
+hb_inner:
     NOP 511
-    NOP 511
-    NOP 511
-    NOP 511
+    DJNZ LC0, hb_inner
+    DJNZ LC1, hb_outer
     JMP bist_heartbeat
 
 ; ==============================================================================
@@ -184,9 +187,9 @@ bist_heartbeat:
 ; ==============================================================================
 tx_byte:
     MOV osr, acc
-    SET 0, 0, 433               ; UART start bit (Pin 0 low @ 115200 baud)
-    OUT 433                     ; 8 data bits LSB-first
-    SET 0, 1, 433               ; UART stop bit (Pin 0 high)
+    SET 0, 0, $BAUD             ; UART start bit (Pin 0 low @ 115200 baud)
+    OUT $BAUD                   ; 8 data bits LSB-first
+    SET 0, 1, $BAUD             ; UART stop bit (Pin 0 high @ 115200 baud)
     RET
 
 print_ok:

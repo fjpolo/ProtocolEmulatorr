@@ -174,7 +174,7 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo.
-echo [*] Step 2: Uploading BIST Self-Play microcode into FPGA IMEM & Opening UART Console...
+echo [*] Step 2: Uploading BIST Self-Play microcode into FPGA IMEM and Opening UART Console...
 python "%ROOT_DIR%python\omnibus_loader.py" --file "%ASM_SRC%" --terminal %EXTRA_ARGS%
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] Upload failed! Check FPGA USB connection.
