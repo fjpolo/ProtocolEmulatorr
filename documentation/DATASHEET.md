@@ -1,9 +1,9 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.9 (Architecture Release — Tasks 01 through 27)  
+**Document Revision**: 1.10 (Architecture Release — Tasks 01 through 28)  
 **Architecture Milestone**: OmniBus Lite (v1.0 Foundation)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
-**Dedicated User Guides**: [task27.md](task27.md) (Autonomous Waveform Profiler & Auto-Baud Engine), [GLITCH_MITM_USER_GUIDE.md](GLITCH_MITM_USER_GUIDE.md) (Hardware Fault Injection & Wire-Speed MitM Fuzzing), [task26.md](task26.md) (OmniBus DMA Controller)  
+**Dedicated User Guides**: [task28.md](task28.md) (USB 1.1 Autonomous Serial Interface Engine), [task27.md](task27.md) (Autonomous Waveform Profiler & Auto-Baud Engine), [GLITCH_MITM_USER_GUIDE.md](GLITCH_MITM_USER_GUIDE.md) (Hardware Fault Injection & Wire-Speed MitM Fuzzing), [task26.md](task26.md) (OmniBus DMA Controller)  
 
 ---
 
@@ -26,6 +26,12 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
 ```
 
 ### Key Architectural Specifications
+- **USB 1.1 Autonomous Serial Interface Engine (Task 28)**:
+  - **Zero-CPU Full-Speed (12 Mbps) & Low-Speed (1.5 Mbps) SIE**: Autonomous differential line decoding (`D+`, `D-` $\to$ J, K, SE0, SE1), mid-bit eye-diagram alignment, and hardware bit-stuffing/de-stuffing.
+  - **Autonomous Packet Verification & Filtering**: Hardware SYNC lock (`0x80`), PID complement verification (`PID[7:4] == ~PID[3:0]`), 7-bit Device Address and 4-bit Endpoint parsing, and token CRC-5 validation.
+  - **Hardware Data CRC-16 Engine & Auto-Handshake Responder**: Reflective polynomial CRC-16 computation ($G(x) = x^{16} + x^{15} + x^2 + 1$, residual `0xB001`) and autonomous sub-microsecond `ACK`, `NAK`, `STALL` handshake generation.
+  - **Bus Reset & EOP Handling**: Autonomous detection of sustained SE0 ($\ge 32$ bit times) indicating Bus Reset, and valid End-of-Packet (EOP) framing detection.
+  - **Full Host & Microcode Integration**: Wishbone slave registers (`0x60..0x6C`), microcode opcodes (`USB_CFG`, `USB_SIE_EN`, `USB_SIE_DIS`, `USB_SEND_ACK`, `USB_SEND_NAK`, `USB_SEND_STALL`, `USB_TX_TOKEN`, `USB_TX_DATA`), and `ASSIST READ` targets (`USB_STATUS`, `USB_TOKEN`, `USB_DATA`, `USB_ADDR`).
 - **The Protocol Detective: Autonomous Waveform Profiler & Auto-Baud Engine (Task 27)**:
   - **Zero-Knowledge Hardware Pulse Analyzer**: 16-bit transition timer running at 50 MHz (20 ns resolution) tracking minimum stable high/low pulse widths ($t_{\min\_high}, t_{\min\_low}$) and fundamental bit period ($t_{\min}$ auto-baud divisor).
   - **Bus Idle State & Duty-Cycle Symmetry Discriminator**: Classifies idle polarity (Idle-High vs. Idle-Low) and discriminates between periodic clocks ($t_{	ext{high}} pprox t_{	ext{low}}$) and asynchronous serial data.
@@ -667,8 +673,23 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
   - **Word 1 (+0x04)**: `[31:16]` = Flags (Bit 0 = EOT: End of Table), `[15:0]` = Transfer Length.
   - **Word 2 (+0x08)**: `next_desc[31:0]` (Pointer to subsequent descriptor in host RAM).
   - **Word 3 (+0x0C)**: `[15:0]` = Status / Transferred Bytes (Written back by DMA master upon completing buffer).
-- **Host Interrupt Integration**:
-  - Programmable completion IRQ (`tx_irq_en`, `rx_irq_en`) asserted on `o_irq` for zero-overhead OS/driver event notification.
+### 9. USB 1.1 Autonomous Serial Interface Engine (Task 28)
+- **High-Speed Hardware Physical Layer & Packet Processor**:
+  - Differential line state recovery (`D+`, `D-` $\to$ J, K, SE0, SE1) with 2-stage double-flop synchronizer.
+  - Full-Speed ($12\,\text{Mbps}$) and Low-Speed ($1.5\,\text{Mbps}$) support with mid-bit eye-diagram alignment ($0.5T, 1.5T, \dots$).
+  - Autonomous NRZI decoding and hardware bit-stuffing/de-stuffing.
+  - Automatic SYNC lock (`0x80`), PID complement verification (`PID[7:4] == ~PID[3:0]`), Device Address filtering (`ADDR[6:0]`), Endpoint extraction (`ENDP[3:0]`), and CRC-5 validation (residual `0x06`).
+  - Hardware 16-bit CRC data engine ($G(x) = x^{16} + x^{15} + x^2 + 1$, residual `0xB001`).
+  - Autonomous hardware handshake generation (`ACK`, `NAK`, `STALL`) with sub-microsecond turnaround time.
+  - Bus Reset detection on sustained SE0 ($\ge 32$ bit times) and EOP framing validation.
+- **Wishbone B4 Slave Memory Map (`0x60..0x6C`)**:
+  - `0x60`: `ADDR_USB_CTRL` (RW: `[0]`=sie_en, `[1]`=speed_mode, `[2]`=auto_ack, `[9:3]`=dev_addr, `[25:10]`=bit_div).
+  - `0x64`: `ADDR_USB_STATUS` (RO: `[7:0]`=status_byte, `[11:8]`=token_pid, `[15:12]`=token_endp, `[22:16]`=token_addr, `[27:24]`=rx_pid, `[28]`=bus_reset, `[29]`=bus_idle).
+  - `0x68`: `ADDR_USB_EP_CTRL` (RW: `[3:0]`=ep_stall, `[7:4]`=ep_nak, `[11:8]`=ep_toggle).
+  - `0x6C`: `ADDR_USB_TX_TOKEN` (WO: `[3:0]`=tx_token_pid, `[10:4]`=tx_token_addr, `[14:11]`=tx_token_endp, `[19:16]`=tx_handshake_pid, `[20]`=tx_handshake_req).
+- **Microcode Instructions & Extended Telemetry**:
+  - `USB_CFG <addr>` (`0xF4B[addr]`), `USB_SIE_EN` (`0xF40B`), `USB_SIE_DIS` (`0xF40C`), `USB_SEND_ACK` (`0xF40D`), `USB_SEND_NAK` (`0xF40E`), `USB_SEND_STALL` (`0xF40F`), `USB_TX_TOKEN <pid>` (`0xF4C[pid]`), `USB_TX_DATA <pid>` (`0xF4D[pid]`).
+  - `ASSIST READ, USB_STATUS` (`0xFB10`), `USB_TOKEN` (`0xFB30`), `USB_DATA` (`0xFB50`), `USB_ADDR` (`0xFB70`).
 
 ---
 

@@ -84,6 +84,10 @@ module OmniBus_Wishbone #(
     localparam [7:0] ADDR_PROFILER_STATUS = 8'h54;  // RO: Profiler Status: [0]=busy, [1]=done, [2]=idle_pol, [3]=is_clock, [7:4]=proto_id, [15:8]=edge_count
     localparam [7:0] ADDR_PROFILER_TMIN   = 8'h58;  // RO: Profiler t_min: [15:0]=tmin (baud divisor), [31:16]=tmax
     localparam [7:0] ADDR_PROFILER_PERIOD = 8'h5C;  // RO: Profiler Symmetry: [15:0]=tmin_high, [31:16]=tmin_low
+    localparam [7:0] ADDR_USB_CTRL        = 8'h60;  // RW: [0]=sie_en, [1]=speed_mode, [2]=auto_ack, [9:3]=dev_addr, [25:10]=bit_div
+    localparam [7:0] ADDR_USB_STATUS      = 8'h64;  // RO: [7:0]=status_byte, [11:8]=token_pid, [15:12]=token_endp, [22:16]=token_addr, [27:24]=rx_pid, [28]=bus_reset, [29]=bus_idle
+    localparam [7:0] ADDR_USB_EP_CTRL     = 8'h68;  // RW: [3:0]=ep_stall, [7:4]=ep_nak, [11:8]=ep_toggle
+    localparam [7:0] ADDR_USB_TX_TOKEN    = 8'h6C;  // WO: [3:0]=token_pid, [10:4]=token_addr, [14:11]=token_endp, [15]=tx_req, [19:16]=handshake_pid, [20]=handshake_req
     localparam [7:0] ADDR_IMEM        = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
 
     // =========================================================================
@@ -121,6 +125,22 @@ module OmniBus_Wishbone #(
     reg        reg_profiler_stop;
     reg        reg_profiler_rst;
     reg        reg_profiler_irq_en;
+
+    // Autonomous USB 1.1 SIE Registers (Task 28)
+    reg        reg_usb_sie_en;
+    reg        reg_usb_speed_mode;
+    reg        reg_usb_auto_ack;
+    reg [6:0]  reg_usb_dev_addr;
+    reg [15:0] reg_usb_bit_div;
+    reg [3:0]  reg_usb_ep_stall;
+    reg [3:0]  reg_usb_ep_nak;
+    reg [3:0]  reg_usb_ep_toggle;
+    reg        reg_usb_tx_token_req;
+    reg [3:0]  reg_usb_tx_token_pid;
+    reg [6:0]  reg_usb_tx_token_addr;
+    reg [3:0]  reg_usb_tx_token_endp;
+    reg        reg_usb_tx_handshake_req;
+    reg [3:0]  reg_usb_tx_handshake_pid;
 
     // Combined active-low reset for core and FIFOs
     wire core_rst_n = i_wb_rst_n && !reg_soft_rst;
@@ -213,6 +233,15 @@ module OmniBus_Wishbone #(
     wire [15:0] profiler_tmin_high;
     wire [15:0] profiler_tmin_low;
 
+    // Autonomous USB 1.1 SIE Telemetry Wires (Task 28)
+    wire [7:0] usb_status_byte;
+    wire [3:0] usb_token_pid;
+    wire [3:0] usb_token_endp;
+    wire [6:0] usb_token_addr;
+    wire [3:0] usb_rx_pid;
+    wire       usb_bus_reset;
+    wire       usb_bus_idle;
+
     assign tx_fifo_pop   = core_tx_pop;
     assign rx_fifo_push  = core_rx_push;
     assign rx_fifo_wdata = core_odata;
@@ -261,6 +290,28 @@ module OmniBus_Wishbone #(
         .o_profiler_tmax     (profiler_tmax),
         .o_profiler_tmin_high(profiler_tmin_high),
         .o_profiler_tmin_low (profiler_tmin_low),
+        // Task 28 USB SIE
+        .i_usb_wb_sie_en          (reg_usb_sie_en),
+        .i_usb_wb_speed_mode      (reg_usb_speed_mode),
+        .i_usb_wb_auto_ack        (reg_usb_auto_ack),
+        .i_usb_wb_dev_addr        (reg_usb_dev_addr),
+        .i_usb_wb_bit_div         (reg_usb_bit_div),
+        .i_usb_wb_ep_stall        (reg_usb_ep_stall),
+        .i_usb_wb_ep_nak          (reg_usb_ep_nak),
+        .i_usb_wb_ep_toggle       (reg_usb_ep_toggle),
+        .i_usb_wb_tx_token_req    (reg_usb_tx_token_req),
+        .i_usb_wb_tx_token_pid    (reg_usb_tx_token_pid),
+        .i_usb_wb_tx_token_addr   (reg_usb_tx_token_addr),
+        .i_usb_wb_tx_token_endp   (reg_usb_tx_token_endp),
+        .i_usb_wb_tx_handshake_req(reg_usb_tx_handshake_req),
+        .i_usb_wb_tx_handshake_pid(reg_usb_tx_handshake_pid),
+        .o_usb_status_byte        (usb_status_byte),
+        .o_usb_token_pid          (usb_token_pid),
+        .o_usb_token_endp         (usb_token_endp),
+        .o_usb_token_addr         (usb_token_addr),
+        .o_usb_rx_pid             (usb_rx_pid),
+        .o_usb_bus_reset          (usb_bus_reset),
+        .o_usb_bus_idle           (usb_bus_idle),
         .i_prog_en    (core_prog_en),
         .i_prog_we    (wb_imem_we),
         .i_prog_addr  (wb_imem_addr),
@@ -404,6 +455,9 @@ module OmniBus_Wishbone #(
                 ADDR_PROFILER_STATUS: wb_rdata_comb = {16'd0, profiler_edges, profiler_proto_id, profiler_is_clock, profiler_idle_pol, profiler_done, profiler_busy};
                 ADDR_PROFILER_TMIN:   wb_rdata_comb = {profiler_tmax, profiler_tmin};
                 ADDR_PROFILER_PERIOD: wb_rdata_comb = {profiler_tmin_low, profiler_tmin_high};
+                ADDR_USB_CTRL:        wb_rdata_comb = {6'd0, reg_usb_bit_div, reg_usb_dev_addr, reg_usb_auto_ack, reg_usb_speed_mode, reg_usb_sie_en};
+                ADDR_USB_STATUS:      wb_rdata_comb = {2'd0, usb_bus_idle, usb_bus_reset, usb_rx_pid, 1'b0, usb_token_addr, usb_token_endp, usb_token_pid, usb_status_byte};
+                ADDR_USB_EP_CTRL:     wb_rdata_comb = {20'd0, reg_usb_ep_toggle, reg_usb_ep_nak, reg_usb_ep_stall};
                 default:          wb_rdata_comb = 32'h00000000;
             endcase
         end
@@ -440,6 +494,20 @@ module OmniBus_Wishbone #(
             reg_profiler_stop   <= 1'b0;
             reg_profiler_rst    <= 1'b0;
             reg_profiler_irq_en <= 1'b0;
+            reg_usb_sie_en           <= 1'b0;
+            reg_usb_speed_mode       <= 1'b0;
+            reg_usb_auto_ack         <= 1'b1;
+            reg_usb_dev_addr         <= 7'd0;
+            reg_usb_bit_div          <= 16'd4;
+            reg_usb_ep_stall         <= 4'd0;
+            reg_usb_ep_nak           <= 4'd0;
+            reg_usb_ep_toggle        <= 4'd0;
+            reg_usb_tx_token_req     <= 1'b0;
+            reg_usb_tx_token_pid     <= 4'd0;
+            reg_usb_tx_token_addr    <= 7'd0;
+            reg_usb_tx_token_endp    <= 4'd0;
+            reg_usb_tx_handshake_req <= 1'b0;
+            reg_usb_tx_handshake_pid <= 4'd0;
             o_wb_ack            <= 1'b0;
             o_wb_data           <= 32'h00000000;
         end else begin
@@ -448,6 +516,8 @@ module OmniBus_Wishbone #(
             reg_rx_flush      <= 1'b0;
             reg_dma_tx_start  <= 1'b0;
             reg_dma_rx_start  <= 1'b0;
+            reg_usb_tx_token_req     <= 1'b0;
+            reg_usb_tx_handshake_req <= 1'b0;
             reg_dma_abort     <= 1'b0;
             reg_profiler_arm  <= 1'b0;
             reg_profiler_stop <= 1'b0;
@@ -496,6 +566,27 @@ module OmniBus_Wishbone #(
                             reg_profiler_rst    <= i_wb_data[10];
                             reg_profiler_irq_en <= i_wb_data[11];
                         end
+                ADDR_USB_CTRL: begin
+                    reg_usb_sie_en     <= i_wb_data[0];
+                    reg_usb_speed_mode <= i_wb_data[1];
+                    reg_usb_auto_ack   <= i_wb_data[2];
+                    reg_usb_dev_addr   <= i_wb_data[9:3];
+                    if (i_wb_data[25:10] != 16'd0)
+                        reg_usb_bit_div <= i_wb_data[25:10];
+                end
+                ADDR_USB_EP_CTRL: begin
+                    reg_usb_ep_stall  <= i_wb_data[3:0];
+                    reg_usb_ep_nak    <= i_wb_data[7:4];
+                    reg_usb_ep_toggle <= i_wb_data[11:8];
+                end
+                ADDR_USB_TX_TOKEN: begin
+                    reg_usb_tx_token_pid     <= i_wb_data[3:0];
+                    reg_usb_tx_token_addr    <= i_wb_data[10:4];
+                    reg_usb_tx_token_endp    <= i_wb_data[14:11];
+                    reg_usb_tx_token_req     <= i_wb_data[15];
+                    reg_usb_tx_handshake_pid <= i_wb_data[19:16];
+                    reg_usb_tx_handshake_req <= i_wb_data[20];
+                end
                         default: ;
                     endcase
                 end

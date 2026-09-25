@@ -18,7 +18,8 @@ def test_protocol_emulator_runner():
     if not source_file.exists():
         source_file = rtl_path
     profiler_path = (proj_path / "../../../../rtl/OmniBus_Profiler.v").resolve()
-    sources = [profiler_path, source_file]
+    usb_sie_path  = (proj_path / "../../../../rtl/OmniBus_USB_SIE.v").resolve()
+    sources = [profiler_path, usb_sie_path, source_file]
 
     runner = get_runner(sim)
     runner.build(
