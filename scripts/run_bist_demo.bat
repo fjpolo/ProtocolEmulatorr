@@ -89,10 +89,22 @@ if /I "%ARG1%"=="flash" (
 )
 
 :setup_args
-set ROOT_DIR=%~dp0..
+set "EXTRA_ARGS="
+:collect_args
+if "%~1"=="" goto :dispatch
+set "EXTRA_ARGS=%EXTRA_ARGS% %1"
+shift
+goto :collect_args
+
+:dispatch
+if exist "%~dp0python\omnibus_asm.py" (
+    set "ROOT_DIR=%~dp0"
+) else (
+    set "ROOT_DIR=%~dp0..\"
+)
 set SCRIPT_DIR=%~dp0
-set ASM_SRC=%ROOT_DIR%\examples\bist_self_play.asm
-set HEX_OUT=%ROOT_DIR%\examples\bist_self_play.hex
+set ASM_SRC=%ROOT_DIR%examples\bist_self_play.asm
+set HEX_OUT=%ROOT_DIR%examples\bist_self_play.hex
 
 rem Mode-specific branches
 if /I "%MODE%"=="sim" goto :run_sim
@@ -155,7 +167,7 @@ exit /b %ERRORLEVEL%
 
 :run_fpga
 echo [*] Step 1: Assembling %ASM_SRC%...
-python -m python.omnibus_asm "%ASM_SRC%" -o "%HEX_OUT%"
+python "%ROOT_DIR%python\omnibus_asm.py" "%ASM_SRC%" -o "%HEX_OUT%"
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] Assembly failed!
     exit /b %ERRORLEVEL%
@@ -163,7 +175,7 @@ if %ERRORLEVEL% neq 0 (
 
 echo.
 echo [*] Step 2: Uploading BIST Self-Play microcode into FPGA IMEM...
-python python/omnibus_bootloader.py --hex "%HEX_OUT%" %*
+python "%ROOT_DIR%python\omnibus_loader.py" --file "%ASM_SRC%" %EXTRA_ARGS%
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] Upload failed! Check FPGA USB connection.
     exit /b %ERRORLEVEL%
