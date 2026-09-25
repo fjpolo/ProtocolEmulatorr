@@ -120,6 +120,12 @@ OPCODES = {
     "MITM_DISABLE":      0xF,
     "MITM_RESET":        0xF,
     "MITM_CLR":          0xF,
+    "PROFILER_CFG":      0xF,
+    "PROFILER_FILTER":   0xF,
+    "PROFILER_ARM":      0xF,
+    "PROFILER_STOP":     0xF,
+    "PROFILER_RST":      0xF,
+    "PROFILER_RESET":    0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -249,6 +255,14 @@ class OmnibusAssembler:
                 parsed_instructions.append((line_num, current_addr, f"MOV acc, {g_w}"))
                 current_addr += 1
                 parsed_instructions.append((line_num, current_addr, "GLITCH_WIDTH 0"))
+                current_addr += 1
+                continue
+            elif macro_op == "PROFILER_CFG" and len(macro_tokens) >= 3:
+                p_pin = macro_tokens[1]
+                p_flt = macro_tokens[2]
+                parsed_instructions.append((line_num, current_addr, f"MOV acc, {p_flt}"))
+                current_addr += 1
+                parsed_instructions.append((line_num, current_addr, f"PROFILER_CFG {p_pin}"))
                 current_addr += 1
                 continue
 
@@ -598,6 +612,9 @@ class OmnibusAssembler:
                     # Task 25: Extended Glitch & MitM Condition Codes
                     "GLITCH_DONE": (1, 12), "GLITCH_FIRED": (1, 12),
                     "MATCH_FOUND": (1, 13), "MITM_MATCH": (1, 13),
+                    # Task 27: Extended Waveform Profiler Condition Codes
+                    "PROFILER_DONE": (1, 14), "PROFILER_CONVERGED": (1, 14),
+                    "PROFILER_CLOCK": (1, 15), "IS_CLOCK": (1, 15),
                 }
                 if len(tokens) >= 3:
                     cond_name = tokens[1].strip().upper()
@@ -869,7 +886,7 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
-            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD", "GLITCH_CFG", "GLITCH_WIDTH", "GLITCH_DELAY", "GLITCH_DELAY_LO", "GLITCH_DELAY_HI", "GLITCH_ARM", "GLITCH_TRIG", "GLITCH_TRIGGER", "GLITCH_DISARM", "MITM_MATCH", "MITM_REPLACE", "MITM_MASK", "MITM_ENABLE", "MITM_DISABLE", "MITM_RESET", "MITM_CLR"):
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD", "GLITCH_CFG", "GLITCH_WIDTH", "GLITCH_DELAY", "GLITCH_DELAY_LO", "GLITCH_DELAY_HI", "GLITCH_ARM", "GLITCH_TRIG", "GLITCH_TRIGGER", "GLITCH_DISARM", "MITM_MATCH", "MITM_REPLACE", "MITM_MASK", "MITM_ENABLE", "MITM_DISABLE", "MITM_RESET", "MITM_CLR", "PROFILER_CFG", "PROFILER_FILTER", "PROFILER_ARM", "PROFILER_STOP", "PROFILER_RST", "PROFILER_RESET"):
                 # Sub-operations:
                 # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
                 # 2'b01: ASSIST RESET
@@ -1244,8 +1261,37 @@ class OmnibusAssembler:
                 elif sub_cmd in ("MITM_RESET", "MITM_CLR"):
                     word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 7
 
+                elif sub_cmd in ("PROFILER_CFG",):
+                    pin = 0
+                    if arg_tokens:
+                        tok0 = arg_tokens[0].strip().upper()
+                        if tok0 in PIN_NAMES: pin = PIN_NAMES[tok0]
+                        else: pin = eval_arg(tok0) & 7
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (9 << 4) | (pin & 7)
+
+                elif sub_cmd in ("PROFILER_FILTER",):
+                    flt = eval_arg(arg_tokens[0]) & 0xF if arg_tokens else 0
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (10 << 4) | (flt & 0xF)
+
+                elif sub_cmd in ("PROFILER_ARM",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 8
+
+                elif sub_cmd in ("PROFILER_STOP",):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 9
+
+                elif sub_cmd in ("PROFILER_RST", "PROFILER_RESET"):
+                    word = (0xF << 12) | (1 << 10) | (0 << 8) | (0 << 4) | 10
+
                 elif sub_cmd in ("READ", "STATUS"):
-                    if any("GLITCH" in a.upper() or "MITM" in a.upper() for a in arg_tokens):
+                    if any("PROFILER_TMIN_L" in a.upper() or "TMIN_L" in a.upper() or "TMIN_LO" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 7) | (0 << 5)
+                    elif any("PROFILER_TMIN_H" in a.upper() or "TMIN_H" in a.upper() or "TMIN_HI" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 7) | (1 << 5)
+                    elif any("PROFILER_EDGES" in a.upper() or "EDGES" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 7) | (3 << 5)
+                    elif any("PROFILER" in a.upper() for a in arg_tokens):
+                        word = (0xF << 12) | (2 << 10) | (3 << 8) | (1 << 7) | (2 << 5)
+                    elif any("GLITCH" in a.upper() or "MITM" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (2 << 8) | (0 << 6) | (1 << 5)
                     elif any("I2C_ADDR" in a.upper() or "ADDR" in a.upper() for a in arg_tokens):
                         word = (0xF << 12) | (2 << 10) | (3 << 8)

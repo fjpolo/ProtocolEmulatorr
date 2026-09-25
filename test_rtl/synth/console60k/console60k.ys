@@ -1,6 +1,7 @@
 # Yosys synthesis script for Sipeed Tang Console 60K (top module)
 
 # Read Verilog source files
+read_verilog -sv ../../../rtl/OmniBus_Profiler.v
 read_verilog -sv ../../../rtl/ProtocolEmulator.v
 read_verilog -sv ../../../rtl/OmniBootloader.v
 read_verilog -sv ../../../boards/sipeed/console60k/src/top.v

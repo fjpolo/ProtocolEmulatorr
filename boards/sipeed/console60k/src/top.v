@@ -104,7 +104,23 @@ module top (
         .i_prog_we    (prog_we),
         .i_prog_addr  (prog_addr),
         .i_prog_data  (prog_wdata),
-        .o_prog_rdata (prog_rdata)
+        .o_prog_rdata (prog_rdata),
+        // Task 27 Profiler
+        .i_profiler_wb_arm   (1'b0),
+        .i_profiler_wb_stop  (1'b0),
+        .i_profiler_wb_rst   (1'b0),
+        .i_profiler_wb_pin   (3'd0),
+        .i_profiler_wb_filter(4'd0),
+        .o_profiler_busy     (),
+        .o_profiler_done     (),
+        .o_profiler_idle_pol (),
+        .o_profiler_is_clock (),
+        .o_profiler_proto_id (),
+        .o_profiler_edges    (),
+        .o_profiler_tmin     (),
+        .o_profiler_tmax     (),
+        .o_profiler_tmin_high(),
+        .o_profiler_tmin_low ()
     );
 
     OmniBootloader #(

@@ -17,10 +17,12 @@ def test_protocol_emulator_runner():
     source_file = proj_path / "ProtocolEmulator.v"
     if not source_file.exists():
         source_file = rtl_path
+    profiler_path = (proj_path / "../../../../rtl/OmniBus_Profiler.v").resolve()
+    sources = [profiler_path, source_file]
 
     runner = get_runner(sim)
     runner.build(
-        sources=[source_file],
+        sources=sources,
         hdl_toplevel="ProtocolEmulator",
         always=True,
         waves=True,

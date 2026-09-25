@@ -41,6 +41,10 @@ ADDR_DMA_RX_ADDR = 0x40
 ADDR_DMA_RX_LEN  = 0x44
 ADDR_DMA_TX_DESC = 0x48
 ADDR_DMA_RX_DESC = 0x4C
+ADDR_PROFILER_CTRL   = 0x50
+ADDR_PROFILER_STATUS = 0x54
+ADDR_PROFILER_TMIN   = 0x58
+ADDR_PROFILER_PERIOD = 0x5C
 ADDR_IMEM        = 0x80
 
 
@@ -763,3 +767,55 @@ async def test_wb_dma_irq_and_abort(dut):
     mem.stop()
     dut._log.info("DMA Interrupt Generation & Abort test PASSED!")
 
+
+
+@cocotb.test()
+async def test_wb_profiler_registers(dut):
+    """Test 27D: Wishbone slave register read/write and profiler telemetry control."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+
+    # 1. Configure profiler: pin=2, filter=3, arm=1, irq_en=1
+    # [2:0]=2 (pin 2), [6:3]=3 (filter 3), [8]=arm (1), [11]=irq_en (1)
+    ctrl_val = 2 | (3 << 3) | (1 << 8) | (1 << 11)
+    await wb.write(ADDR_PROFILER_CTRL, ctrl_val)
+    await ClockCycles(dut.i_wb_clk, 2)
+
+    # Read back CTRL register
+    ctrl_rb = await wb.read(ADDR_PROFILER_CTRL)
+    assert (ctrl_rb & 0x7) == 2, f"Expected pin 2, got {ctrl_rb & 0x7}"
+    assert ((ctrl_rb >> 3) & 0xF) == 3, f"Expected filter 3, got {(ctrl_rb >> 3) & 0xF}"
+    assert ((ctrl_rb >> 11) & 0x1) == 1, "Expected irq_en 1"
+
+    # Read status: busy should be 1
+    status = await wb.read(ADDR_PROFILER_STATUS)
+    busy = status & 1
+    assert busy == 1, f"Expected busy=1, got status=0x{status:08X}"
+
+    # Stimulate pin 2 (i_gpio[2]) with pulse train: 50 cycles high, 50 cycles low
+    for _ in range(8):
+        dut.i_gpio.value = int(dut.i_gpio.value) | 0x04
+        await ClockCycles(dut.i_wb_clk, 50)
+        dut.i_gpio.value = int(dut.i_gpio.value) & ~0x04
+        await ClockCycles(dut.i_wb_clk, 50)
+
+    # Wait for edges
+    await ClockCycles(dut.i_wb_clk, 20)
+    status2 = await wb.read(ADDR_PROFILER_STATUS)
+    edges = (status2 >> 8) & 0xFF
+    assert edges >= 6, f"Expected at least 6 edges, got {edges}"
+
+    # Read tmin and period
+    tmin_reg = await wb.read(ADDR_PROFILER_TMIN)
+    tmin_val = tmin_reg & 0xFFFF
+    dut._log.info(f"Wishbone read tmin_val: {tmin_val} cycles")
+    assert abs(tmin_val - 50) <= 3, f"Expected ~50 cycles, got {tmin_val}"
+
+    # Stop profiler
+    await wb.write(ADDR_PROFILER_CTRL, 1 << 9) # stop
+    await ClockCycles(dut.i_wb_clk, 5)
+    st_stopped = await wb.read(ADDR_PROFILER_STATUS)
+    assert (st_stopped & 1) == 0, "Expected busy=0 after stop"
+
+    dut._log.info("Wishbone Autonomous Profiler Register & Control test PASSED!")

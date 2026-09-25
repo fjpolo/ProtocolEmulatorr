@@ -80,6 +80,10 @@ module OmniBus_Wishbone #(
     localparam [7:0] ADDR_DMA_RX_LEN  = 8'h44;  // RW: Linear RX Byte Count
     localparam [7:0] ADDR_DMA_TX_DESC = 8'h48;  // RO: Current active TX descriptor address
     localparam [7:0] ADDR_DMA_RX_DESC = 8'h4C;  // RO: Current active RX descriptor address
+    localparam [7:0] ADDR_PROFILER_CTRL   = 8'h50;  // RW: Profiler Control: [2:0]=pin, [6:3]=filter, [8]=arm, [9]=stop, [10]=rst, [11]=irq_en
+    localparam [7:0] ADDR_PROFILER_STATUS = 8'h54;  // RO: Profiler Status: [0]=busy, [1]=done, [2]=idle_pol, [3]=is_clock, [7:4]=proto_id, [15:8]=edge_count
+    localparam [7:0] ADDR_PROFILER_TMIN   = 8'h58;  // RO: Profiler t_min: [15:0]=tmin (baud divisor), [31:16]=tmax
+    localparam [7:0] ADDR_PROFILER_PERIOD = 8'h5C;  // RO: Profiler Symmetry: [15:0]=tmin_high, [31:16]=tmin_low
     localparam [7:0] ADDR_IMEM        = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
 
     // =========================================================================
@@ -109,6 +113,14 @@ module OmniBus_Wishbone #(
     reg [15:0] reg_dma_tx_len;
     reg [31:0] reg_dma_rx_addr;
     reg [15:0] reg_dma_rx_len;
+
+    // Autonomous Waveform Profiler Registers (Task 27)
+    reg [2:0]  reg_profiler_pin;
+    reg [3:0]  reg_profiler_filter;
+    reg        reg_profiler_arm;
+    reg        reg_profiler_stop;
+    reg        reg_profiler_rst;
+    reg        reg_profiler_irq_en;
 
     // Combined active-low reset for core and FIFOs
     wire core_rst_n = i_wb_rst_n && !reg_soft_rst;
@@ -189,6 +201,18 @@ module OmniBus_Wishbone #(
     wire        core_rx_push;
     wire [15:0] core_prog_rdata;
 
+    // Autonomous Profiler Telemetry Wires (Task 27)
+    wire        profiler_busy;
+    wire        profiler_done;
+    wire        profiler_idle_pol;
+    wire        profiler_is_clock;
+    wire [3:0]  profiler_proto_id;
+    wire [7:0]  profiler_edges;
+    wire [15:0] profiler_tmin;
+    wire [15:0] profiler_tmax;
+    wire [15:0] profiler_tmin_high;
+    wire [15:0] profiler_tmin_low;
+
     assign tx_fifo_pop   = core_tx_pop;
     assign rx_fifo_push  = core_rx_push;
     assign rx_fifo_wdata = core_odata;
@@ -221,6 +245,22 @@ module OmniBus_Wishbone #(
         .o_tx         (o_tx),
         .o_spi_sck    (o_spi_sck),
         .o_spi_cs_n   (o_spi_cs_n),
+        // Task 27 Profiler
+        .i_profiler_wb_arm   (reg_profiler_arm),
+        .i_profiler_wb_stop  (reg_profiler_stop),
+        .i_profiler_wb_rst   (reg_profiler_rst),
+        .i_profiler_wb_pin   (reg_profiler_pin),
+        .i_profiler_wb_filter(reg_profiler_filter),
+        .o_profiler_busy     (profiler_busy),
+        .o_profiler_done     (profiler_done),
+        .o_profiler_idle_pol (profiler_idle_pol),
+        .o_profiler_is_clock (profiler_is_clock),
+        .o_profiler_proto_id (profiler_proto_id),
+        .o_profiler_edges    (profiler_edges),
+        .o_profiler_tmin     (profiler_tmin),
+        .o_profiler_tmax     (profiler_tmax),
+        .o_profiler_tmin_high(profiler_tmin_high),
+        .o_profiler_tmin_low (profiler_tmin_low),
         .i_prog_en    (core_prog_en),
         .i_prog_we    (wb_imem_we),
         .i_prog_addr  (wb_imem_addr),
@@ -360,6 +400,10 @@ module OmniBus_Wishbone #(
                 ADDR_DMA_RX_LEN:  wb_rdata_comb = {16'd0, reg_dma_rx_len};
                 ADDR_DMA_TX_DESC: wb_rdata_comb = dma_tx_desc;
                 ADDR_DMA_RX_DESC: wb_rdata_comb = dma_rx_desc;
+                ADDR_PROFILER_CTRL:   wb_rdata_comb = {20'd0, reg_profiler_irq_en, 3'd0, 1'b0, reg_profiler_filter, reg_profiler_pin};
+                ADDR_PROFILER_STATUS: wb_rdata_comb = {16'd0, profiler_edges, profiler_proto_id, profiler_is_clock, profiler_idle_pol, profiler_done, profiler_busy};
+                ADDR_PROFILER_TMIN:   wb_rdata_comb = {profiler_tmax, profiler_tmin};
+                ADDR_PROFILER_PERIOD: wb_rdata_comb = {profiler_tmin_low, profiler_tmin_high};
                 default:          wb_rdata_comb = 32'h00000000;
             endcase
         end
@@ -390,15 +434,24 @@ module OmniBus_Wishbone #(
             reg_dma_tx_len      <= 16'd0;
             reg_dma_rx_addr     <= 32'd0;
             reg_dma_rx_len      <= 16'd0;
+            reg_profiler_pin    <= 3'd0;
+            reg_profiler_filter <= 4'd2;
+            reg_profiler_arm    <= 1'b0;
+            reg_profiler_stop   <= 1'b0;
+            reg_profiler_rst    <= 1'b0;
+            reg_profiler_irq_en <= 1'b0;
             o_wb_ack            <= 1'b0;
             o_wb_data           <= 32'h00000000;
         end else begin
             // Single-cycle self-clearing strobes
-            reg_tx_flush     <= 1'b0;
-            reg_rx_flush     <= 1'b0;
-            reg_dma_tx_start <= 1'b0;
-            reg_dma_rx_start <= 1'b0;
-            reg_dma_abort    <= 1'b0;
+            reg_tx_flush      <= 1'b0;
+            reg_rx_flush      <= 1'b0;
+            reg_dma_tx_start  <= 1'b0;
+            reg_dma_rx_start  <= 1'b0;
+            reg_dma_abort     <= 1'b0;
+            reg_profiler_arm  <= 1'b0;
+            reg_profiler_stop <= 1'b0;
+            reg_profiler_rst  <= 1'b0;
 
             if (wb_valid && !o_wb_ack) begin
                 o_wb_ack  <= 1'b1;
@@ -435,6 +488,14 @@ module OmniBus_Wishbone #(
                         ADDR_DMA_TX_LEN:  reg_dma_tx_len  <= i_wb_data[15:0];
                         ADDR_DMA_RX_ADDR: reg_dma_rx_addr <= i_wb_data;
                         ADDR_DMA_RX_LEN:  reg_dma_rx_len  <= i_wb_data[15:0];
+                        ADDR_PROFILER_CTRL: begin
+                            reg_profiler_pin    <= i_wb_data[2:0];
+                            reg_profiler_filter <= i_wb_data[6:3];
+                            reg_profiler_arm    <= i_wb_data[8];
+                            reg_profiler_stop   <= i_wb_data[9];
+                            reg_profiler_rst    <= i_wb_data[10];
+                            reg_profiler_irq_en <= i_wb_data[11];
+                        end
                         default: ;
                     endcase
                 end
@@ -448,6 +509,7 @@ module OmniBus_Wishbone #(
     assign o_irq = (reg_irq_tx_empty_en && tx_fifo_empty) ||
                    (reg_irq_rx_ready_en && !rx_fifo_empty) ||
                    (reg_irq_rx_afull_en && rx_fifo_afull) ||
-                   dma_irq;
+                   dma_irq ||
+                   (reg_profiler_irq_en && profiler_done);
 
 endmodule

@@ -45,6 +45,23 @@ module ProtocolEmulator(
     output  wire            o_spi_sck,      // Mapped to o_gpio[sck_pin]
     output  wire            o_spi_cs_n,     // Mapped to o_gpio[cs_pin]
 
+    // Task 27: Autonomous Waveform Profiler & Auto-Baud Engine External / Wishbone Interface
+    input   wire            i_profiler_wb_arm,
+    input   wire            i_profiler_wb_stop,
+    input   wire            i_profiler_wb_rst,
+    input   wire    [2:0]   i_profiler_wb_pin,
+    input   wire    [3:0]   i_profiler_wb_filter,
+    output  wire            o_profiler_busy,
+    output  wire            o_profiler_done,
+    output  wire            o_profiler_idle_pol,
+    output  wire            o_profiler_is_clock,
+    output  wire    [3:0]   o_profiler_proto_id,
+    output  wire    [7:0]   o_profiler_edges,
+    output  wire    [15:0]  o_profiler_tmin,
+    output  wire    [15:0]  o_profiler_tmax,
+    output  wire    [15:0]  o_profiler_tmin_high,
+    output  wire    [15:0]  o_profiler_tmin_low,
+
     // Runtime Microcode Programming Interface
     input   wire            i_prog_en,
     input   wire            i_prog_we,
@@ -259,6 +276,15 @@ module ProtocolEmulator(
     reg [1:0]  mitm_mode;          // 00=Trigger only, 01=Substitute, 10=Invert
     reg        mitm_match_found;   // Sticky flag: pattern match occurred
     reg [7:0]  mitm_match_count;   // Match event counter
+
+    // =========================================================================
+    // Autonomous Waveform Profiler & Auto-Baud Engine State (Task 27)
+    // =========================================================================
+    reg [2:0]  profiler_pin;           // Target GPIO pin for profiling (0..7)
+    reg [3:0]  profiler_glitch_thresh; // Glitch filter rejection threshold (cycles)
+    reg        profiler_arm_strobe;    // Arm single-cycle strobe from microcode
+    reg        profiler_stop_strobe;   // Stop single-cycle strobe from microcode
+    reg        profiler_rst_strobe;    // Reset single-cycle strobe from microcode
 
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
@@ -729,6 +755,66 @@ module ProtocolEmulator(
     wire mitm_match_pulse = in_mitm_match || pull_mitm_match;
     wire glitch_trigger   = glitch_trig_strobe || (glitch_armed && glitch_on_match && mitm_match_pulse);
 
+    // =========================================================================
+    // Autonomous Waveform Profiler Instance (Task 27)
+    // =========================================================================
+    wire       profiler_busy_w;
+    wire       profiler_done_w;
+    wire       profiler_idle_pol_w;
+    wire       profiler_is_clock_w;
+    wire [3:0] profiler_proto_id_w;
+    wire [7:0] profiler_edges_w;
+    wire [15:0] profiler_tmin_w;
+    wire [15:0] profiler_tmax_w;
+    wire [15:0] profiler_tmin_high_w;
+    wire [15:0] profiler_tmin_low_w;
+
+    wire       profiler_wb_arm_safe    = (i_profiler_wb_arm === 1'b1);
+    wire       profiler_wb_stop_safe   = (i_profiler_wb_stop === 1'b1);
+    wire       profiler_wb_rst_safe    = (i_profiler_wb_rst === 1'b1);
+    wire [2:0] profiler_wb_pin_safe    = (i_profiler_wb_pin[0] === 1'b0 || i_profiler_wb_pin[0] === 1'b1) ? i_profiler_wb_pin : 3'd0;
+    wire [3:0] profiler_wb_filter_safe = (i_profiler_wb_filter[0] === 1'b0 || i_profiler_wb_filter[0] === 1'b1) ? i_profiler_wb_filter : 4'd0;
+
+    wire [2:0] profiler_active_pin = (profiler_wb_pin_safe != 3'd0) ? profiler_wb_pin_safe : profiler_pin;
+    wire [3:0] profiler_active_filter = (profiler_wb_filter_safe != 4'd0) ? profiler_wb_filter_safe : profiler_glitch_thresh;
+    wire profiler_arm_combined = profiler_arm_strobe || profiler_wb_arm_safe;
+    wire profiler_stop_combined = profiler_stop_strobe || profiler_wb_stop_safe;
+    wire profiler_rst_combined = profiler_rst_strobe || profiler_wb_rst_safe;
+
+    OmniBus_Profiler #(
+        .CLK_FREQ_HZ(50_000_000)
+    ) profiler_inst (
+        .i_clk          (i_clk),
+        .i_rst_n        (i_reset_n),
+        .i_gpio         (gpio_in),
+        .i_pin_sel      (profiler_active_pin),
+        .i_glitch_thresh(profiler_active_filter),
+        .i_arm          (profiler_arm_combined),
+        .i_stop         (profiler_stop_combined),
+        .i_rst          (profiler_rst_combined),
+        .o_busy         (profiler_busy_w),
+        .o_done         (profiler_done_w),
+        .o_idle_pol     (profiler_idle_pol_w),
+        .o_is_clock     (profiler_is_clock_w),
+        .o_protocol_id  (profiler_proto_id_w),
+        .o_edge_count   (profiler_edges_w),
+        .o_tmin         (profiler_tmin_w),
+        .o_tmax         (profiler_tmax_w),
+        .o_tmin_high    (profiler_tmin_high_w),
+        .o_tmin_low     (profiler_tmin_low_w)
+    );
+
+    assign o_profiler_busy      = profiler_busy_w;
+    assign o_profiler_done      = profiler_done_w;
+    assign o_profiler_idle_pol  = profiler_idle_pol_w;
+    assign o_profiler_is_clock  = profiler_is_clock_w;
+    assign o_profiler_proto_id  = profiler_proto_id_w;
+    assign o_profiler_edges     = profiler_edges_w;
+    assign o_profiler_tmin      = profiler_tmin_w;
+    assign o_profiler_tmax      = profiler_tmax_w;
+    assign o_profiler_tmin_high = profiler_tmin_high_w;
+    assign o_profiler_tmin_low  = profiler_tmin_low_w;
+
     // Asymmetric Single-Wire Serializer bit selector
     wire cur_pulse_bit = pulse_msb_first ? osr[7] : osr[0];
 
@@ -1076,11 +1162,19 @@ module ProtocolEmulator(
             mitm_mode         <= 2'b01;
             mitm_match_found  <= 1'b0;
             mitm_match_count  <= 8'd0;
+            profiler_pin           <= 3'd0;
+            profiler_glitch_thresh <= 4'd2;
+            profiler_arm_strobe    <= 1'b0;
+            profiler_stop_strobe   <= 1'b0;
+            profiler_rst_strobe    <= 1'b0;
         end else begin
             // Default: clear single-cycle pop/push strobes
             o_tx_pop           <= 1'b0;
             o_rx_push          <= 1'b0;
             glitch_trig_strobe <= 1'b0;
+            profiler_arm_strobe  <= 1'b0;
+            profiler_stop_strobe <= 1'b0;
+            profiler_rst_strobe  <= 1'b0;
 
             // -------------------------------------------------------------
             // Hardware Glitch Pulse Generator FSM (Task 25)
@@ -2673,6 +2767,8 @@ module ProtocolEmulator(
                                 4'hB: pc <= (jtag_state == 4'h1) ? target : pc + 7'd1;              // JMP JTAG_IDLE
                                 4'hC: pc <= glitch_fired ? target : pc + 7'd1;                      // JMP GLITCH_DONE
                                 4'hD: pc <= mitm_match_found ? target : pc + 7'd1;                  // JMP MATCH_FOUND
+                                4'hE: pc <= profiler_done_w ? target : pc + 7'd1;                   // JMP PROFILER_DONE
+                                4'hF: pc <= profiler_is_clock_w ? target : pc + 7'd1;               // JMP PROFILER_CLOCK
                                 default: pc <= target;
                             endcase
                         end else begin
@@ -3113,6 +3209,18 @@ module ProtocolEmulator(
                                                         mitm_match_count <= 8'd0;
                                                         pc <= pc + 7'd1;
                                                     end
+                                                    4'h8: begin // PROFILER_ARM
+                                                        profiler_arm_strobe <= 1'b1;
+                                                        pc <= pc + 7'd1;
+                                                    end
+                                                    4'h9: begin // PROFILER_STOP
+                                                        profiler_stop_strobe <= 1'b1;
+                                                        pc <= pc + 7'd1;
+                                                    end
+                                                    4'hA: begin // PROFILER_RST
+                                                        profiler_rst_strobe <= 1'b1;
+                                                        pc <= pc + 7'd1;
+                                                    end
                                                     default: pc <= pc + 7'd1;
                                                 endcase
                                             end
@@ -3155,6 +3263,16 @@ module ProtocolEmulator(
                                                 mitm_mask <= acc;
                                                 pc <= pc + 7'd1;
                                             end
+                                             4'h9: begin // PROFILER_CFG <pin>
+                                                 profiler_pin <= instr[2:0];
+                                                 if (acc != 8'd0)
+                                                     profiler_glitch_thresh <= acc[3:0];
+                                                 pc <= pc + 7'd1;
+                                             end
+                                             4'hA: begin // PROFILER_FILTER <filter>
+                                                 profiler_glitch_thresh <= (instr[3:0] != 4'd0) ? instr[3:0] : (acc[3:0] != 4'd0 ? acc[3:0] : 4'd1);
+                                                 pc <= pc + 7'd1;
+                                             end
                                             default: pc <= pc + 7'd1;
                                         endcase
                                     end
@@ -3406,9 +3524,34 @@ module ProtocolEmulator(
                                         endcase
                                     end
                                     2'b11: begin // I2C Received Address & RW bit
-                                        acc        <= {i2c_rx_addr, i2c_rw_bit};
-                                        zero_flag  <= (i2c_rx_addr == 7'd0);
-                                        carry_flag <= i2c_rw_bit;
+                                        if (instr[7]) begin
+                                            case (instr[6:5])
+                                                2'b00: begin // PROFILER_TMIN_L
+                                                    acc        <= profiler_tmin_w[7:0];
+                                                    zero_flag  <= (profiler_tmin_w[7:0] == 8'd0);
+                                                    carry_flag <= 1'b0;
+                                                end
+                                                2'b01: begin // PROFILER_TMIN_H
+                                                    acc        <= profiler_tmin_w[15:8];
+                                                    zero_flag  <= (profiler_tmin_w[15:8] == 8'd0);
+                                                    carry_flag <= 1'b0;
+                                                end
+                                                2'b10: begin // PROFILER_STATUS
+                                                    acc        <= {profiler_busy_w, profiler_done_w, profiler_idle_pol_w, profiler_is_clock_w, profiler_proto_id_w};
+                                                    zero_flag  <= !profiler_done_w;
+                                                    carry_flag <= profiler_is_clock_w;
+                                                end
+                                                2'b11: begin // PROFILER_EDGES
+                                                    acc        <= profiler_edges_w;
+                                                    zero_flag  <= (profiler_edges_w == 8'd0);
+                                                    carry_flag <= 1'b0;
+                                                end
+                                            endcase
+                                        end else begin
+                                            acc        <= {i2c_rx_addr, i2c_rw_bit};
+                                            zero_flag  <= (i2c_rx_addr == 7'd0);
+                                            carry_flag <= i2c_rw_bit;
+                                        end
                                     end
                                 endcase
                                 pc <= pc + 7'd1;
