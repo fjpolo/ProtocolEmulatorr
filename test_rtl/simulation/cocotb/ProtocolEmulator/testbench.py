@@ -5720,3 +5720,145 @@ loop:
 
     assert int(dut.o_usb_bus_reset.value) == 1, "Expected USB bus reset flag asserted on sustained SE0!"
     dut._log.info("Test 28C: USB Bus Reset detection PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Task 29: On-Chip Self-Play & Virtual Crossbar (BIST Engine) Tests
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_bist_virtual_crossbar_direct(dut):
+    """Task 29A: Verifies direct loopback crossbar mode and hardware pass scoring."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    asm_source = """
+    BIST_LOOP
+    BIST_START
+    BIST_STAGE 1
+    SET 0, 1, 5
+    WAIT 0, 1, 50
+    BIST_PASS
+    ASSIST READ, BIST_STATUS
+    PUSH
+    ASSIST READ, BIST_PASS
+    PUSH
+    BIST_STOP
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    dut.i_gpio.value = 0x00
+    dut.i_rx.value = 0
+
+    await load_program_direct(dut, prog)
+
+    bytes_popped = []
+    for _ in range(300):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_rx_push.value) == 1:
+            bytes_popped.append(int(dut.o_data.value))
+            if len(bytes_popped) == 2:
+                break
+
+    assert len(bytes_popped) == 2, f"Expected 2 telemetry bytes popped, got {len(bytes_popped)}"
+    status_byte = bytes_popped[0]
+    pass_cnt = bytes_popped[1]
+
+    # Status byte: {bist_active, bist_fail_flag, bist_mode[1:0], bist_stage[3:0]}
+    # active=1, fail=0, mode=01, stage=1 -> 0x91
+    assert status_byte == 0x91, f"Expected BIST_STATUS 0x91, got 0x{status_byte:02X}"
+    assert pass_cnt == 1, f"Expected BIST_PASS count 1, got {pass_cnt}"
+    dut._log.info(f"Test 29A: Direct Virtual Crossbar Loopback & Scoring PASSED! Status: 0x{status_byte:02X}, Passes: {pass_cnt}")
+
+
+@cocotb.test()
+async def test_bist_channel_split_crossbar(dut):
+    """Task 29B: Verifies Split Dual-Channel crossbar (Channel A 0..3 <-> Channel B 4..7)."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    asm_source = """
+    BIST_SPLIT
+    BIST_START
+    BIST_STAGE 2
+    SET 0, 1, 5
+    WAIT 4, 1, 50
+    SET 5, 1, 5
+    WAIT 1, 1, 50
+    BIST_PASS
+    ASSIST READ, BIST_STATUS
+    PUSH
+    BIST_STOP
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    dut.i_gpio.value = 0x00
+    dut.i_rx.value = 0
+    await load_program_direct(dut, prog)
+
+    pushed_byte = None
+    for _ in range(350):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_rx_push.value) == 1:
+            pushed_byte = int(dut.o_data.value)
+            break
+
+    assert pushed_byte is not None, "Expected telemetry push on successful crossbar transfer"
+    # Status: active=1, fail=0, mode=10 (split), stage=2 -> 0xA2
+    assert pushed_byte == 0xA2, f"Expected BIST_STATUS 0xA2, got 0x{pushed_byte:02X}"
+    dut._log.info(f"Test 29B: Split Dual-Channel Crossbar PASSED! Status: 0x{pushed_byte:02X}")
+
+
+@cocotb.test()
+async def test_bist_error_scoring_and_reset(dut):
+    """Task 29C: Verifies BIST_FAIL counter, sticky fail flag, and BIST_RST clearing."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    asm_source = """
+    BIST_START
+    BIST_STAGE 3
+    BIST_FAIL
+    BIST_FAIL
+    ASSIST READ, BIST_FAIL
+    PUSH
+    ASSIST READ, BIST_STATUS
+    PUSH
+    BIST_RST
+    ASSIST READ, BIST_FAIL
+    PUSH
+    BIST_STOP
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+
+    await load_program_direct(dut, prog)
+
+    bytes_popped = []
+    for _ in range(300):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_rx_push.value) == 1:
+            bytes_popped.append(int(dut.o_data.value))
+            if len(bytes_popped) == 3:
+                break
+
+    assert len(bytes_popped) == 3, f"Expected 3 bytes popped, got {len(bytes_popped)}"
+    fail_cnt_1 = bytes_popped[0]
+    status_with_fail = bytes_popped[1]
+    fail_cnt_after_rst = bytes_popped[2]
+
+    assert fail_cnt_1 == 2, f"Expected 2 fails, got {fail_cnt_1}"
+    assert (status_with_fail & 0x40) != 0, f"Expected sticky fail flag set in status 0x{status_with_fail:02X}"
+    assert fail_cnt_after_rst == 0, f"Expected fail count 0 after reset, got {fail_cnt_after_rst}"
+
+    dut._log.info(f"Test 29C: BIST Error Scoring, Sticky Flag & Reset PASSED! (Fails: {fail_cnt_1} -> {fail_cnt_after_rst})")

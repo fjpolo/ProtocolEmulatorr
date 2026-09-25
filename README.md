@@ -78,15 +78,17 @@ All ready-to-run microcode demonstrators, interactive terminals, and test harnes
 * [Task 26 — OmniBus DMA Scatter-Gather Controller & Host Memory Streamer](documentation/task26.md)
 * [Task 27 — The Protocol Detective: Autonomous Waveform Profiler & Auto-Baud Engine](documentation/task27.md)
 * [Task 28 — USB 1.1 Autonomous Serial Interface Engine (SIE)](documentation/task28.md)
+* [Task 29 — On-Chip Self-Play & Virtual Crossbar (BIST Engine)](documentation/task29.md)
 
 ---
 
-## OmniBus Architecture Release (Tasks 01–28)
+## OmniBus Architecture Release (Tasks 01–29)
 
 Tasks 01 through 28 establish **OmniBus** as a production-grade, self-contained, silicon-ready protocol processor core:
-* **100% Regression Pass Rate**: All **94 self-checking Cocotb testcases** (81 core + 13 Wishbone/DMA/Profiler/USB) pass with 0 failures, 0 skips, and 0 regressions.
+* **100% Regression Pass Rate**: All **98 self-checking Cocotb testcases** (84 core + 14 Wishbone/DMA/Profiler/USB/BIST) pass with 0 failures, 0 skips, and 0 regressions.
 * **Proven Silicon Footprint**: ~26,000 standard cells, fitting comfortably within the Tiny Tapeout 6×4 tile allocation on IHP 130nm CMOS5L (~0.72 mm²).
 * **Broad Physical Protocol Coverage**:
+  - **On-Chip Self-Play & Virtual Crossbar (BIST Engine)**: Internal virtual crossbar with direct loopback, split dual-channel (Channel A Master <-> Channel B Slave) routing, pseudo-random jitter/stress injection, hardware scoring engine (vector, pass, and fail counters with sticky error flag), and real-time visual LED scoring.
   - **USB 1.1 Autonomous SIE**: Full-Speed (12 Mbps) and Low-Speed (1.5 Mbps) hardware packet processing, token parsing (ADDR/ENDP), autonomous ACK/NAK/STALL handshakes, hardware CRC-5 and CRC-16 calculation, bus reset detection, and Wishbone slave registers (`0x60..0x6C`).
   - **The Protocol Detective**: Autonomous hardware waveform profiling, 16-bit transition timer (20 ns @ 50 MHz), minimum high/low pulse tracking ($t_{\min}$ auto-baud divisor), idle bus polarity detection, duty-cycle symmetry clock discrimination, framing signature recognition (UART, I2C, SPI, 1-Wire), and Wishbone slave registers (`0x50..0x5C`).
   - **Host Memory DMA & Streaming**: 32-bit Wishbone B4 Master interface, dual-channel (TX/RX) memory streaming, 16-byte linked-list Scatter-Gather descriptor processing with status write-backs, and completion interrupts.

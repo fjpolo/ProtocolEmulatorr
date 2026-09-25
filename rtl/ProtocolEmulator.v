@@ -84,6 +84,21 @@ module ProtocolEmulator(
     output  wire    [3:0]   o_usb_rx_pid,
     output  wire            o_usb_bus_reset,
     output  wire            o_usb_bus_idle,
+    // Task 29: On-Chip Self-Play & Virtual Crossbar (BIST Engine) External / Wishbone Interface
+    input   wire            i_bist_wb_en,
+    input   wire    [1:0]   i_bist_wb_mode,
+    input   wire            i_bist_wb_jitter_en,
+    input   wire            i_bist_wb_start,
+    input   wire            i_bist_wb_stop,
+    input   wire            i_bist_wb_rst,
+    input   wire    [3:0]   i_bist_wb_stage,
+    output  wire            o_bist_active,
+    output  wire            o_bist_fail_flag,
+    output  wire    [1:0]   o_bist_mode,
+    output  wire    [3:0]   o_bist_stage,
+    output  wire    [15:0]  o_bist_vec_cnt,
+    output  wire    [15:0]  o_bist_pass_cnt,
+    output  wire    [15:0]  o_bist_fail_cnt,
 
     // Runtime Microcode Programming Interface
     input   wire            i_prog_en,
@@ -328,6 +343,19 @@ module ProtocolEmulator(
     reg [3:0]  usb_tx_handshake_pid;
     reg        usb_tx_data_strobe;
     reg [3:0]  usb_tx_data_pid;
+    // =========================================================================
+    // Task 29: On-Chip Self-Play & Virtual Crossbar (BIST Engine) State
+    // =========================================================================
+    reg        bist_en;
+    reg [1:0]  bist_mode;        // 00=normal, 01=direct loop, 10=split ChA/ChB, 11=jitter stress
+    reg        bist_jitter_en;
+    reg        bist_active;
+    reg [3:0]  bist_stage;
+    reg [15:0] bist_vec_cnt;
+    reg [15:0] bist_pass_cnt;
+    reg [15:0] bist_fail_cnt;
+    reg        bist_fail_flag;
+    reg [7:0]  bist_lfsr;
 
     // Pin Role Mapping & GPIO Control Registers
     reg [2:0]  tx_pin;          // Pin index for OUT serializer (default 0)
@@ -626,6 +654,8 @@ module ProtocolEmulator(
     wire slave_sda_drive = i2c_drive_ack || (opcode == 4'h1 && instr[11:9] == 3'b111 && out_slave_phase == 2'd0 && osr[7] == 1'b0);
     wire slave_scl_drive = i2c_stretch_hold;
 
+    wire [7:0] eff_gpio_src;
+
     // =========================================================================
     // USB 1.1 Autonomous Serial Interface Engine Instance (Task 28)
     // =========================================================================
@@ -687,8 +717,8 @@ module ProtocolEmulator(
         .i_ep_nak           (usb_active_ep_nak),
         .i_ep_toggle        (usb_active_ep_toggle),
         .i_auto_ack         (usb_active_auto_ack),
-        .i_dp               (i_gpio[0]),
-        .i_dm               (i_gpio[1]),
+        .i_dp               (eff_gpio_src[0]),
+        .i_dm               (eff_gpio_src[1]),
         .o_dp               (usb_dp_out),
         .o_dm               (usb_dm_out),
         .o_oe               (usb_oe),
@@ -847,16 +877,36 @@ module ProtocolEmulator(
 
 
     // -------------------------------------------------------------------------
+    // Task 29: Virtual Crossbar Mux & Jitter Stress Injection Engine
+    // -------------------------------------------------------------------------
+    wire [7:0] bist_split_mux = {
+        o_gpio[3], // pin 7 <= pin 3 (Ch A CS -> Ch B CS)
+        o_gpio[2], // pin 6 <= pin 2 (Ch A SCK -> Ch B SCK)
+        o_gpio[1], // pin 5 <= pin 1 (Ch A extra)
+        o_gpio[0], // pin 4 <= pin 0 (Ch A TX / MOSI -> Ch B RX / MOSI)
+        o_gpio[7], // pin 3 <= pin 7
+        o_gpio[6], // pin 2 <= pin 6
+        o_gpio[5], // pin 1 <= pin 5 (Ch B TX / MISO -> Ch A RX / MISO)
+        o_gpio[4]  // pin 0 <= pin 4
+    };
+
+    wire [7:0] bist_routed_gpio = (bist_mode == 2'b10) ? bist_split_mux : o_gpio;
+    wire [7:0] bist_jitter_gpio = bist_routed_gpio ^ (((bist_mode == 2'b11) || bist_jitter_en) && bist_active && (bist_lfsr[3:0] == 4'h5) ? 8'h01 : 8'h00);
+    wire [7:0] bist_crossbar_out = ((bist_mode == 2'b11) || bist_jitter_en) ? bist_jitter_gpio : bist_routed_gpio;
+
+    assign eff_gpio_src = bist_en ? bist_crossbar_out : i_gpio;
+
+    // -------------------------------------------------------------------------
     // 2-stage input synchronizer for all 8 GPIO pins
-    // Supports backward compatibility: merges i_rx with i_gpio[rx_pin] and i_gpio[0]
+    // Supports backward compatibility: merges i_rx with eff_gpio_src[rx_pin] and eff_gpio_src[0]
     // -------------------------------------------------------------------------
     wire [7:0] gpio_raw;
     genvar g;
     generate
         for (g = 0; g < 8; g = g + 1) begin : gen_gpio_raw
-            assign gpio_raw[g] = (swd_en && g == tx_pin) ? i_gpio[g] :
-                                 (qspi_en) ? i_gpio[g] :
-                                 (g == rx_pin || g == 3'd0) ? (i_gpio[g] & i_rx) : i_gpio[g];
+            assign gpio_raw[g] = (swd_en && g == tx_pin) ? eff_gpio_src[g] :
+                                 (qspi_en) ? eff_gpio_src[g] :
+                                 (g == rx_pin || g == 3'd0) ? (eff_gpio_src[g] & (bist_en ? 1'b1 : i_rx)) : eff_gpio_src[g];
         end
     endgenerate
 
@@ -965,6 +1015,14 @@ module ProtocolEmulator(
     assign o_profiler_tmax      = profiler_tmax_w;
     assign o_profiler_tmin_high = profiler_tmin_high_w;
     assign o_profiler_tmin_low  = profiler_tmin_low_w;
+    // Task 29 BIST Engine Outputs
+    assign o_bist_active    = bist_active;
+    assign o_bist_fail_flag = bist_fail_flag;
+    assign o_bist_mode      = bist_mode;
+    assign o_bist_stage     = bist_stage;
+    assign o_bist_vec_cnt   = bist_vec_cnt;
+    assign o_bist_pass_cnt  = bist_pass_cnt;
+    assign o_bist_fail_cnt  = bist_fail_cnt;
 
 
     // Asymmetric Single-Wire Serializer bit selector
@@ -1335,6 +1393,16 @@ module ProtocolEmulator(
             usb_tx_handshake_pid    <= 4'd0;
             usb_tx_data_strobe      <= 1'b0;
             usb_tx_data_pid         <= 4'd0;
+            bist_en                 <= 1'b0;
+            bist_mode               <= 2'b00;
+            bist_jitter_en          <= 1'b0;
+            bist_active             <= 1'b0;
+            bist_stage              <= 4'd0;
+            bist_vec_cnt            <= 16'd0;
+            bist_pass_cnt           <= 16'd0;
+            bist_fail_cnt           <= 16'd0;
+            bist_fail_flag          <= 1'b0;
+            bist_lfsr               <= 8'hA5;
         end else begin
             // Default: clear single-cycle pop/push strobes
             o_tx_pop           <= 1'b0;
@@ -1346,6 +1414,30 @@ module ProtocolEmulator(
             usb_tx_token_strobe     <= 1'b0;
             usb_tx_handshake_strobe <= 1'b0;
             usb_tx_data_strobe      <= 1'b0;
+
+            // Task 29: LFSR update for pseudo-random jitter injection
+            bist_lfsr <= (bist_lfsr == 8'h00) ? 8'hA5 : {bist_lfsr[6:0], bist_lfsr[7] ^ bist_lfsr[5] ^ bist_lfsr[4] ^ bist_lfsr[3]};
+
+            // Task 29: Wishbone strobes and registers
+            if (i_bist_wb_en) begin
+                bist_en        <= 1'b1;
+                bist_mode      <= i_bist_wb_mode;
+                bist_jitter_en <= i_bist_wb_jitter_en;
+                bist_stage     <= i_bist_wb_stage;
+            end
+            if (i_bist_wb_start) begin
+                bist_en     <= 1'b1;
+                bist_active <= 1'b1;
+            end
+            if (i_bist_wb_stop) begin
+                bist_active <= 1'b0;
+            end
+            if (i_bist_wb_rst) begin
+                bist_vec_cnt   <= 16'd0;
+                bist_pass_cnt  <= 16'd0;
+                bist_fail_cnt  <= 16'd0;
+                bist_fail_flag <= 1'b0;
+            end
 
             // -------------------------------------------------------------
             // Hardware Glitch Pulse Generator FSM (Task 25)
@@ -3484,6 +3576,67 @@ module ProtocolEmulator(
                                                   usb_tx_data_strobe <= 1'b1;
                                                   pc <= pc + 7'd1;
                                               end
+                                              4'hE: begin // Task 29: BIST & Virtual Crossbar Operations
+                                                  case (instr[3:0])
+                                                      4'h0: begin // BIST_DIS (Pass-through mode)
+                                                          bist_en   <= 1'b0;
+                                                          bist_mode <= 2'b00;
+                                                          pc <= pc + 7'd1;
+                                                      end
+                                                      4'h1: begin // BIST_LOOP (Direct Loopback mode)
+                                                          bist_en   <= 1'b1;
+                                                          bist_mode <= 2'b01;
+                                                          pc <= pc + 7'd1;
+                                                      end
+                                                      4'h2: begin // BIST_SPLIT (Split ChA/ChB Crossbar mode)
+                                                          bist_en   <= 1'b1;
+                                                          bist_mode <= 2'b10;
+                                                          pc <= pc + 7'd1;
+                                                      end
+                                                      4'h3: begin // BIST_JITTER (Jitter / Stress Injection mode)
+                                                          bist_en        <= 1'b1;
+                                                          bist_mode      <= 2'b11;
+                                                          bist_jitter_en <= 1'b1;
+                                                          pc <= pc + 7'd1;
+                                                      end
+                                                      4'h4: begin // BIST_START
+                                                          bist_en     <= 1'b1;
+                                                          bist_active <= 1'b1;
+                                                          pc <= pc + 7'd1;
+                                                      end
+                                                      4'h5: begin // BIST_STOP
+                                                          bist_active <= 1'b0;
+                                                          pc <= pc + 7'd1;
+                                                      end
+                                                      4'h6: begin // BIST_RST
+                                                          bist_vec_cnt   <= 16'd0;
+                                                          bist_pass_cnt  <= 16'd0;
+                                                          bist_fail_cnt  <= 16'd0;
+                                                          bist_fail_flag <= 1'b0;
+                                                          pc <= pc + 7'd1;
+                                                      end
+                                                      4'h7: begin // BIST_PASS
+                                                          bist_pass_cnt <= bist_pass_cnt + 16'd1;
+                                                          bist_vec_cnt  <= bist_vec_cnt + 16'd1;
+                                                          pc <= pc + 7'd1;
+                                                      end
+                                                      4'h8: begin // BIST_FAIL
+                                                          bist_fail_cnt  <= bist_fail_cnt + 16'd1;
+                                                          bist_vec_cnt   <= bist_vec_cnt + 16'd1;
+                                                          bist_fail_flag <= 1'b1;
+                                                          pc <= pc + 7'd1;
+                                                      end
+                                                      4'h9: begin // BIST_STAGE (load stage from acc[3:0] or 1)
+                                                          bist_stage <= (acc[3:0] != 4'd0) ? acc[3:0] : 4'd1;
+                                                          pc <= pc + 7'd1;
+                                                      end
+                                                      default: pc <= pc + 7'd1;
+                                                  endcase
+                                              end
+                                              4'hF: begin // BIST_STAGE <stage>: immediate 4-bit stage (0..15)
+                                                  bist_stage <= instr[3:0];
+                                                  pc <= pc + 7'd1;
+                                              end
                                             default: pc <= pc + 7'd1;
                                         endcase
                                     end
@@ -3781,6 +3934,44 @@ module ProtocolEmulator(
                                                      carry_flag <= 1'b0;
                                                  end
                                              endcase
+                                        end else if (instr[3]) begin
+                                            case (instr[2:0])
+                                                3'b000: begin // BIST_STATUS
+                                                    acc        <= {bist_active, bist_fail_flag, bist_mode, bist_stage};
+                                                    isr        <= {bist_active, bist_fail_flag, bist_mode, bist_stage};
+                                                    o_data     <= {bist_active, bist_fail_flag, bist_mode, bist_stage};
+                                                    zero_flag  <= !bist_active;
+                                                    carry_flag <= bist_fail_flag;
+                                                end
+                                                3'b001: begin // BIST_PASS
+                                                    acc        <= bist_pass_cnt[7:0];
+                                                    isr        <= bist_pass_cnt[7:0];
+                                                    o_data     <= bist_pass_cnt[7:0];
+                                                    zero_flag  <= (bist_pass_cnt == 16'd0);
+                                                    carry_flag <= 1'b0;
+                                                end
+                                                3'b010: begin // BIST_FAIL
+                                                    acc        <= bist_fail_cnt[7:0];
+                                                    isr        <= bist_fail_cnt[7:0];
+                                                    o_data     <= bist_fail_cnt[7:0];
+                                                    zero_flag  <= (bist_fail_cnt == 16'd0);
+                                                    carry_flag <= bist_fail_flag;
+                                                end
+                                                3'b011: begin // BIST_VEC
+                                                    acc        <= bist_vec_cnt[7:0];
+                                                    isr        <= bist_vec_cnt[7:0];
+                                                    o_data     <= bist_vec_cnt[7:0];
+                                                    zero_flag  <= (bist_vec_cnt == 16'd0);
+                                                    carry_flag <= 1'b0;
+                                                end
+                                                default: begin
+                                                    acc        <= 8'd0;
+                                                    isr        <= 8'd0;
+                                                    o_data     <= 8'd0;
+                                                    zero_flag  <= 1'b1;
+                                                    carry_flag <= 1'b0;
+                                                end
+                                            endcase
                                         end else begin
                                             acc        <= {i2c_rx_addr, i2c_rw_bit};
                                             zero_flag  <= (i2c_rx_addr == 7'd0);

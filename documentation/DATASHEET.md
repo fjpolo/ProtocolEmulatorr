@@ -32,6 +32,10 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
   - **Hardware Data CRC-16 Engine & Auto-Handshake Responder**: Reflective polynomial CRC-16 computation ($G(x) = x^{16} + x^{15} + x^2 + 1$, residual `0xB001`) and autonomous sub-microsecond `ACK`, `NAK`, `STALL` handshake generation.
   - **Bus Reset & EOP Handling**: Autonomous detection of sustained SE0 ($\ge 32$ bit times) indicating Bus Reset, and valid End-of-Packet (EOP) framing detection.
   - **Full Host & Microcode Integration**: Wishbone slave registers (`0x60..0x6C`), microcode opcodes (`USB_CFG`, `USB_SIE_EN`, `USB_SIE_DIS`, `USB_SEND_ACK`, `USB_SEND_NAK`, `USB_SEND_STALL`, `USB_TX_TOKEN`, `USB_TX_DATA`), and `ASSIST READ` targets (`USB_STATUS`, `USB_TOKEN`, `USB_DATA`, `USB_ADDR`).
+- **Task 29: On-Chip Self-Play & Virtual Crossbar (BIST Engine)**:
+  - **Internal Virtual Crossbar**: Direct Self-Loopback, Split Dual-Channel (Channel A Master <-> Channel B Slave), and pseudo-random jitter/stress injection.
+  - **Hardware BIST Scoring**: 16-bit Vector, Pass, and Fail counters with sticky fail flag and real-time LED visualizer.
+  - **Memory Map & Opcodes**: Wishbone slave registers (`0x70..0x78`), microcode opcodes (`BIST_DIS`, `BIST_LOOP`, `BIST_SPLIT`, `BIST_JITTER`, `BIST_START`, `BIST_STOP`, `BIST_RST`, `BIST_PASS`, `BIST_FAIL`, `BIST_STAGE`), and `ASSIST READ` targets (`BIST_STATUS`, `BIST_PASS`, `BIST_FAIL`, `BIST_VEC`).
 - **The Protocol Detective: Autonomous Waveform Profiler & Auto-Baud Engine (Task 27)**:
   - **Zero-Knowledge Hardware Pulse Analyzer**: 16-bit transition timer running at 50 MHz (20 ns resolution) tracking minimum stable high/low pulse widths ($t_{\min\_high}, t_{\min\_low}$) and fundamental bit period ($t_{\min}$ auto-baud divisor).
   - **Bus Idle State & Duty-Cycle Symmetry Discriminator**: Classifies idle polarity (Idle-High vs. Idle-Low) and discriminates between periodic clocks ($t_{	ext{high}} pprox t_{	ext{low}}$) and asynchronous serial data.
@@ -690,6 +694,23 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
 - **Microcode Instructions & Extended Telemetry**:
   - `USB_CFG <addr>` (`0xF4B[addr]`), `USB_SIE_EN` (`0xF40B`), `USB_SIE_DIS` (`0xF40C`), `USB_SEND_ACK` (`0xF40D`), `USB_SEND_NAK` (`0xF40E`), `USB_SEND_STALL` (`0xF40F`), `USB_TX_TOKEN <pid>` (`0xF4C[pid]`), `USB_TX_DATA <pid>` (`0xF4D[pid]`).
   - `ASSIST READ, USB_STATUS` (`0xFB10`), `USB_TOKEN` (`0xFB30`), `USB_DATA` (`0xFB50`), `USB_ADDR` (`0xFB70`).
+
+### 9. On-Chip Self-Play & Virtual Crossbar (BIST Engine)
+- **Virtual Crossbar Routing Modes**:
+  - `00`: Pass-through mode (external package pins `i_gpio`).
+  - `01`: Direct Self-Loopback (`o_gpio[p] -> core_in[p]`).
+  - `10`: Split Dual-Channel crossbar: Lower nibble (0..3) Channel A Master <-> Upper nibble (4..7) Channel B Slave.
+  - `11`: Pseudo-random LFSR jitter and error stress injection mode.
+- **Hardware Scoring Engine**:
+  - 16-bit Vector Counter (`bist_vec_cnt`), 16-bit Pass Counter (`bist_pass_cnt`), 16-bit Fail Counter (`bist_fail_cnt`), and sticky error flag.
+  - Real-time LED visualizer telemetry: LED 7 (Error Flag), LED 6..4 (Stage 1..7), LED 3 (Active), LED 2..0 (Live Crossbar Bus).
+- **Wishbone B4 Slave Memory Map (`0x70..0x78`)**:
+  - `0x70`: `ADDR_BIST_CTRL` (RW: `[1:0]`=mode, `[2]`=jitter_en, `[3]`=bist_en, `[4]`=start, `[5]`=stop, `[6]`=rst, `[11:8]`=stage).
+  - `0x74`: `ADDR_BIST_STATUS` (RO: `[0]`=active, `[1]`=fail_flag, `[3:2]`=mode, `[7:4]`=stage, `[23:8]`=fail_cnt).
+  - `0x78`: `ADDR_BIST_SCORES` (RO: `[15:0]`=vec_cnt, `[31:16]`=pass_cnt).
+- **Microcode Instructions & Extended Telemetry**:
+  - `BIST_DIS` (`0xF4E0`), `BIST_LOOP` (`0xF4E1`), `BIST_SPLIT` (`0xF4E2`), `BIST_JITTER` (`0xF4E3`), `BIST_START` (`0xF4E4`), `BIST_STOP` (`0xF4E5`), `BIST_RST` (`0xF4E6`), `BIST_PASS` (`0xF4E7`), `BIST_FAIL` (`0xF4E8`), `BIST_STAGE <n>` (`0xF4F[n]`).
+  - `ASSIST READ, BIST_STATUS` (`0xFB08`), `BIST_PASS` (`0xFB09`), `BIST_FAIL` (`0xFB0A`), `BIST_VEC` (`0xFB0B`).
 
 ---
 
