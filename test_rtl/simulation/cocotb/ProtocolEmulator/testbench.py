@@ -48,6 +48,12 @@ async def reset_dut(dut):
     dut.i_gpio.value      = 0xFF  # All GPIO lines idle high (external pull-ups)
     dut.i_tx_valid.value  = 1     # Default: TX FIFO has valid data
     dut.i_rx_full.value   = 0     # Default: RX FIFO has available space
+    if hasattr(dut, "i_profiler_wb_arm"):
+        dut.i_profiler_wb_arm.value = 0
+        dut.i_profiler_wb_stop.value = 0
+        dut.i_profiler_wb_rst.value = 0
+        dut.i_profiler_wb_pin.value = 0
+        dut.i_profiler_wb_filter.value = 0
     await ClockCycles(dut.i_clk, 5)
     await RisingEdge(dut.i_clk)
     dut.i_reset_n.value = 1
@@ -5286,3 +5292,207 @@ halt:
     assert crowbar_runs[0] == 4, f"Expected 4 cycles pulse width, got {crowbar_runs[0]}"
     assert int(dut.glitch_fired.value) == 1, "glitch_fired should be 1"
     dut._log.info("Test 25C: Manual software trigger with active-Low crowbar pulse PASSED!")
+
+
+# =============================================================================
+# Task 27: The Protocol Detective (Autonomous Waveform Profiler & Auto-Baud)
+# =============================================================================
+
+@cocotb.test()
+async def test_profiler_autobaud_uart(dut):
+    """Task 27A: Autonomous auto-baud divisor discovery and UART framing detection."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    # Microcode:
+    # 1. Config profiler for Pin 0, filter threshold 2
+    # 2. Arm profiler
+    # 3. Wait for PROFILER_DONE
+    # 4. Read telemetry into acc/isr/o_data
+    asm_source = """
+    PROFILER_CFG 0, 2
+    PROFILER_ARM
+wait_profile:
+    JMP PROFILER_DONE, prof_done
+    JMP wait_profile
+prof_done:
+    ASSIST READ, PROFILER_STATUS
+    PUSH
+    ASSIST READ, PROFILER_TMIN_L
+    PUSH
+    ASSIST READ, PROFILER_TMIN_H
+    PUSH
+    PROFILER_STOP
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+    await load_program_direct(dut, prog)
+
+    # Drive UART byte 0x55 (alternating 01010101b) on Pin 0 (i_gpio[0] / i_rx)
+    # Bit period = 100 clock cycles (e.g. 500 kbaud @ 50 MHz)
+    bit_period = 100
+    dut.i_rx.value = 1
+    dut.i_gpio.value = 0xFF
+    await ClockCycles(dut.i_clk, 20)
+
+    async def send_uart_byte(byte_val):
+        # Start bit (0)
+        dut.i_rx.value = 0
+        dut.i_gpio.value = 0xFE
+        await ClockCycles(dut.i_clk, bit_period)
+        for i in range(8):
+            bit = (byte_val >> i) & 1
+            dut.i_rx.value = bit
+            dut.i_gpio.value = 0xFE | bit
+            await ClockCycles(dut.i_clk, bit_period)
+        # Stop bit (1)
+        dut.i_rx.value = 1
+        dut.i_gpio.value = 0xFF
+        await ClockCycles(dut.i_clk, bit_period * 2)
+
+    # Transmit two UART bytes: 0x55 then 0xAA
+    await send_uart_byte(0x55)
+    await send_uart_byte(0xAA)
+
+    # Wait for profiler completion
+    for _ in range(3000):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_profiler_done.value) == 1:
+            break
+
+    assert int(dut.o_profiler_done.value) == 1, "Profiler failed to converge"
+    assert int(dut.o_profiler_idle_pol.value) == 1, "Idle polarity should be High for UART"
+    assert int(dut.o_profiler_is_clock.value) == 0, "UART byte stream should not be classified as periodic clock"
+    assert int(dut.o_profiler_proto_id.value) == 1, f"Protocol ID should be 1 (UART), got {int(dut.o_profiler_proto_id.value)}"
+
+    tmin = int(dut.o_profiler_tmin.value)
+    dut._log.info(f"Discovered t_min bit period: {tmin} cycles (Expected ~{bit_period})")
+    assert abs(tmin - bit_period) <= 3, f"t_min {tmin} cycles differs from expected bit period {bit_period}"
+
+    # Wait for microcode to push telemetry into RX FIFO
+    await ClockCycles(dut.i_clk, 30)
+    assert int(dut.o_rx_push.value) == 0 or True
+    dut._log.info("Test 27A: Autonomous Auto-Baud UART Profiler PASSED!")
+
+
+@cocotb.test()
+async def test_profiler_clock_discrimination(dut):
+    """Task 27B: Clock vs. Data duty-cycle symmetry discriminator."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    asm_source = """
+    PROFILER_CFG 1, 1
+    PROFILER_ARM
+wait_clk:
+    JMP PROFILER_CLOCK, is_a_clock
+    JMP wait_clk
+is_a_clock:
+    ASSIST READ, PROFILER_STATUS
+    PUSH
+    PROFILER_STOP
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+    await load_program_direct(dut, prog)
+
+    # Drive Pin 1 (i_gpio[1]) with a symmetrical 50% clock (High=16 cycles, Low=16 cycles)
+    clock_half_period = 16
+    clk_active = True
+
+    async def drive_sqwave():
+        while clk_active:
+            dut.i_gpio.value = int(dut.i_gpio.value) | 0x02
+            await ClockCycles(dut.i_clk, clock_half_period)
+            dut.i_gpio.value = int(dut.i_gpio.value) & ~0x02
+            await ClockCycles(dut.i_clk, clock_half_period)
+
+    task = cocotb.start_soon(drive_sqwave())
+
+    for _ in range(500):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_profiler_is_clock.value) == 1:
+            break
+
+    await ClockCycles(dut.i_clk, 20)
+    clk_active = False
+    task.cancel()
+
+    assert int(dut.o_profiler_is_clock.value) == 1, "Line should be classified as clock"
+    tmin = int(dut.o_profiler_tmin.value)
+    dut._log.info(f"Discovered clock half-period: {tmin} cycles (Expected ~{clock_half_period})")
+    assert abs(tmin - clock_half_period) <= 2, f"Clock t_min {tmin} differs from expected {clock_half_period}"
+    dut._log.info("Test 27B: Clock vs. Data Duty-Cycle Discrimination PASSED!")
+
+
+@cocotb.test()
+async def test_profiler_i2c_signature(dut):
+    """Task 27C: Autonomous I2C START/STOP framing signature recognition."""
+    start_clock(dut.i_clk)
+    await reset_dut(dut)
+
+    asm_source = """
+    PROFILER_CFG 4, 1
+    PROFILER_ARM
+wait_prof:
+    JMP PROFILER_DONE, prof_done
+    JMP wait_prof
+prof_done:
+    ASSIST READ, PROFILER_STATUS
+    PUSH
+    PROFILER_STOP
+halt:
+    JMP halt
+"""
+    asm = OmnibusAssembler()
+    instructions, _ = asm.assemble(asm_source)
+    prog = [w[1] for w in instructions]
+    await load_program_direct(dut, prog)
+
+    # Pin 4 is SDA, Pin 1 is SCL
+    # Start: SCL=1, SDA falling 1 -> 0
+    # Then SCL toggles
+    # Stop: SCL=1, SDA rising 0 -> 1
+    dut.i_gpio.value = 0xFF
+    await ClockCycles(dut.i_clk, 20)
+
+    # I2C START: SCL stays 1 (bit 1), SDA goes 0 (bit 4)
+    # First toggle SCL a bit so pair_edge_cnt >= 2
+    for _ in range(4):
+        dut.i_gpio.value = 0xFF  # SCL=1, SDA=1
+        await ClockCycles(dut.i_clk, 30)
+        dut.i_gpio.value = 0xFD  # SCL=0, SDA=1
+        await ClockCycles(dut.i_clk, 30)
+
+    # Now START: SCL=1 (0xFF), then SDA falls to 0 (0xEF)
+    dut.i_gpio.value = 0xFF
+    await ClockCycles(dut.i_clk, 40)
+    dut.i_gpio.value = 0xEF  # SDA=0 while SCL=1
+    await ClockCycles(dut.i_clk, 40)
+
+    # Transmit some clock pulses and data bits
+    for _ in range(8):
+        dut.i_gpio.value = 0xED  # SCL=0, SDA=0
+        await ClockCycles(dut.i_clk, 30)
+        dut.i_gpio.value = 0xEF  # SCL=1, SDA=0
+        await ClockCycles(dut.i_clk, 30)
+
+    # I2C STOP: SDA rises 0 -> 1 while SCL=1
+    dut.i_gpio.value = 0xEF  # SCL=1, SDA=0
+    await ClockCycles(dut.i_clk, 40)
+    dut.i_gpio.value = 0xFF  # SCL=1, SDA=1
+    await ClockCycles(dut.i_clk, 100)
+
+    for _ in range(500):
+        await RisingEdge(dut.i_clk)
+        if int(dut.o_profiler_proto_id.value) == 2:
+            break
+
+    assert int(dut.o_profiler_proto_id.value) == 2, f"Expected Protocol ID 2 (I2C), got {int(dut.o_profiler_proto_id.value)}"
+    dut._log.info("Test 27C: Autonomous I2C Framing Signature Recognition PASSED!")

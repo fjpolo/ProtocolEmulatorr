@@ -1,9 +1,9 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.8 (Architecture Release — Tasks 01 through 26)  
+**Document Revision**: 1.9 (Architecture Release — Tasks 01 through 27)  
 **Architecture Milestone**: OmniBus Lite (v1.0 Foundation)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
-**Dedicated User Guides**: [GLITCH_MITM_USER_GUIDE.md](GLITCH_MITM_USER_GUIDE.md) (Hardware Fault Injection & Wire-Speed MitM Fuzzing), [task26.md](task26.md) (OmniBus DMA Controller)  
+**Dedicated User Guides**: [task27.md](task27.md) (Autonomous Waveform Profiler & Auto-Baud Engine), [GLITCH_MITM_USER_GUIDE.md](GLITCH_MITM_USER_GUIDE.md) (Hardware Fault Injection & Wire-Speed MitM Fuzzing), [task26.md](task26.md) (OmniBus DMA Controller)  
 
 ---
 
@@ -26,6 +26,11 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
 ```
 
 ### Key Architectural Specifications
+- **The Protocol Detective: Autonomous Waveform Profiler & Auto-Baud Engine (Task 27)**:
+  - **Zero-Knowledge Hardware Pulse Analyzer**: 16-bit transition timer running at 50 MHz (20 ns resolution) tracking minimum stable high/low pulse widths ($t_{\min\_high}, t_{\min\_low}$) and fundamental bit period ($t_{\min}$ auto-baud divisor).
+  - **Bus Idle State & Duty-Cycle Symmetry Discriminator**: Classifies idle polarity (Idle-High vs. Idle-Low) and discriminates between periodic clocks ($t_{	ext{high}} pprox t_{	ext{low}}$) and asynchronous serial data.
+  - **Autonomous Framing Signature Recognizer**: Real-time identification of I2C START/STOP, UART start/stop frames, 1-Wire reset (>400 µs), and SPI clock/chip-select coordination.
+  - **Configurable Noise Filter & Telemetry Registers**: Digital glitch suppression (1..15 cycles) and host Wishbone registers (`0x50..0x5C`) with microcode instructions (`PROFILER_CFG`, `PROFILER_ARM`, `PROFILER_STOP`, `PROFILER_RST`, `JMP PROFILER_DONE`, `JMP PROFILER_CLOCK`).
 - **OmniBus DMA Scatter-Gather Controller & Host Memory Streamer (Task 26)**:
   - **32-Bit Wishbone B4 Master Interface**: Autonomous direct memory access engine driving host memory bus cycles (`o_m_wb_cyc`, `stb`, `we`, `addr`, `data`, `sel`) with sub-word byte masking.
   - **Dual-Channel Concurrent Streaming**: Independent TX (Host Memory $\to$ TX FIFO) and RX (RX FIFO $\to$ Host Memory) channels with round-robin memory bus arbitration.
@@ -627,7 +632,24 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
 - **Autonomous Hardware Sound Effects**: Built-in multi-step preset sequencer for instant sound generation without microcode polling (`BEEP`, `BLIP`, `ERROR`, `COIN`, `LASER`, `SIREN`, `NOISE`).
 - **Direct PCM Streaming**: Single-cycle `OUT AUDIO` sample transfer from OSR directly to DAC for high-speed host PCM sample playback.
 
-### 7. OmniBus DMA Scatter-Gather Controller & Host Memory Streamer (Task 26)
+### 7. The Protocol Detective: Autonomous Waveform Profiler & Auto-Baud Subsystem (Task 27)
+- **High-Speed Transition & Pulse Profiler**:
+  - 16-bit transition timer running at 50 MHz (20 ns resolution) with first-edge synchronization.
+  - Continuous minimum high pulse ($t_{\min\_high}$), minimum low pulse ($t_{\min\_low}$), and fundamental bit period ($t_{\min}$) tracking.
+  - Line idle state discriminator (0 = Idle-Low, 1 = Idle-High).
+  - Clock vs. Data duty-cycle symmetry discriminator (`is_clock = 1` when $|t_{\min\_high} - t_{\min\_low}| \le t_{\min}/4 + 2$ and no idle stretches).
+  - Protocol framing signature detector: UART (1), I2C (2), SPI (3), 1-Wire (4).
+- **Wishbone B4 Slave Memory Map (`0x50..0x5C`)**:
+  - `0x50`: `ADDR_PROFILER_CTRL` (RW: `[2:0]`=pin_sel, `[6:3]`=glitch_filter, `[8]`=arm, `[9]`=stop, `[10]`=rst, `[11]`=irq_en).
+  - `0x54`: `ADDR_PROFILER_STATUS` (RO: `[0]`=busy, `[1]`=done, `[2]`=idle_pol, `[3]`=is_clock, `[7:4]`=proto_id, `[15:8]`=edge_count).
+  - `0x58`: `ADDR_PROFILER_TMIN` (RO: `[15:0]`=$t_{\min}$ baud divisor, `[31:16]`=$t_{\max}$).
+  - `0x5C`: `ADDR_PROFILER_PERIOD` (RO: `[15:0]`=$t_{\min\_high}$, `[31:16]`=$t_{\min\_low}$).
+- **Microcode Instructions & Extended Branch Flags**:
+  - `PROFILER_CFG <pin> [, <filter>]` (`0xF490`), `PROFILER_FILTER <cycles>` (`0xF4A0`), `PROFILER_ARM` (`0xF408`), `PROFILER_STOP` (`0xF409`), `PROFILER_RST` (`0xF40A`).
+  - `ASSIST READ, PROFILER_STATUS` (`0xFBC0`), `PROFILER_TMIN_L` (`0xFB80`), `PROFILER_TMIN_H` (`0xFBA0`), `PROFILER_EDGES` (`0xFBE0`).
+  - Extended Branches: `JMP PROFILER_DONE, <target>` (`0x8E..`), `JMP PROFILER_CLOCK, <target>` (`0x8F..`).
+
+### 8. OmniBus DMA Scatter-Gather Controller & Host Memory Streamer (Task 26)
 - **Wishbone B4 Master Bus Interface**:
   - `o_m_wb_cyc`, `o_m_wb_stb`, `o_m_wb_we`, `o_m_wb_addr[31:0]`, `o_m_wb_data[31:0]`, `o_m_wb_sel[3:0]`.
   - Driven with single-cycle pipelined transactions, automatic sub-word byte masking, and round-robin bus arbitration between TX and RX channels.
