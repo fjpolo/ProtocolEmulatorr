@@ -183,10 +183,10 @@ if "%MODE%"=="profiler" (
     )
     echo [LOAD] Loading %DEMO_ASM% into OmniBus IMEM and launching Interactive Console Terminal...
     echo [*] Interactive Terminal Instructions:
-    echo     - Send characters or unknown serial traffic on Pin 0 (UART RX).
-    echo     - Profiler autonomously measures t_min, idle polarity, and checks for periodic clock.
-    echo     - Once converged, prints [DATA] / [CLOCK], status byte, t_min baud divisor, and edge count.
-    echo     - Microcode then enters real-time echo loop using the discovered baud timing.
+    echo     - Send characters or unknown serial traffic on Pin 0 [UART RX]
+    echo     - Profiler autonomously measures t_min, idle polarity, and checks for periodic clock
+    echo     - Once converged, prints [DATA] or [CLOCK], status byte, t_min baud divisor, and edge count
+    echo     - Microcode then enters real-time echo loop using the discovered baud timing
     echo.
     python "%ROOT_DIR%python\omnibus_loader.py" --file "%DEMO_ASM%" --terminal %EXTRA_ARGS%
     goto :done
