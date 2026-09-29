@@ -234,4 +234,22 @@ An in-browser IDE and cycle-accurate silicon micro-engine emulator is available 
 Or open [`web_ide/index.html`](file:///c:/Workspace/ASIC/ProtocolEmulator/web_ide/index.html) in your browser.
 
 See [Task 31 Documentation](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task31.md) for full architecture and user guide.
+
+---
+
+## OmniBus Software Development Kit (SDK)
+
+The official software development kit is located under [`sdk/`](file:///c:/Workspace/ASIC/ProtocolEmulator/sdk/):
+- **Assembly Include Library (`sdk/include/`)**: Modular `.inc` headers (`omnibus.inc`, `uart.inc`, `i2c.inc`, `spi.inc`, `ws2812.inc`, `joybus.inc`, `chiptune.inc`, `mitm.inc`).
+- **Python Toolchain & Host Driver (`sdk/omnibus/`)**: Complete Python API for microcode assembly, hardware flashing, FIFO streaming, waveform profiler queries, and fuzzer triggers.
+- **Declarative Protocol DSL (`omnibus.dsl`)**: Python timing synthesizer (`omnibus-cc`) translating declarative timing specifications directly into cycle-exact microcode.
+- **CLI Tools**: Turnkey terminal utilities (`omnibus`, `omnibus-load`, `omnibus-fuzz`, `omnibus-profiler`).
+
+### Installing the SDK
+```bash
+pip install -e sdk/
+```
+
+See [Task 32 Documentation](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task32.md) for the complete developer guide and examples.
+
 

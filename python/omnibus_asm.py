@@ -162,14 +162,14 @@ OPCODES = {
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
 PIN_NAMES = {
-    "MOSI": 0, "TX": 0, "PIN0": 0, "P0": 0,
-    "SCK":  1, "SCL": 1, "PIN1": 1, "P1": 1,
-    "CS":   2, "CS_N": 2, "CSN": 2, "PIN2": 2, "P2": 2,
-    "MISO": 3, "RX": 3, "PIN3": 3, "P3": 3,
-    "SDA":  4, "PIN4": 4, "P4": 4,
-    "PIN5": 5, "P5": 5,
-    "PIN6": 6, "P6": 6,
-    "PIN7": 7, "P7": 7,
+    "MOSI": 0, "TX": 0, "TX_PIN": 0, "SDA": 0, "D_PLUS": 0, "DP": 0, "PIN0": 0, "P0": 0, "UIO0": 0, "UIO[0]": 0,
+    "SCK":  1, "SCL": 1, "SCL_PIN": 1, "D_MINUS": 1, "DM": 1, "PIN1": 1, "P1": 1, "UIO1": 1, "UIO[1]": 1,
+    "CS":   2, "CS_N": 2, "CSN": 2, "DIN": 2, "PIN2": 2, "P2": 2, "UIO2": 2, "UIO[2]": 2,
+    "MISO": 3, "RX": 3, "RX_PIN": 3, "JOY_PIN": 3, "PIN3": 3, "P3": 3, "UIO3": 3, "UIO[3]": 3,
+    "AUDIO_OUT": 4, "PIN4": 4, "P4": 4, "UIO4": 4, "UIO[4]": 4,
+    "GLITCH_TRIG": 5, "PIN5": 5, "P5": 5, "UIO5": 5, "UIO[5]": 5,
+    "PIN6": 6, "P6": 6, "UIO6": 6, "UIO[6]": 6,
+    "PIN7": 7, "P7": 7, "UIO7": 7, "UIO[7]": 7,
 }
 
 class AssemblerError(Exception):
@@ -207,27 +207,38 @@ class OmnibusAssembler:
         current_addr = 0
 
         for line_num, raw_line in enumerate(lines, start=1):
-            # Strip comments (; or #)
-            line = re.sub(r"[;#].*$", "", raw_line).strip()
+            # Strip comments (; or # or //)
+            line = re.sub(r"[;#].*$", "", raw_line)
+            line = re.sub(r"//.*$", "", line).strip()
             if not line:
                 continue
 
-            # Check for directives: .clock, .baud, .equ
+            # Check for directives: .clock, .baud, .equ, .const, .pins, .entry, .org, .bank
             if line.startswith("."):
                 parts = line.split()
                 directive = parts[0].lower()
                 if directive == ".clock" and len(parts) >= 2:
-                    self.clk_freq = int(parts[1])
+                    val_str = parts[1].upper()
+                    if val_str.endswith("MHZ"):
+                        self.clk_freq = int(float(val_str[:-3]) * 1e6)
+                    elif val_str.endswith("KHZ"):
+                        self.clk_freq = int(float(val_str[:-3]) * 1e3)
+                    elif val_str.endswith("HZ"):
+                        self.clk_freq = int(val_str[:-2])
+                    else:
+                        self.clk_freq = int(val_str, 0)
                     self.update_baud_constants()
                     symbols["BIT_DELAY"] = self.bit_delay
                     symbols["HALF_DELAY"] = self.half_bit_delay
                 elif directive == ".baud" and len(parts) >= 2:
-                    self.baud = int(parts[1])
+                    self.baud = int(parts[1], 0)
                     self.update_baud_constants()
                     symbols["BIT_DELAY"] = self.bit_delay
                     symbols["HALF_DELAY"] = self.half_bit_delay
-                elif directive == ".equ" and len(parts) >= 3:
-                    symbols[parts[1]] = int(parts[2], 0)
+                elif directive in (".equ", ".const") and len(parts) >= 3:
+                    c_val = int(parts[2], 0)
+                    symbols[parts[1]] = c_val
+                    symbols[parts[1].upper()] = c_val
                 elif directive == ".bank" and len(parts) >= 2:
                     bank_num = int(parts[1], 0)
                     if bank_num < 0 or bank_num > 3:
@@ -235,6 +246,25 @@ class OmnibusAssembler:
                     current_addr = bank_num * 32
                 elif directive == ".org" and len(parts) >= 2:
                     current_addr = int(parts[1], 0)
+                continue
+
+            # Check for assignments: alias = pin / expr (e.g. tx_pin = uio[0])
+            assign_match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$", line)
+            if assign_match:
+                var_name = assign_match.group(1)
+                rhs = assign_match.group(2).strip().upper()
+                if rhs in PIN_NAMES:
+                    val = PIN_NAMES[rhs]
+                elif rhs.startswith("UIO[") and rhs.endswith("]"):
+                    val = int(re.sub(r"\D", "", rhs))
+                else:
+                    try:
+                        val = int(rhs, 0)
+                    except ValueError:
+                        val = symbols.get(rhs, 0)
+                symbols[var_name] = val
+                symbols[var_name.upper()] = val
+                PIN_NAMES[var_name.upper()] = val
                 continue
 
             # Check for labels at line start: "label: ..."
@@ -246,7 +276,10 @@ class OmnibusAssembler:
                 if label_name in labels:
                     raise AssemblerError(f"Line {line_num}: Duplicate label '{label_name}'")
                 labels[label_name] = current_addr
+                symbols[label_name] = current_addr
+                symbols[label_name.upper()] = current_addr
                 line = m.group(2).strip()
+
 
             if not line:
                 continue
@@ -318,10 +351,14 @@ class OmnibusAssembler:
 
             def eval_arg(arg_str):
                 arg_clean = arg_str.strip()
+                if arg_clean.startswith("[") and arg_clean.endswith("]"):
+                    arg_clean = arg_clean[1:-1].strip()
                 if arg_clean in labels:
                     return labels[arg_clean]
                 if arg_clean in symbols:
                     return symbols[arg_clean]
+                if arg_clean.upper() in symbols:
+                    return symbols[arg_clean.upper()]
                 # Character literals: 'A', "A", '\n', '\r'
                 if len(arg_clean) >= 3 and ((arg_clean[0] == "'" and arg_clean[-1] == "'") or (arg_clean[0] == '"' and arg_clean[-1] == '"')):
                     inner = arg_clean[1:-1]

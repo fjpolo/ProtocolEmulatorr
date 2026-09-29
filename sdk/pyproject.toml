@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omnibus-sdk"
+version = "1.0.0"
+description = "Official Python Software Development Kit (SDK) for the OmniBus Protocol Emulator ASIC"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "OmniBus ASIC Team", email = "franco.joel.polo@iis.fraunhofer.de" }
+]
+keywords = [
+    "asic", "fpga", "protocol-emulator", "hardware-hacking", "mitm",
+    "fuzzing", "uart", "spi", "i2c", "can", "usb", "glitch-injection"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Embedded Systems",
+    "Topic :: System :: Hardware"
+]
+dependencies = [
+    "pyserial>=3.5"
+]
+
+[project.scripts]
+omnibus = "omnibus.cli:main"
+omnibus-load = "omnibus.cli:load_cli"
+omnibus-fuzz = "omnibus.cli:fuzz_cli"
+omnibus-profiler = "omnibus.cli:profiler_cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["omnibus*"]

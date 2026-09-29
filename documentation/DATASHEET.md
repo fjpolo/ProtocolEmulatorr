@@ -886,4 +886,18 @@ The OmniBus architecture includes an in-browser graphical development environmen
 
 Refer to [`documentation/task31.md`](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task31.md) for detailed architecture and usage guides.
 
+---
+
+## 15. OmniBus Software Development Kit (SDK) & Assembly Standard Library
+
+The official developer SDK is available under [`sdk/`](file:///c:/Workspace/ASIC/ProtocolEmulator/sdk/):
+
+- **Assembly Include Headers (`sdk/include/`)**: Modular `.inc` files (`omnibus.inc`, `uart.inc`, `i2c.inc`, `spi.inc`, `ws2812.inc`, `joybus.inc`, `chiptune.inc`, `mitm.inc`) with standard timing constants and pin bindings.
+- **Python Toolchain & Host Driver (`sdk/omnibus/`)**: Complete host API for in-system flashing, FIFO data streaming, waveform profiler queries, and fault injection.
+- **Declarative Protocol DSL (`omnibus.dsl`)**: Python timing synthesizer generating cycle-exact 16-bit microcode from high-level protocol descriptions.
+- **Turnkey CLI Tools**: Command-line utilities (`omnibus`, `omnibus-load`, `omnibus-fuzz`, `omnibus-profiler`).
+
+Refer to [`documentation/task32.md`](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task32.md) for full SDK API specifications and tutorial guides.
+
+
 
