@@ -853,3 +853,22 @@ halt:
 JMP halt
 ```
 
+---
+
+## 13. Formal Verification & Silicon Invariant Proofs (SymbiYosys / SVA)
+
+The ProtocolEmulator hardware architecture is formally proven using **SymbiYosys** (Yosys + SMTBMC + Yices2/Z3) across 8 verification domains:
+
+| Suite | Scope | Mathematical Invariant | Verification Engines |
+| :--- | :--- | :--- | :--- |
+| **FIFO** | TX/RX & Wishbone FIFOs | $\text{count} \le \text{DEPTH} \land \neg(\text{full} \land \text{wr}) \land \neg(\text{empty} \land \text{rd})$ | BMC (10), $k$-induction (10), CVR (15) |
+| **BusSafety** | Open-drain GPIO arbitration | $\forall p, \quad \neg(o\_gpio\_oe[p] \land o\_gpio[p])$ | BMC (10), $k$-induction (10), CVR (6) |
+| **Wishbone** | OmniBus B4 Slave Interface | Single-cycle ACK termination, no hung transactions | BMC (10), $k$-induction (10), CVR (10) |
+| **TimingZeroJitter** | Microcode Determinism | $\Delta \text{Delay}(t) = -1/\text{cycle}$; exact $BAUD/$HBAUD delays | BMC (10), $k$-induction (10), CVR (15) |
+| **CallStack** | Hardware Subroutines & DJNZ | LIFO stack pointer bounds, ret address preservation | BMC (10), $k$-induction (10), CVR (15) |
+| **ALU** | Micro-ALU & CRC-32 Accelerator | Arithmetic/logic accuracy and CRC-32 polynomial steps | BMC (10), $k$-induction (10), CVR (15) |
+| **GlitchMitM** | Fault Injection & MitM Matcher | Glitch pulse width, active polarity, and pin isolation | BMC (10), $k$-induction (10), CVR (15) |
+| **BIST** | PRBS-7 LFSR & Loopback | $X^7 + X^6 + 1$ non-zero progression and loopback routing | BMC (10), $k$-induction (10), CVR (15) |
+
+For complete invariant definitions and reproduction commands, refer to [`documentation/task30.md`](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task30.md).
+

@@ -798,7 +798,8 @@ module ProtocolEmulator(
             wire is_usb_dp = usb_active_en && usb_oe && (p == 3'd0);
             wire is_usb_dm = usb_active_en && usb_oe && (p == 3'd1);
 
-            assign i2c_gpio_out[p] = is_usb_dp     ? usb_dp_out :
+            assign i2c_gpio_out[p] = (gpio_od[p] && i2c_gpio_oe[p]) ? 1'b0 :
+                                     is_usb_dp     ? usb_dp_out :
                                      is_usb_dm     ? usb_dm_out :
                                      is_glitch     ? (glitch_pol ? 1'b0 : 1'b1) :
                                      is_audio_main ? pdm_bit :

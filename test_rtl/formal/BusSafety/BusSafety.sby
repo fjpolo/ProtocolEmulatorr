@@ -1,0 +1,27 @@
+[tasks]
+bound
+prf
+cvr
+
+[options]
+bound: mode bmc
+bound: depth 10
+prf:   mode prove
+prf:   depth 10
+cvr:   mode cover
+cvr:   depth 6
+cvr:   append 0
+
+[engines]
+bound: smtbmc
+prf:   smtbmc yices
+cvr:   smtbmc
+
+[script]
+read_verilog -sv -DPROTOCOLEMULATOR -DFORMAL OmniBus_Profiler.v OmniBus_USB_SIE.v template_formal.v
+prep -top ProtocolEmulator
+
+[files]
+OmniBus_Profiler.v
+OmniBus_USB_SIE.v
+template_formal.v

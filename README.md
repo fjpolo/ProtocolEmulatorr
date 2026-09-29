@@ -189,3 +189,29 @@ This ProtocolEmulator includes built-in support for the [Manta FPGA Logic Analyz
 ### Option B: Amaranth Workflow
 1. Uncomment the native Manta integration code block inside `amaranth/ProtocolEmulator.py`'s `elaborate` function.
 2. Build and flash using Amaranth.
+
+---
+
+## Formal Verification Suite (SymbiYosys / SVA)
+
+The ProtocolEmulator core and its OmniBus accelerators are mathematically verified using **SymbiYosys (SBY)** and **SystemVerilog Assertions (SVA)** across 8 formal suites:
+1. **FIFO**: Formal depth bounding, count tracking, and overflow/underflow prevention.
+2. **BusSafety**: Open-drain no-contention invariant (`!(o_gpio_oe[p] && o_gpio[p])`).
+3. **Wishbone**: Wishbone B4 slave handshake termination and single-cycle ACK assertion.
+4. **TimingZeroJitter**: Zero-jitter microcode timing determinism and sidecar countdown precision.
+5. **CallStack**: 4-deep hardware LIFO call stack semantics and DJNZ loop integrity.
+6. **ALU**: 8-opcode micro-ALU arithmetic and CRC-32 step verification.
+7. **GlitchMitM**: Fault injection pulse duration, active polarity, and pin isolation.
+8. **BIST**: PRBS-7 Galois LFSR non-zero state progression and loopback routing.
+
+### Running Formal Verification
+From the root directory on Windows:
+```cmd
+:: Run individual suite
+.\scripts\run_formal.bat BusSafety
+
+:: Run full master suite (8 suites: BMC, k-induction, reachability)
+.\scripts\run_formal.bat all
+```
+
+See [Task 30 Documentation](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task30.md) for full formal specifications, mathematical invariants, and proof details.

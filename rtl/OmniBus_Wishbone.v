@@ -10,7 +10,7 @@
 // License     : MIT License
 // =============================================================================
 
-`default_nettype none
+`default_nettype wire
 `timescale 1ns/1ps
 
 module OmniBus_Wishbone #(
