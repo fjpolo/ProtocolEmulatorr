@@ -299,10 +299,11 @@ while True:
 1. **Milestone 1: Core Assembler (`omnibus-as` / `python/omnibus_asm.py`) — [DELIVERED & SILICON-PROVEN]**
    - Two-pass assembler, delay packing, instruction encoding, `.hex` and C/Verilog header generation.
    - Comprehensive ISA coverage (Tasks 01 through 24): UART, SPI, I2C, 1-Wire, USB 1.1, CAN 2.0, Ethernet 10BASE-T, Audio APU, IEEE 1149.1 JTAG, ARM SWD, and Quad-SPI/Octal-SPI memory controllers.
-   - Validated against 72 automated Cocotb testcases (100% pass rate).
-2. **Milestone 2: Simulator & Waveform Engine (`omnibus-sim`)**
-   - Cycle-accurate simulator with VCD export and automated Sigrok decoder harness.
+   - Validated against 98 automated Cocotb testcases (100% pass rate).
+2. **Milestone 2: Web IDE, Simulator & Waveform Engine (`web_ide/` / OmniBus Studio) — [DELIVERED & VERIFIED]**
+   - Task 31 delivers **OmniBus Studio**: an interactive in-browser IDE with cycle-accurate silicon emulation, multi-channel logic analyzer canvas, VCD export, real-time Web Audio API PDM synthesizer, and WebSerial physical board flasher.
 3. **Milestone 3: High-Level Protocol Compiler (`omnibus-cc`)**
    - Python declarative DSL for generating UART, SPI, and I2C microcode.
-4. **Milestone 4: Host Driver and Profiler Interface (`omnibus-ctl`)**
-   - Microcode loader and runtime streaming library tested on Tang Console 60K and Nano 20K.
+4. **Milestone 4: Host Driver and Profiler Interface (`omnibus-ctl` / `python/omnibus_loader.py`) — [DELIVERED & HARDWARE-TESTED]**
+   - In-system microcode loader and runtime streaming library tested on Tang Console 60K, Tang Nano 20K, and Tang Nano 9K.
+

@@ -19,7 +19,17 @@ Most protocol solutions fall into one of two extremes:
 ### OmniBus Lite: Foundational Core Architecture (Milestone v1.0)
 Tasks 01 through 24 deliver **OmniBus Lite**—the fully verified, production-ready foundation of the OmniBus processor family. It integrates all core state serialization engines, hardware protocol assists, multi-lane Flash controllers, audio synthesizers, debug TAP controllers, and micro-ALU in ~21k standard cells with **100% regression pass rate (72 self-checking Cocotb testcases)**.
 
+### OmniBus SoC & Formal Toolchain Suite (Milestone v1.1)
+Tasks 25 through 31 deliver the complete industrial-grade SoC extension:
+* **Wishbone B4 Architecture & Autonomous Scatter-Gather DMA** (Tasks 25 & 26)
+* **Hardware Waveform Profiler & Auto-Baud Histogrammer** (Task 27)
+* **Full-Speed USB 1.1 Serial Interface Engine (SIE)** (Task 28)
+* **On-Chip Self-Play Virtual Crossbar & BIST Engine** (Task 29)
+* **Mathematical Formal Verification Suite (SymbiYosys / SVA)** (Task 30)
+* **OmniBus Studio Interactive Web IDE & Silicon Emulator** (Task 31)
+
 ### Enter OmniBus
+
 **OmniBus** (from the Latin *omnibus*, meaning "for all") is designed from the ground up not merely as a passive transceiver, but as an **Active Hardware Hacker's Swiss-Army Knife**: an autonomous protocol detective, a wire-speed Man-in-the-Middle (MitM) packet mutator, a cycle-accurate glitch/fault fuzzer, and a chameleon emulator capable of shapeshifting into virtually any digital communication standard—from classic industrial buses to retro console gamepads, automotive CAN, and chiptune sound synthesizers.
 
 ```mermaid

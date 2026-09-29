@@ -9,20 +9,31 @@
 // =============================================================================
 
 export class OmniBusAssembler {
-    constructor(clkFreqHz = 50000000) {
+    constructor(clkFreqHz = 50000000, defaultBaud = 115200) {
         this.clkFreqHz = clkFreqHz;
+        this.baud = defaultBaud;
         this.reset();
     }
 
     reset() {
         this.symbols = {};
         this.constants = {};
-        this.pinAliases = {};
+        this.pinAliases = {
+            "MOSI": 0, "TX": 0, "TX_PIN": 0, "PIN0": 0, "P0": 0, "UIO0": 0, "UIO[0]": 0,
+            "SCK":  1, "SCL": 1, "SCL_PIN": 1, "PIN1": 1, "P1": 1, "UIO1": 1, "UIO[1]": 1,
+            "CS":   2, "CS_N": 2, "CSN": 2, "DIN": 2, "PIN2": 2, "P2": 2, "UIO2": 2, "UIO[2]": 2,
+            "MISO": 3, "RX": 3, "RX_PIN": 3, "JOY_PIN": 3, "PIN3": 3, "P3": 3, "UIO3": 3, "UIO[3]": 3,
+            "SDA":  0, "SDA_PIN": 0,
+            "AUDIO_OUT": 4, "PIN4": 4, "P4": 4, "UIO4": 4, "UIO[4]": 4,
+            "GLITCH_TRIG": 5, "PIN5": 5, "P5": 5, "UIO5": 5, "UIO[5]": 5,
+            "PIN6": 6, "P6": 6, "UIO6": 6, "UIO[6]": 6,
+            "PIN7": 7, "P7": 7, "UIO7": 7, "UIO[7]": 7
+        };
         this.errors = [];
         this.warnings = [];
-        this.lines = [];
-        this.machineCode = []; // Array of 16-bit numbers
-        this.debugMap = [];    // Map from PC to line index
+        this.machineCode = [];
+        this.debugMap = [];
+        this.entryLabel = null;
         this.entryPoint = 0;
     }
 
@@ -176,17 +187,16 @@ export class OmniBusAssembler {
         this.reset();
         const rawLines = sourceCode.split(/\r?\n/);
 
-        // Preprocess lines: strip comments, trim, extract labels
+        // Preprocess lines: strip comments, trim, extract labels and assignments
         const parsedLines = [];
         let currentPC = 0;
+        let inPinsSection = false;
 
         for (let i = 0; i < rawLines.length; i++) {
             let line = rawLines[i].trim();
-            // Remove comments (; or //)
-            const commentIdx = line.search(/;|(\/\/)/);
-            let comment = "";
+            // Remove comments (; or // or #)
+            const commentIdx = line.search(/;|(\/\/)|#/);
             if (commentIdx !== -1) {
-                comment = line.substring(commentIdx);
                 line = line.substring(0, commentIdx).trim();
             }
 
@@ -195,7 +205,7 @@ export class OmniBusAssembler {
                 continue;
             }
 
-            // Directives (.clock, .pins, .const, .org, .entry)
+            // Directives (.clock, .pins, .const, .equ, .org, .entry, .bank)
             if (line.startsWith(".")) {
                 const parts = line.split(/\s+/);
                 const dir = parts[0].toLowerCase();
@@ -208,30 +218,55 @@ export class OmniBusAssembler {
                         this.clkFreqHz = parseFloat(val) * 1e3;
                     } else if (val.toLowerCase().endsWith("hz")) {
                         this.clkFreqHz = parseFloat(val);
+                    } else {
+                        this.clkFreqHz = this.parseValue(val);
                     }
-                } else if (dir === ".const") {
+                } else if (dir === ".baud") {
+                    this.baud = this.parseValue(parts[1]);
+                } else if (dir === ".const" || dir === ".equ") {
                     const cName = parts[1];
                     const cVal = this.parseValue(parts[2]);
                     this.constants[cName] = cVal;
+                    this.constants[cName.toUpperCase()] = cVal;
                 } else if (dir === ".entry") {
                     this.entryLabel = parts[1];
                 } else if (dir === ".org") {
                     currentPC = this.parseValue(parts[1]);
+                } else if (dir === ".bank") {
+                    const bankNum = this.parseValue(parts[1]);
+                    currentPC = (bankNum & 3) * 32;
                 } else if (dir === ".pins") {
-                    // Handled if needed
+                    inPinsSection = true;
                 }
 
                 parsedLines.push({ raw: rawLines[i], lineNum: i + 1, isDirective: true, text: line });
                 continue;
             }
 
-            // Check for label definition
+            // Check for assignment: alias = pin / expr (e.g. tx_pin = uio[0], T0H = 17)
+            const assignMatch = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
+            if (assignMatch) {
+                const varName = assignMatch[1];
+                const rhs = assignMatch[2].trim();
+                const pinVal = this.resolvePinRhs(rhs);
+                
+                this.pinAliases[varName] = pinVal;
+                this.pinAliases[varName.toUpperCase()] = pinVal;
+                this.constants[varName] = pinVal;
+                this.constants[varName.toUpperCase()] = pinVal;
+
+                parsedLines.push({ raw: rawLines[i], lineNum: i + 1, isDirective: true, text: line });
+                continue;
+            }
+
+            // Check for label definition: label:
             let label = null;
-            const labelMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*):/);
+            const labelMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*):(.*)$/);
             if (labelMatch) {
                 label = labelMatch[1];
                 this.symbols[label] = currentPC;
-                line = line.substring(labelMatch[0].length).trim();
+                this.symbols[label.toUpperCase()] = currentPC;
+                line = labelMatch[2].trim();
             }
 
             if (!line) {
@@ -247,6 +282,11 @@ export class OmniBusAssembler {
                 pc: currentPC
             });
             currentPC++;
+        }
+
+        // Resolve entry point
+        if (this.entryLabel && (this.entryLabel in this.symbols)) {
+            this.entryPoint = this.symbols[this.entryLabel];
         }
 
         // Pass 2: Instruction Encoding
@@ -285,6 +325,17 @@ export class OmniBusAssembler {
             hexListing: this.getHexListing(),
             verilogHex: this.getVerilogMemHex()
         };
+    }
+
+    resolvePinRhs(rhs) {
+        const s = rhs.trim().toUpperCase();
+        if (s.startsWith("UIO[") && s.endsWith("]")) {
+            return parseInt(s.replace(/\D/g, ""), 10) || 0;
+        }
+        if (s.startsWith("PIN") || s.startsWith("P")) {
+            return parseInt(s.replace(/\D/g, ""), 10) || 0;
+        }
+        return this.parseValue(rhs);
     }
 
     encodeInstruction(text, pc, lineNum) {
@@ -337,14 +388,12 @@ export class OmniBusAssembler {
 
         switch (mnemonic) {
             case "NOP": {
-                // NOP [delay]: [15:12]=0, [11:7]=delay[4:0] (or 9-bit delay in standard format), [6:0]=0
                 const d5 = delay & 0x1F;
                 word = (opcode << 12) | (d5 << 7);
                 break;
             }
 
             case "OUT": {
-                // OUT pin, count [, delay] or OUT count [, delay]
                 let pin = 0;
                 let count = 8;
                 if (args.length >= 2) {
@@ -360,7 +409,6 @@ export class OmniBusAssembler {
             }
 
             case "IN": {
-                // IN pin, count [, delay]
                 let pin = 0;
                 let count = 8;
                 if (args.length >= 2) {
@@ -376,7 +424,6 @@ export class OmniBusAssembler {
             }
 
             case "SET": {
-                // SET pin, val [, delay]
                 let pin = 0;
                 let val = 0;
                 if (args.length >= 2) {
@@ -392,7 +439,6 @@ export class OmniBusAssembler {
             }
 
             case "WAIT": {
-                // WAIT pin, val [, delay]
                 let pin = 0;
                 let val = 1;
                 if (args.length >= 2) {
@@ -408,7 +454,6 @@ export class OmniBusAssembler {
             }
 
             case "PINMAP": {
-                // PINMAP tx, rx, sck, cs (or operand)
                 let operand = 0;
                 if (args.length >= 4) {
                     const tx = this.resolvePin(args[0]) & 0x3;
@@ -424,7 +469,6 @@ export class OmniBusAssembler {
             }
 
             case "CFG_OD": {
-                // CFG_OD mask
                 const mask = args.length > 0 ? this.evalExpression(args[0]) : 0xFF;
                 word = (opcode << 12) | (mask & 0xFF);
                 break;
@@ -432,7 +476,6 @@ export class OmniBusAssembler {
 
             case "DJNZ":
             case "LOOP": {
-                // DJNZ LC0/LC1, target
                 let lc = 0;
                 let target = 0;
                 if (args.length >= 2) {
@@ -441,13 +484,12 @@ export class OmniBusAssembler {
                 } else if (args.length === 1) {
                     target = this.resolveTarget(args[0]);
                 }
-                const subop = 0; // DJNZ
+                const subop = 0;
                 word = (opcode << 12) | (subop << 10) | (lc << 9) | (target & 0x7F);
                 break;
             }
 
             case "SET_LC": {
-                // SET_LC LC0/LC1, val
                 let lc = 0;
                 let val = 0;
                 if (args.length >= 2) {
@@ -456,13 +498,12 @@ export class OmniBusAssembler {
                 } else if (args.length === 1) {
                     val = this.evalExpression(args[0]);
                 }
-                const subop = 1; // SET_LC
+                const subop = 1;
                 word = (opcode << 12) | (subop << 10) | (lc << 9) | (val & 0x1FF);
                 break;
             }
 
             case "JMP": {
-                // JMP [cond,] target
                 let cond = 0;
                 let target = 0;
                 if (args.length >= 2) {
@@ -476,7 +517,6 @@ export class OmniBusAssembler {
             }
 
             case "PULL": {
-                // PULL [BLOCK]
                 const isBlock = args.length > 0 && args[0].toUpperCase().includes("BLOCK");
                 const operand = isBlock ? 0x1 : 0x0;
                 word = (opcode << 12) | (operand & 0xFFF);
@@ -484,7 +524,6 @@ export class OmniBusAssembler {
             }
 
             case "PUSH": {
-                // PUSH [BLOCK]
                 const isBlock = args.length > 0 && args[0].toUpperCase().includes("BLOCK");
                 const operand = isBlock ? 0x1 : 0x0;
                 word = (opcode << 12) | (operand & 0xFFF);
@@ -492,7 +531,6 @@ export class OmniBusAssembler {
             }
 
             case "CALL": {
-                // CALL target
                 const target = args.length > 0 ? this.resolveTarget(args[0]) : 0;
                 word = (opcode << 12) | (target & 0x7F);
                 break;
@@ -503,7 +541,6 @@ export class OmniBusAssembler {
                 break;
             }
 
-            // ALU Operations (Opcode 0xB)
             case "ALU":
             case "ADD":
             case "SUB":
@@ -538,7 +575,6 @@ export class OmniBusAssembler {
                 break;
             }
 
-            // Hardware CRC Operations (Opcode 0xE)
             case "CRC":
             case "CRC_INIT":
             case "CRC_BYTE":
@@ -567,9 +603,7 @@ export class OmniBusAssembler {
                 break;
             }
 
-            // Hardware Assists & Extensions (Opcode 0xF)
             default: {
-                // Assist sub-operations
                 let assistSub = 0;
                 let val = args.length > 0 ? this.evalExpression(args[0]) : 0;
 
@@ -598,13 +632,12 @@ export class OmniBusAssembler {
         if (!pinStr) return 0;
         const s = pinStr.trim().toUpperCase();
         if (s in this.pinAliases) return this.pinAliases[s];
-        if (s.startsWith("UIO[")) return parseInt(s.replace(/\D/g, "")) || 0;
-        if (s.startsWith("PIN")) return parseInt(s.substring(3)) || 0;
-        if (s.startsWith("P")) return parseInt(s.substring(1)) || 0;
-        if (s === "TX" || s === "MOSI" || s === "SDA" || s === "D_PLUS") return 0;
-        if (s === "RX" || s === "MISO" || s === "SCL" || s === "D_MINUS") return 1;
-        if (s === "SCK" || s === "CLK") return 2;
-        if (s === "CS" || s === "CS_N") return 3;
+        if (s.startsWith("UIO[") && s.endsWith("]")) return parseInt(s.replace(/\D/g, ""), 10) || 0;
+        if (s.startsWith("PIN") || s.startsWith("P")) return parseInt(s.replace(/\D/g, ""), 10) || 0;
+        if (s === "TX" || s === "MOSI" || s === "SDA" || s === "D_PLUS" || s === "DP") return 0;
+        if (s === "RX" || s === "MISO" || s === "SCL" || s === "D_MINUS" || s === "DM") return 1;
+        if (s === "SCK" || s === "CLK" || s === "DIN") return 2;
+        if (s === "CS" || s === "CS_N" || s === "JOY_PIN") return 3;
         const v = this.parseValue(pinStr);
         return isNaN(v) ? 0 : v;
     }
@@ -622,6 +655,8 @@ export class OmniBusAssembler {
     resolveTarget(targetStr) {
         const s = targetStr.trim();
         if (s in this.symbols) return this.symbols[s];
+        const u = s.toUpperCase();
+        if (u in this.symbols) return this.symbols[u];
         return this.evalExpression(s) & 0x7F;
     }
 
@@ -629,7 +664,10 @@ export class OmniBusAssembler {
         if (!expr) return 0;
         const s = expr.trim();
         if (s in this.constants) return this.constants[s];
+        const u = s.toUpperCase();
+        if (u in this.constants) return this.constants[u];
         if (s in this.symbols) return this.symbols[s];
+        if (u in this.symbols) return this.symbols[u];
         return this.parseValue(s);
     }
 
