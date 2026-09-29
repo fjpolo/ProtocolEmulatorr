@@ -872,3 +872,18 @@ The ProtocolEmulator hardware architecture is formally proven using **SymbiYosys
 
 For complete invariant definitions and reproduction commands, refer to [`documentation/task30.md`](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task30.md).
 
+---
+
+## 14. OmniBus Studio Web IDE & Behavioral Silicon Emulator
+
+The OmniBus architecture includes an in-browser graphical development environment located in [`web_ide/`](file:///c:/Workspace/ASIC/ProtocolEmulator/web_ide/):
+
+- **In-Browser Macro Assembler**: Real-time compilation of 16-bit microcode with label resolution, constant folding, and sidecar delay expansion.
+- **Cycle-Accurate Micro-Engine**: Behavioral simulation of all 16 opcodes, hardware assists, 4-level call stack, ALU flags, and open-drain GPIO states.
+- **Interactive Logic Analyzer**: Multi-channel canvas rendering digital traces for pins `UIO[7:0]`, internal glitch signals, and SERDES activity with zoom, pan, and $\Delta t$ delta cursors.
+- **WebSerial Physical Flasher**: In-system programming to physical FPGA development boards (**Tang Console 60K**, **Tang Nano 20K**, **Tang Nano 9K**) via the `OmniBootloader` protocol.
+- **Web Audio API Bridge**: Live audio synthesis from simulated PDM DAC and Chiptune square-wave tones.
+
+Refer to [`documentation/task31.md`](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task31.md) for detailed architecture and usage guides.
+
+
