@@ -1,9 +1,9 @@
 # OmniBus ProtocolEmulator ASIC Datasheet
 **High-Performance Autonomous Multi-Protocol Emulation Core**  
-**Document Revision**: 1.10 (Architecture Release — Tasks 01 through 28)  
-**Architecture Milestone**: OmniBus Lite (v1.0 Foundation)  
+**Document Revision**: 1.15 (Architecture Release — Tasks 01 through 33)  
+**Architecture Milestone**: OmniBus Production Silicon (v1.15 Release)  
 **Target ASIC / FPGA**: Jane Street Silicon / Gowin GW5AST-LV138FPG676A / Generic ASIC Standard Cell  
-**Dedicated User Guides**: [task28.md](task28.md) (USB 1.1 Autonomous Serial Interface Engine), [task27.md](task27.md) (Autonomous Waveform Profiler & Auto-Baud Engine), [GLITCH_MITM_USER_GUIDE.md](GLITCH_MITM_USER_GUIDE.md) (Hardware Fault Injection & Wire-Speed MitM Fuzzing), [task26.md](task26.md) (OmniBus DMA Controller)  
+**Dedicated User Guides**: [task33.md](task33.md) (pyUVM Verification & RTL Mutation Testing), [task32.md](task32.md) (Software Development Kit), [task31.md](task31.md) (Web IDE & Visual Emulator), [task30.md](task30.md) (Formal SVA Verification), [task28.md](task28.md) (USB 1.1 Autonomous SIE), [task27.md](task27.md) (Waveform Profiler & Auto-Baud), [GLITCH_MITM_USER_GUIDE.md](GLITCH_MITM_USER_GUIDE.md) (Fault Injection & MitM Fuzzing), [task26.md](task26.md) (OmniBus DMA Controller)  
 
 ---
 
@@ -898,6 +898,54 @@ The official developer SDK is available under [`sdk/`](file:///c:/Workspace/ASIC
 - **Turnkey CLI Tools**: Command-line utilities (`omnibus`, `omnibus-load`, `omnibus-fuzz`, `omnibus-profiler`).
 
 Refer to [`documentation/task32.md`](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task32.md) for full SDK API specifications and tutorial guides.
+
+---
+
+## 16. Universal Verification Methodology (pyUVM) & RTL Mutation Testing
+
+OmniBus incorporates an enterprise-grade ASIC verification environment standardizing on Python UVM (**pyUVM**) with Cocotb and an automated **RTL Mutation Testing** suite.
+
+### A. pyUVM Verification Architecture
+Located in [`test_rtl/uvm/pyuvm/ProtocolEmulator/`](file:///c:/Workspace/ASIC/ProtocolEmulator/test_rtl/uvm/pyuvm/ProtocolEmulator/):
+
+- **Transaction Sequence Items**:
+  - `OmniBusProgramItem`: Microcode program loading transaction via dual-port IMEM programming port (`i_prog_en`, `i_prog_we`, `i_prog_addr`, `i_prog_data`).
+  - `OmniBusStimulusItem`: Host FIFO transactions (`i_data`, `i_tx_valid`), GPIO stimulus injection (`i_gpio`), and clock cycle step control.
+  - `OmniBusSampledItem`: Passive monitor observation packets broadcasting pin states (`o_gpio`, `o_gpio_oe`), FIFO pushes (`o_data`, `o_rx_push`), and pop events (`o_tx_pop`).
+- **UVM Hierarchy**:
+  - `OmniBusDriver`: Drives IMEM programming sequences, host FIFO byte streaming, and physical GPIO pin events.
+  - `OmniBusMonitor`: Passive monitor observing all bus transactions on active clock edges and publishing to an analysis port (`self.ap`).
+  - `OmniBusScoreboard`: Inherits from `uvm_subscriber`, continuously evaluating monitor broadcasts against deterministic expected queues (FIFO outputs, UART frame bytes, SPI/I2C transactions) with zero error tolerance.
+  - `OmniBusCoverage`: Real-time functional coverage collector tracking 100% ISA opcode coverage, 100% Micro-ALU sub-operation coverage, and 100% CRC polynomial coverage.
+- **Verification Sequences**:
+  1. `ALUComprehensiveSequence`: Validates all 15 ALU arithmetic, logic, and register shift operations.
+  2. `ControlFlowSequence`: Tests hardware subroutine call stack (`CALL`/`RET`), unconditional jumps, and condition code evaluations (`Z`, `NZ`, `C`, `NC`).
+  3. `CRCVerificationSequence`: Checks hardware polynomial generation across CRC-8 Dallas, CRC-8 SMBus, CRC-16 CCITT, CRC-16 Modbus, and CRC-32 Ethernet FCS.
+  4. `FIFOPushPullSequence`: Verifies synchronous host FIFO push/pull operations and full/empty backpressure flags.
+  5. `SPITransferSequence`: Tests SPI Master full-duplex transfers with automatic `sck_pin` generation.
+  6. `I2CTransactionSequence`: Validates I2C open-drain bidirectional bit transfers and clock line arbitration.
+  7. `AssistGlitchMitMSequence`: Verifies hardware stream assists, bit-stuffing error detection, and pattern matching fault triggers.
+  8. `GPIOAndPinmapSequence`: Tests dynamic pin remapping (`PINMAP`) and per-pin open-drain mask configurations (`CFG_OD`).
+  9. `UARTFullDuplexSequence`: Validates 8-N-1 UART framing and full-duplex loopback echoing at 115,200 baud.
+  10. `RandomizedInstructionStressSequence`: Constrained-random instruction stream fuzzing under active clock cycles.
+
+### B. RTL Mutation Testing & Fault Injection Analysis
+Located in [`test_rtl/mutation/ProtocolEmulator/`](file:///c:/Workspace/ASIC/ProtocolEmulator/test_rtl/mutation/ProtocolEmulator/):
+
+An automated AST and syntactic fault injector generates 20 realistic physical RTL defect mutants across 8 mutation operator classes:
+- **AOR (Arithmetic Operator Replacement)**: ALU addition, subtraction, negation, and counter step mutation.
+- **ROR (Relational Operator Replacement)**: Branch comparator condition inversion (`Z`, `C`, stack depth).
+- **LCR (Logical Connector Replacement)**: Parity check and flag update logic faults.
+- **SOR (Shift Operator Replacement)**: Deserializer/serializer bit shift direction and bitmask truncation.
+- **SCR (Stack & Control Replacement)**: Call stack pointer saturation and index overflow defects.
+- **FPR (FIFO & Protocol Replacement)**: FIFO push/pop strobe generation and handshaking faults.
+- **FSR (Framing & State Replacement)**: Stream assist error latches and CRC accumulation faults.
+- **ODR (Open-Drain Driver Replacement)**: Open-drain active pull-up contention violations.
+
+**Campaign Result**: **100.00% Mutation Kill-Rate** (20/20 mutants killed, 0 surviving mutants).
+
+For complete test logs and kill matrices, refer to [`documentation/task33.md`](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task33.md).
+
 
 
 

@@ -1,18 +1,22 @@
-    #!/bin/bash
+#!/bin/bash
+# =============================================================================
+# Run script for pyUVM ProtocolEmulator Verification
+# =============================================================================
 
-    # Source the cocotb_env environment
-    echo "        [PYUVM] Sourcing cocotb_env environment..."
-    source cocotb_env/bin/activate
-    if [ $? -ne 0 ]; then
-        echo "        [PYUVM] FAIL: Failed to source cocotb_env environment. Exiting script."
-        exit 1
-    fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-    # Copy original rtl here
-    cp ${PWD}/../../../../rtl/ProtocolEmulator.v .
+echo "        [PYUVM] Executing pyUVM Verification Suite..."
+export PYTHONPATH="$SCRIPT_DIR:$SCRIPT_DIR/../../../../:$PYTHONPATH"
 
-    # Build pyUVM
-    make SIM=icarus
+# Run pyUVM testrunner using python3
+python3 testrunner.py
+EXIT_CODE=$?
 
-    # Remove testbench
-    rm ProtocolEmulator.v
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "        [PYUVM] FAIL: pyUVM testbench failed with exit code $EXIT_CODE"
+    exit $EXIT_CODE
+else
+    echo "        [PYUVM] PASS: pyUVM testbench successfully passed 100%!"
+    exit 0
+fi

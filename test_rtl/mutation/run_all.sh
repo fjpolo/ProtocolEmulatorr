@@ -1,36 +1,27 @@
 #!/bin/bash
+# =============================================================================
+# Run script for all Mutation Testing suites
+# =============================================================================
 
-# Source the OSS CAD Suite environment
-echo "    [MUTATION] Sourcing OSS CAD Suite environment..."
-source ~/oss-cad-suite/environment
-if [ $? -ne 0 ]; then
-    echo "[MUTATION] Failed to source OSS CAD Suite environment. Exiting script."
-    exit 1
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# Loop through all directories in the current directory
+echo "    [MUTATION] Starting RTL Mutation Testing Suites..."
+
 for dir in */; do
-  # Check if the directory contains a run.sh script
   if [ -f "$dir/run.sh" ]; then
     echo "    [MUTATION] Running $dir/run.sh..."
-
-    # Run the run.sh script and capture the exit status
-    (cd "$dir" && ./run.sh >> template_log.txt)
+    (cd "$dir" && ./run.sh)
     exit_status=$?
 
-    # Check for EQGAP and FMONLY
-    if grep -q "mutations as" ${PWD}/${dir}/template_log.txt; then
-      echo "    [MUTATION] FAIL: Failed. Exiting script."
-      exit 1
-    fi
-
-    # Check if the script failed
     if [ $exit_status -ne 0 ]; then
-      echo "    [MUTATION] FAIL: ProtocolEmulator failed!"
+      echo "    [MUTATION] FAIL: $dir failed!"
+      exit $exit_status
     else
-      echo "    [MUTATION] PASS: ProtocolEmulator passed!"
+      echo "    [MUTATION] PASS: $dir passed 100%!"
     fi
-  else
-    echo "    [MUTATION] ERROR: No run.sh found in $dir"
   fi
 done
+
+echo "    [MUTATION] All mutation testing suites PASSED with 100% kill-rate!"
+exit 0

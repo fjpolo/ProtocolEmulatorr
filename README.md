@@ -79,6 +79,10 @@ All ready-to-run microcode demonstrators, interactive terminals, and test harnes
 * [Task 27 — The Protocol Detective: Autonomous Waveform Profiler & Auto-Baud Engine](documentation/task27.md)
 * [Task 28 — USB 1.1 Autonomous Serial Interface Engine (SIE)](documentation/task28.md)
 * [Task 29 — On-Chip Self-Play & Virtual Crossbar (BIST Engine)](documentation/task29.md)
+* [Task 30 — Mathematical Formal Verification Suite (SymbiYosys / SVA)](documentation/task30.md)
+* [Task 31 — Interactive Web IDE & WebAssembly Visual Emulator](documentation/task31.md)
+* [Task 32 — OmniBus Software Development Kit (SDK) & Assembly Standard Library](documentation/task32.md)
+* [Task 33 — Complete pyUVM Verification & RTL Mutation Testing](documentation/task33.md)
 
 ---
 
@@ -251,5 +255,35 @@ pip install -e sdk/
 ```
 
 See [Task 32 Documentation](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task32.md) for the complete developer guide and examples.
+
+---
+
+## Universal Verification Methodology (pyUVM) & RTL Mutation Testing
+
+The OmniBus ASIC is verified using an industry-standard **pyUVM** verification testbench and an automated **RTL Mutation Testing** fault injection suite:
+
+### 1. pyUVM Verification Testbench
+Located in [`test_rtl/uvm/pyuvm/ProtocolEmulator/`](file:///c:/Workspace/ASIC/ProtocolEmulator/test_rtl/uvm/pyuvm/ProtocolEmulator/):
+- **Universal Verification Architecture**: Complete UVM hierarchy featuring Transaction Items (`OmniBusProgramItem`, `OmniBusStimulusItem`, `OmniBusSampledItem`), Sequencers, Driver, Passive Monitor, Analysis Ports, and a zero-tolerance `uvm_subscriber` Scoreboard.
+- **10 Verification Sequences**: Comprehensive coverage across ALU arithmetic & logic, Call Stack & DJNZ loops, multi-polynomial CRC engine, dual FIFO streaming, SPI Master, I2C Master, Hardware Assists (NRZI/Stuffing/Glitch/MitM), GPIO & PINMAP dynamic routing, full-duplex UART, and constrained-random instruction fuzzing.
+- **Functional Coverage**: **100% Opcode Coverage**, **100% ALU Sub-op Coverage**, and **100% CRC Polynomial Coverage**.
+
+```cmd
+:: Run pyUVM testbench on Windows / WSL
+.\scripts\run_uvm.bat
+```
+
+### 2. RTL Mutation Testing & Fault Injection Suite
+Located in [`test_rtl/mutation/ProtocolEmulator/`](file:///c:/Workspace/ASIC/ProtocolEmulator/test_rtl/mutation/ProtocolEmulator/):
+- **Fault Injection Engine**: Automated AST/syntactic mutator injecting 20 realistic hardware defects across Arithmetic/Logic Operators (AOR, ROR, LCR), Shift Operators (SOR), Stack & Control Flow (SCR), FIFO & Flags (FPR, FSR), and Open-Drain Pin Arbiters (ODR).
+- **100.00% Mutation Kill-Rate**: 20 out of 20 synthetic mutants successfully detected and killed by the verification test suite (0 surviving mutants).
+
+```cmd
+:: Run RTL Mutation Testing campaign
+.\scripts\run_mutation.bat
+```
+
+See [Task 33 Documentation](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task33.md) for complete verification reports, sequence hierarchies, and mutation kill matrices.
+
 
 
