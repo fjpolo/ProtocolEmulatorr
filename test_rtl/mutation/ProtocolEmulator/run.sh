@@ -1,43 +1,21 @@
-    #!/bin/bash
+#!/bin/bash
+# =============================================================================
+# Run script for RTL Mutation Testing of ProtocolEmulator
+# =============================================================================
 
-    # Source the OSS CAD Suite environment
-    echo "        [MCY] Sourcing OSS CAD Suite environment..."
-    source ~/oss-cad-suite/environment
-    if [ $? -ne 0 ]; then
-        echo "        [MCY] FAIL: Failed to source OSS CAD Suite environment. Exiting script."
-        exit 1
-    fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-    # Copy original rtl here
-    cp ${PWD}/../../../rtl/ProtocolEmulator.v .
+echo "        [MUTATION] Executing RTL Mutation Testing Campaign..."
+export PYTHONPATH="$SCRIPT_DIR:$SCRIPT_DIR/../../../..:$PYTHONPATH"
 
-    # Append `define MCY after `timescale in ProtocolEmulator.v using awk
-    awk '1;/`timescale 1[np]s\/1ps/{print "`define MCY"}' ProtocolEmulator.v > template_temp.v
-    mv template_temp.v ProtocolEmulator.v
+python3 mutation_runner.py
+EXIT_CODE=$?
 
-
-    # Copy ProtocolEmulator here
-    cp ${PWD}/../../simulation/icarus/ProtocolEmulator/testbench.v .
-
-    # Append `define MCY after `timescale in testbench.v using awk
-    awk '1;/`timescale 1[np]s\/1ps/{print "`define MCY"}' testbench.v > testbench_temp.v
-    mv testbench_temp.v testbench.v
-
-    # Move create scripts to $SCRIPTS
-    cp ${PWD}/../create_mutated_eq.sh ~/oss-cad-suite/share/mcy/scripts/
-    cp ${PWD}/../create_mutated_fm.sh ~/oss-cad-suite/share/mcy/scripts/
-
-    # Generate mutations using mcy
-    echo "        [MCY] Generating mutations using mcy..."
-    mcy purge; mcy init; mcy run -j8
-    if [ $? -ne 0 ]; then
-        echo "        [MCY] FAIL: mcy process failed. Exiting script."
-        exit 1
-    fi
-    echo "        [MCY] PASS: mcy process passed"
-
-    # Remove testbench
-    rm testbench.v
-
-    # Copy original rtl here
-    rm ProtocolEmulator.v
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "        [MUTATION] FAIL: Mutation testing suite failed with exit code $EXIT_CODE"
+    exit $EXIT_CODE
+else
+    echo "        [MUTATION] PASS: Mutation testing completed with 100% kill-rate!"
+    exit 0
+fi

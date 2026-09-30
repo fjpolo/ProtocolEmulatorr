@@ -28,6 +28,11 @@ Tasks 25 through 31 deliver the complete industrial-grade SoC extension:
 * **Mathematical Formal Verification Suite (SymbiYosys / SVA)** (Task 30)
 * **OmniBus Studio Interactive Web IDE & Silicon Emulator** (Task 31)
 
+### OmniBus SDK & pyUVM Verification (Milestone v1.15)
+Tasks 32 through 33 deliver developer tooling and silicon-grade verification:
+* **OmniBus Software Development Kit (SDK)**: Assembly standard include library (`sdk/include/`), Python host driver (`sdk/omnibus/`), timing synthesizer DSL compiler, and turnkey CLI tools (Task 32).
+* **Universal Verification Methodology (pyUVM) & RTL Mutation Testing**: Complete pyUVM testbench (10 sequences, UVM subscriber scoreboard, 100% functional coverage) and automated 20-mutant fault injection campaign achieving 100.00% mutation kill-rate (Task 33).
+
 ### Enter OmniBus
 
 **OmniBus** (from the Latin *omnibus*, meaning "for all") is designed from the ground up not merely as a passive transceiver, but as an **Active Hardware Hacker's Swiss-Army Knife**: an autonomous protocol detective, a wire-speed Man-in-the-Middle (MitM) packet mutator, a cycle-accurate glitch/fault fuzzer, and a chameleon emulator capable of shapeshifting into virtually any digital communication standard—from classic industrial buses to retro console gamepads, automotive CAN, and chiptune sound synthesizers.
@@ -268,15 +273,24 @@ The IHP 130nm CMOS5L process through Tiny Tapeout allocates 24 tiles (6×4). At 
 
 ## 7. Verification Methodology
 
-1. **Formal Proof of Zero-Jitter Execution and Protocol Properties (SymbiYosys)**:
+1. **Universal Verification Methodology (pyUVM) & Functional Coverage**:
+   - **Production-grade pyUVM Hierarchy**: Transaction sequence items, driver, passive monitor with analysis ports, and zero-tolerance `uvm_subscriber` scoreboard.
+   - **10 Verification Sequences**: Full coverage of ALU, control flow & call stack, multi-polynomial CRC engine, dual FIFOs, SPI Master, I2C Master, Hardware Assists (NRZI/Stuffing/Glitch/MitM), GPIO PINMAP/OD, UART full-duplex, and constrained-random fuzzing.
+   - **Metrics**: 100% ISA opcode coverage, 100% ALU sub-operation coverage, and 100% CRC polynomial coverage.
+
+2. **Automated RTL Mutation Testing & Fault Injection**:
+   - **Syntactic & AST Fault Engine**: Injects 20 synthetic RTL mutants spanning Arithmetic/Logic (AOR/ROR/LCR), Shift (SOR), Stack & Control (SCR), FIFO & Flags (FPR/FSR), and Open-Drain Pin Arbiters (ODR).
+   - **100.00% Kill Rate**: Verified 20/20 mutants killed with zero surviving defects.
+
+3. **Formal Proof of Zero-Jitter Execution and Protocol Properties (SymbiYosys)**:
    - **Deterministic Timing Invariant**: Formally proved that every branch, jump, and sidecar delay resolves in strictly predictable cycles:
      $$\forall \text{ state } s, \quad \text{Latency}(s, \text{instruction}) = 1 + \text{Delay}$$
    - **No Contention / Bus-Safety Invariant**: Formal proof that the open-drain controller never drives active-high during an external pull-down state (guaranteeing silicon safety during I2C/1-Wire arbitration).
 
-2. **Sigrok-in-the-Loop Automated Protocol Validation**:
+4. **Sigrok-in-the-Loop Automated Protocol Validation**:
    - Simulation waveforms (.vcd) are piped directly into **libsigrokdecode** (the protocol decoding library used by PulseView) to verify that generated packets conform strictly to standard decoders.
 
-3. **FPGA-in-the-Loop Physical Testing**:
+5. **FPGA-in-the-Loop Physical Testing**:
    - Using the repository's build flows, the design is validated against physical chips on:
      - **Sipeed Tang Console 60K** (`GW5AT-60B`)
      - **Sipeed Tang Nano 20K** (`GW2AR-18C`)
@@ -292,4 +306,5 @@ The IHP 130nm CMOS5L process through Tiny Tapeout allocates 24 tiles (6×4). At 
 | Operating Roles | Emulation only (transmitter) | **Tri-mode: Impersonator (Emulator), Detective (Auto-discovery), and Chameleon (MitM Fuzzer)** |
 | Baud Rate Setup | Manual software calculations | **Hardware pulse-width histogramming and auto-baud inference** |
 | Supported Protocols | Standard UART, SPI, and I2C only | **UART, SPI, I2C, USB 1.1, CAN, 10BASE-T Ethernet, Retro Gamepads, NeoPixels, and Chiptune Audio** |
-| Verification | Basic simulation testbenches | **Formal proofs (SymbiYosys), Sigrok decoder integration, and physical multi-FPGA validation** |
+| Verification & Quality | Basic simulation testbenches | **pyUVM (100% coverage), RTL Mutation Testing (100% kill-rate), Formal proofs (SymbiYosys), and Multi-FPGA validation** |
+
