@@ -21,6 +21,17 @@
         </div>
 
         <div class="toolbar-actions">
+            <!-- Workspace Layout Preset -->
+            <div class="toolbar-group">
+                <label for="layout-mode-select" class="toolbar-label">Layout:</label>
+                <select id="layout-mode-select" class="select-control" title="Workspace Layout Preset (Editor / Waveform / Balanced)">
+                    <option value="default" selected>📐 Balanced</option>
+                    <option value="wide-editor">💻 Wide Editor (50%)</option>
+                    <option value="max-editor">📄 Maximize Editor (100%)</option>
+                    <option value="focus-waveform">📈 Focus Waveform</option>
+                </select>
+            </div>
+
             <!-- Multi-Core Topology Selector -->
             <div class="toolbar-group">
                 <label for="core-count-select" class="toolbar-label">Cores:</label>
@@ -70,22 +81,44 @@
     </header>
 
     <!-- Main Multi-Pane Workspace -->
-    <main class="main-workspace">
+    <main class="main-workspace" id="main-workspace">
         
-        <!-- Left Pane: Microcode Editor -->
-        <section class="panel editor-panel">
+        <!-- Left Pane: Microcode & Omni-C Editor -->
+        <section class="panel editor-panel" id="editor-panel">
             <div class="panel-header">
-                <div class="panel-title">
-                    <span>Microcode Source (.asm)</span>
+                <div class="panel-title" style="display: flex; align-items: center; gap: 8px;">
+                    <!-- Language Mode Switcher -->
+                    <div class="lang-switch-group">
+                        <button id="btn-mode-c" class="lang-toggle-btn active" title="Omni-C High-Level Structured C Programming">⚡ C (Omni-C)</button>
+                        <button id="btn-mode-asm" class="lang-toggle-btn" title="OmniBus 16-bit Microcode Assembly">⚙️ ASM</button>
+                    </div>
                 </div>
-                <div id="status-badge" class="status-badge ok">READY</div>
+                <div style="display: flex; align-items: center; gap: 5px;">
+                    <!-- Editor Zoom / Font Controls -->
+                    <div class="btn-group" title="Adjust Editor Font Size">
+                        <button id="btn-font-dec" class="btn btn-sm" title="Decrease Editor Font Size (A−)">A−</button>
+                        <span id="font-size-label" class="scale-badge" style="cursor: default;" title="Current Editor Font Size">13px</span>
+                        <button id="btn-font-inc" class="btn btn-sm" title="Increase Editor Font Size (A+)">A+</button>
+                    </div>
+                    <!-- Word Wrap Toggle -->
+                    <button id="btn-toggle-wrap" class="btn btn-sm" title="Toggle Word Wrap (Wrap / No-Wrap)">↩ Wrap</button>
+                    <!-- Emitted ASM & Headers -->
+                    <button id="btn-view-asm" class="btn btn-sm" title="View Emitted OmniBus Assembly from C (Ctrl+E)">📋 Emitted ASM</button>
+                    <button id="btn-view-headers" class="btn btn-sm" title="Explore Virtual Standard C Headers (<uart.h>, <spi.h>, etc.)">📚 Headers</button>
+                    <!-- Maximize Editor Toggle -->
+                    <button id="btn-maximize-editor" class="btn btn-sm btn-primary" title="Maximize Editor / Restore (Full view for writing code)">⛶ Maximize</button>
+                    <div id="status-badge" class="status-badge ok">READY</div>
+                </div>
             </div>
 
             <div class="editor-container">
                 <div id="line-numbers" class="line-numbers">1</div>
-                <textarea id="code-editor" class="code-textarea" spellcheck="false" placeholder="; Enter OmniBus multi-core microcode here..."></textarea>
+                <textarea id="code-editor" class="code-textarea" spellcheck="false" placeholder="/* Enter Omni-C code or Assembly here... */"></textarea>
             </div>
         </section>
+
+        <!-- Left Draggable Gutter Resizer -->
+        <div class="gutter-resizer gutter-vertical" id="resizer-left" title="Drag horizontally to resize Editor (Double-click to toggle Wide/Default)"></div>
 
         <!-- Center Pane: Multi-Core Execution Grid & Logic Analyzer -->
         <section class="panel center-pane">
@@ -180,11 +213,17 @@
                         <button id="btn-zoom-fit" class="btn btn-sm" title="Fit Entire Simulation Trace (Key: 0)">⤢ Fit</button>
                         <button id="btn-zoom-reset" class="btn btn-sm" title="Reset Zoom to 100% (Key: 1)">↺ 1:1</button>
                         <button id="btn-clear-cursors" class="btn btn-sm" title="Clear Measurement Cursors (Esc)">✕ Cursors</button>
+                        <button id="btn-auto-follow" class="btn btn-sm active" title="Toggle Auto-Follow live simulation execution (Key: F)">▶ Follow</button>
+                    </div>
+                    <!-- Timing Markers Quick Access -->
+                    <div class="btn-group" style="margin-left: 4px;">
+                        <button id="btn-quick-add-marker" class="btn btn-sm btn-primary" title="Add Bookmark / Marker at Primary Cursor (Key: M)">🔖 +Mark</button>
+                        <button id="btn-quick-auto-detect" class="btn btn-sm" title="Auto-Detect Hardware Events (Barriers, Spinlocks, UART/SPI edges)">⚡ Auto</button>
                     </div>
                     <!-- Sim Speed Slider -->
                     <div style="display: flex; align-items: center; gap: 6px; margin-left: 4px;">
                         <span id="speed-label" style="font-size: 10px; font-family: var(--font-mono); color: var(--text-dim);">1000 cyc/fr</span>
-                        <input type="range" id="speed-slider" min="1" max="5000" value="1000" style="width: 75px;" title="Simulation speed">
+                        <input type="range" id="speed-slider" min="1" max="5000" value="1000" style="width: 70px;" title="Simulation speed">
                     </div>
                 </div>
             </div>
@@ -193,19 +232,91 @@
                 <canvas id="waveform-canvas"></canvas>
             </div>
 
-            <!-- Console Output -->
-            <div class="console-panel">
-                <div class="panel-header" style="height: 28px; background: #070A10;">
-                    <span class="panel-title" style="font-size: 10px;">Multi-Core Execution Log & Telemetry</span>
+            <!-- Dock Draggable Horizontal Resizer -->
+            <div class="gutter-resizer gutter-horizontal" id="resizer-dock" title="Drag vertically to resize Bottom Dock (Double-click to toggle)"></div>
+
+            <!-- Bottom Dock: Tabs for Timing Markers & Telemetry Logs -->
+            <div class="bottom-dock" id="bottom-dock">
+                <div class="dock-header">
+                    <div class="dock-tabs">
+                        <button id="tab-btn-markers" class="dock-tab active">
+                            <span>🔖 Timing Markers & Latency</span>
+                            <span id="markers-count-badge" class="dock-badge">0</span>
+                        </button>
+                        <button id="tab-btn-console" class="dock-tab">
+                            <span>💻 Telemetry Log</span>
+                        </button>
+                    </div>
+                    <!-- Quick actions in dock header -->
+                    <div class="dock-actions">
+                        <button id="btn-dock-add-marker" class="btn btn-sm btn-primary" title="Add Timing Marker at Primary Cursor (Key: M)">+ Add Marker</button>
+                        <button id="btn-dock-auto-detect" class="btn btn-sm" title="Auto-Detect Hardware Events">⚡ Auto-Detect</button>
+                        <button id="btn-export-timing-report" class="btn btn-sm" title="View / Export Markdown & PDF-Ready Timing Report">📄 Report</button>
+                        <button id="btn-export-timing-csv" class="btn btn-sm" title="Download Timing Analysis CSV">📊 CSV</button>
+                        <button id="btn-snapshot-png" class="btn btn-sm" title="Export Waveform Canvas PNG">📸 PNG</button>
+                        <button id="btn-clear-all-markers" class="btn btn-sm" title="Clear all bookmarks">🗑 Clear</button>
+                    </div>
                 </div>
-                <div id="terminal-output" class="console-output">
-                    <div class="log-line"><span class="log-time">[Init]</span> OmniBus MP Studio ready. Multi-Core symmetric emulator active.</div>
+
+                <!-- Tab 1: Markers & Latency Panel -->
+                <div id="dock-panel-markers" class="dock-content active">
+                    <!-- Latency Delta Calculator Bar -->
+                    <div class="latency-calc-bar">
+                        <div class="latency-inputs">
+                            <span class="calc-title">⏱ Latency Delta:</span>
+                            <label for="latency-from-select">From:</label>
+                            <select id="latency-from-select" class="select-control select-sm"></select>
+                            <label for="latency-to-select">To:</label>
+                            <select id="latency-to-select" class="select-control select-sm"></select>
+                        </div>
+                        <div class="latency-metrics">
+                            <div class="metric-pill"><span class="m-lbl">Δ Cycles:</span><span class="m-val" id="metric-delta-cycles">0 cyc</span></div>
+                            <div class="metric-pill"><span class="m-lbl">Δ Time:</span><span class="m-val" id="metric-delta-time">0.0 ns</span></div>
+                            <div class="metric-pill"><span class="m-lbl">Eq. Frequency:</span><span class="m-val" id="metric-delta-freq">—</span></div>
+                        </div>
+                    </div>
+
+                    <!-- Markers Table -->
+                    <div class="markers-table-container">
+                        <table class="markers-table" id="markers-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 42px;">Tag</th>
+                                    <th style="width: 80px;">Cycle</th>
+                                    <th style="width: 95px;">Time</th>
+                                    <th style="width: 85px;">Δ Prev</th>
+                                    <th style="width: 140px;">Label</th>
+                                    <th>Notes & Verification Context</th>
+                                    <th style="width: 135px; text-align: right;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="markers-table-body">
+                                <tr>
+                                    <td colspan="7" class="markers-empty-msg">No timing markers placed. Click "+ Add Marker" (or press M), or click "⚡ Auto-Detect" to discover hardware events.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Tab 2: Console Output Panel -->
+                <div id="dock-panel-console" class="dock-content">
+                    <div id="terminal-output" class="console-output">
+                        <div class="log-line"><span class="log-time">[Init]</span> OmniBus MP Studio ready. Multi-Core symmetric emulator active.</div>
+                    </div>
                 </div>
             </div>
         </section>
 
+        <!-- Right Draggable Gutter Resizer -->
+        <div class="gutter-resizer gutter-vertical" id="resizer-right" title="Drag horizontally to resize Inspector (Double-click to collapse/expand)"></div>
+
         <!-- Right Pane: Hardware Synchronization & Inspector -->
-        <aside class="panel inspector-pane">
+        <aside class="panel inspector-pane" id="inspector-pane">
+            <div class="panel-header">
+                <span class="panel-title">Silicon Fabric & Telemetry</span>
+                <button id="btn-toggle-inspector" class="btn btn-sm" title="Collapse / Expand Inspector Panel (Alt+I)">✕ Collapse</button>
+            </div>
             
             <!-- Shared Synchronization Fabric Card -->
             <div class="card sync-fabric-card">
@@ -308,6 +419,128 @@
 
         </aside>
     </main>
+
+    <!-- Marker Add / Edit Dialog Modal -->
+    <div id="marker-modal" class="modal-backdrop" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <span class="modal-title" id="modal-marker-title">🔖 Place Waveform Timing Marker</span>
+                <button class="btn-close-modal" id="btn-close-marker-modal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Target Cycle:</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="number" id="input-marker-cycle" class="input-control" style="width: 130px;" min="0" value="0">
+                        <span id="label-marker-time-ns" style="font-family: var(--font-mono); font-size: 11px; color: var(--primary-cyan);">0.0 ns</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Marker Label / Event Name:</label>
+                    <input type="text" id="input-marker-label" class="input-control" placeholder="e.g. UART Start Bit, Barrier Sync, CS Fall" value="Event Marker">
+                </div>
+                <!-- Quick Preset Tags -->
+                <div class="form-group">
+                    <label>Quick Presets:</label>
+                    <div class="preset-tag-pills">
+                        <button type="button" class="preset-pill" onclick="window.app?.setMarkerPreset('UART Start', '#00F0FF', 'UIO0 falling edge (Start Bit)')">UART Start</button>
+                        <button type="button" class="preset-pill" onclick="window.app?.setMarkerPreset('UART Byte Complete', '#10B981', '8-bit deserialization complete')">UART Byte</button>
+                        <button type="button" class="preset-pill" onclick="window.app?.setMarkerPreset('SPI CS Fall', '#F59E0B', 'Slave select asserted LOW')">SPI CS Fall</button>
+                        <button type="button" class="preset-pill" onclick="window.app?.setMarkerPreset('Barrier Sync', '#EC4899', 'Hardware rendezvous barrier pulse')">Barrier Sync</button>
+                        <button type="button" class="preset-pill" onclick="window.app?.setMarkerPreset('Spinlock Lock', '#EF4444', 'Atomic spinlock acquired')">Lock Held</button>
+                        <button type="button" class="preset-pill" onclick="window.app?.setMarkerPreset('Spinlock Free', '#10B981', 'Atomic spinlock released')">Lock Free</button>
+                        <button type="button" class="preset-pill" onclick="window.app?.setMarkerPreset('Glitch Injected', '#F43F5E', 'Crowbar fault pulse injected')">Glitch Pulse</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Color Badge:</label>
+                    <div class="color-picker-palette">
+                        <label class="color-radio"><input type="radio" name="marker-color" value="#00F0FF" checked><span class="color-swatch" style="background: #00F0FF;"></span></label>
+                        <label class="color-radio"><input type="radio" name="marker-color" value="#10B981"><span class="color-swatch" style="background: #10B981;"></span></label>
+                        <label class="color-radio"><input type="radio" name="marker-color" value="#F59E0B"><span class="color-swatch" style="background: #F59E0B;"></span></label>
+                        <label class="color-radio"><input type="radio" name="marker-color" value="#EC4899"><span class="color-swatch" style="background: #EC4899;"></span></label>
+                        <label class="color-radio"><input type="radio" name="marker-color" value="#8B5CF6"><span class="color-swatch" style="background: #8B5CF6;"></span></label>
+                        <label class="color-radio"><input type="radio" name="marker-color" value="#3B82F6"><span class="color-swatch" style="background: #3B82F6;"></span></label>
+                        <label class="color-radio"><input type="radio" name="marker-color" value="#F43F5E"><span class="color-swatch" style="background: #F43F5E;"></span></label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Notes & Verification Context (Optional):</label>
+                    <textarea id="input-marker-note" class="textarea-control" rows="2" placeholder="e.g. Measured 8.68us bit width matches 115200 baud spec"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-cancel-marker" class="btn">Cancel</button>
+                <button id="btn-save-marker" class="btn btn-primary">Save Marker</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Timing Report Viewer Modal -->
+    <div id="report-modal" class="modal-backdrop" style="display: none;">
+        <div class="modal-card modal-lg">
+            <div class="modal-header">
+                <span class="modal-title">📊 OmniBus MP Timing & Latency Analysis Report</span>
+                <button class="btn-close-modal" id="btn-close-report-modal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="report-toolbar">
+                    <button id="btn-copy-report" class="btn btn-sm">📋 Copy to Clipboard</button>
+                    <button id="btn-download-report-md" class="btn btn-sm btn-primary">💾 Download Markdown (.md)</button>
+                    <button id="btn-download-report-csv" class="btn btn-sm">📊 Download CSV</button>
+                </div>
+                <textarea id="report-preview-text" class="report-textarea" readonly spellcheck="false"></textarea>
+            </div>
+        </div>
+    </div>
+
+    <!-- Generated Assembly Inspector Modal -->
+    <div id="asm-modal" class="modal-backdrop" style="display: none;">
+        <div class="modal-card modal-lg">
+            <div class="modal-header">
+                <span class="modal-title">📋 Emitted OmniBus 16-bit Assembly (from Omni-C)</span>
+                <button class="btn-close-modal" id="btn-close-asm-modal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="report-toolbar">
+                    <span id="label-asm-stats" style="font-family: var(--font-mono); font-size: 11px; color: var(--primary-cyan);">0 lines emitted</span>
+                    <div class="btn-group">
+                        <button id="btn-copy-asm" class="btn btn-sm">📋 Copy Assembly</button>
+                        <button id="btn-download-asm" class="btn btn-sm btn-primary">💾 Download .asm</button>
+                        <button id="btn-load-asm-editor" class="btn btn-sm" title="Copy this emitted assembly into the editor in ASM mode">✏️ Edit as ASM</button>
+                    </div>
+                </div>
+                <textarea id="asm-preview-text" class="report-textarea" readonly spellcheck="false" placeholder="; No assembly emitted yet. Compile a C program first."></textarea>
+            </div>
+        </div>
+    </div>
+
+    <!-- Virtual Standard C Headers Explorer Modal -->
+    <div id="headers-modal" class="modal-backdrop" style="display: none;">
+        <div class="modal-card modal-lg">
+            <div class="modal-header">
+                <span class="modal-title">📚 Omni-C Virtual SDK Standard Library Headers</span>
+                <button class="btn-close-modal" id="btn-close-headers-modal">✕</button>
+            </div>
+            <div class="modal-body" style="display: flex; gap: 12px; height: 380px;">
+                <!-- Header file list -->
+                <div class="headers-sidebar" style="width: 170px; border-right: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 4px; padding-right: 8px;">
+                    <span style="font-size: 10px; font-weight: bold; color: var(--text-dim); text-transform: uppercase;">Available Headers</span>
+                    <div id="headers-list-container" style="display: flex; flex-direction: column; gap: 2px; overflow-y: auto;">
+                        <!-- Dynamically filled buttons -->
+                    </div>
+                </div>
+                <!-- Header content preview -->
+                <div style="flex: 1; display: flex; flex-direction: column; gap: 6px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span id="current-header-title" style="font-family: var(--font-mono); font-size: 11px; color: var(--primary-cyan); font-weight: bold;">omnibus.h</span>
+                        <button id="btn-copy-header" class="btn btn-sm">📋 Copy Header</button>
+                    </div>
+                    <textarea id="header-preview-text" class="report-textarea" readonly spellcheck="false" style="flex: 1; height: 100%;"></textarea>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Main Application Entry Point -->
     <script type="module" src="js/app.js"></script>

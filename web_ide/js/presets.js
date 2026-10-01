@@ -1,16 +1,229 @@
 // =============================================================================
 // File        : presets.js
-// Module      : OmniBus Microcode Presets & Example Library
-// Description : Production-tested microcode programs across all single-core
-//               and multi-core (OmniBus MP) architectures and hardware assists.
+// Module      : OmniBus Microcode & Omni-C Presets & Example Library
+// Description : Production-tested programs across Omni-C (C) and Assembly (.asm)
+//               for both single-core and multi-core (OmniBus MP) architectures.
 // License     : MIT License
 // =============================================================================
 
 export const PRESETS = [
+    // =========================================================================
+    // OMNI-C (HIGH-LEVEL C) PRESETS
+    // =========================================================================
+    {
+        id: "c_uart_echo",
+        title: "⚡ [C] UART Full-Duplex Echo Transceiver",
+        category: "Omni-C",
+        lang: "c",
+        numCores: 1,
+        desc: "Full-duplex UART 8N1 transceiver written in structured C using standard <uart.h> header with blocking FIFO stream.",
+        code: `/**
+ * =============================================================================
+ * Omni-C: Full-Duplex UART 8N1 Echo Transceiver
+ * =============================================================================
+ */
+#include "uart.h"
+
+void main() {
+    // Pin routing: TX on Pin 0, RX on Pin 1
+    pin_map(0, 1, 2, 3);
+    pin_high(PIN_TX, 0); // Idle TX line High
+
+    while (1) {
+        // Wait for incoming byte from host FIFO
+        pull_block();
+
+        // Echo byte over physical UART TX pin
+        uart_tx_byte();
+
+        // Sample incoming response from RX pin and push to host RX FIFO
+        uart_rx_byte();
+        push_block();
+    }
+}
+`
+    },
+    {
+        id: "c_spi_flash",
+        title: "⚡ [C] SPI Flash JEDEC ID Reader (Mode 0)",
+        category: "Omni-C",
+        lang: "c",
+        numCores: 1,
+        desc: "SPI Master controller in C transmitting 0x9F (Read JEDEC ID) and clocking in 3-byte Manufacturer/Device IDs.",
+        code: `/**
+ * =============================================================================
+ * Omni-C: SPI Flash JEDEC ID Reader (Mode 0)
+ * =============================================================================
+ */
+#include "spi.h"
+
+void main() {
+    spi_init();
+
+    while (1) {
+        // Wait for host trigger
+        pull_block();
+
+        // Assert CS# Low
+        spi_select();
+
+        // Transmit JEDEC Read ID command (0x9F)
+        acc = 0x9F;
+        osr = acc;
+        spi_transfer_byte();
+
+        // Read 3-byte Manufacturer, Memory Type, Capacity
+        repeat (3) {
+            osr = 0x00; // Dummy byte to generate SCK clocks
+            spi_transfer_byte();
+            acc = isr;
+            push_block();
+        }
+
+        // Deassert CS# High
+        spi_deselect();
+        delay_cycles(100);
+    }
+}
+`
+    },
+    {
+        id: "c_i2c_sensor",
+        title: "⚡ [C] I2C Temperature Sensor Master",
+        category: "Omni-C",
+        lang: "c",
+        numCores: 1,
+        desc: "Open-drain I2C Master with START/STOP generation, device addressing (0x48), and 2-byte sensor read.",
+        code: `/**
+ * =============================================================================
+ * Omni-C: I2C Sensor Master Reader
+ * =============================================================================
+ */
+#include "i2c.h"
+
+#define SENSOR_ADDR_WR  0x90  // 0x48 << 1 + 0 (Write)
+#define SENSOR_ADDR_RD  0x91  // 0x48 << 1 + 1 (Read)
+
+void main() {
+    i2c_init();
+
+    while (1) {
+        pull_block(); // Trigger read
+
+        // START condition
+        i2c_start();
+
+        // Send Sensor Address (Write)
+        osr = SENSOR_ADDR_WR;
+        i2c_write_byte();
+
+        // Pointer Register (0x00 = Temp)
+        osr = 0x00;
+        i2c_write_byte();
+
+        // Repeated START
+        i2c_start();
+
+        // Send Sensor Address (Read)
+        osr = SENSOR_ADDR_RD;
+        i2c_write_byte();
+
+        // Read MSB and LSB
+        i2c_read_byte_ack();
+        acc = isr;
+        push_block();
+
+        // STOP condition
+        i2c_stop();
+        delay_cycles(200);
+    }
+}
+`
+    },
+    {
+        id: "c_ws2812_rainbow",
+        title: "⚡ [C] WS2812 NeoPixel 800 kHz RGB Driver",
+        category: "Omni-C",
+        lang: "c",
+        numCores: 1,
+        desc: "Configures sub-cycle asymmetric pulse engine and streams 24-bit GRB colors to NeoPixel strip.",
+        code: `/**
+ * =============================================================================
+ * Omni-C: WS2812 800 kHz Asymmetric Pulse Driver
+ * =============================================================================
+ */
+#include "ws2812.h"
+
+void main() {
+    pin_low(0, 2500); // Reset latch (>50us)
+
+    while (1) {
+        // Stream Red, Green, Blue
+        ws2812_send_pixel(0xFF, 0x00, 0x00); // Red
+        ws2812_send_pixel(0x00, 0xFF, 0x00); // Green
+        ws2812_send_pixel(0x00, 0x00, 0xFF); // Blue
+
+        ws2812_latch();
+        delay_cycles(5000);
+    }
+}
+`
+    },
+    {
+        id: "c_multicore_bridge",
+        title: "⚡ [C] Dual-Core Spinlock & Mailbox Bridge",
+        category: "Omni-C",
+        lang: "c",
+        numCores: 2,
+        desc: "Dual-Core OmniBus MP in C: Core 0 ingests serial frames and Core 1 processes via hardware spinlocks & mailbox.",
+        code: `/**
+ * =============================================================================
+ * Omni-C: Dual-Core OmniBus MP Spinlock & Mailbox Synchronized Bridge
+ * =============================================================================
+ */
+#include "omnibus.h"
+
+#pragma bank 0
+void core0_main() {
+    pin_map(0, 1, 2, 3);
+    while (1) {
+        pull_block();
+        // Ingest token and synchronize with Core 1
+        while (spinlock_acquire(0) != 0) {
+            // Spin until lock is available
+        }
+        mailbox_write(0, 0x5A);
+        spinlock_release(0);
+        delay_cycles(100);
+    }
+}
+
+#pragma bank 1
+void core1_main() {
+    pin_map(4, 5, 6, 7);
+    while (1) {
+        while (spinlock_acquire(0) != 0) {
+            // Poll lock for new data from Core 0
+        }
+        acc = mailbox_read(0);
+        spinlock_release(0);
+        
+        // Egress or transform
+        osr = acc;
+        push_block();
+    }
+}
+`
+    },
+
+    // =========================================================================
+    // ASSEMBLY (.ASM) PRESETS
+    // =========================================================================
     {
         id: "multicore_uart_spi_bridge",
-        title: "Dual-Core UART-to-SPI Multi-Protocol Bridge",
+        title: "⚙️ [ASM] Dual-Core UART-to-SPI Multi-Protocol Bridge",
         category: "Multi-Core",
+        lang: "asm",
         numCores: 2,
         desc: "Core 0 (Bank 0) ingests UART frames while Core 1 (Bank 1) concurrently generates SPI transactions synchronized via Mailbox 0 and Spinlock 0.",
         code: `; =============================================================================
@@ -66,8 +279,9 @@ core1_loop:
     },
     {
         id: "multicore_mailbox_sync",
-        title: "Dual-Core Mailbox Ping-Pong & Barrier Sync",
+        title: "⚙️ [ASM] Dual-Core Mailbox Ping-Pong & Barrier Sync",
         category: "Multi-Core",
+        lang: "asm",
         numCores: 2,
         desc: "Producer/Consumer exchange between Core 0 and Core 1 synchronized via BARRIER_WAIT rendezvous and Mailboxes 0 & 1.",
         code: `; =============================================================================
@@ -142,8 +356,9 @@ core1_done:
     },
     {
         id: "multicore_quad_grid",
-        title: "Quad-Core (4-Core) Streaming Pipeline Grid",
+        title: "⚙️ [ASM] Quad-Core (4-Core) Streaming Pipeline Grid",
         category: "Multi-Core",
+        lang: "asm",
         numCores: 4,
         desc: "4-Stage pipeline: Core 0 (Host Ingress) -> Core 1 (Crypto Transform) -> Core 2 (CRC Engine) -> Core 3 (SPI Egress).",
         code: `; =============================================================================
@@ -254,8 +469,9 @@ core3_halt:
     },
     {
         id: "uart_tx",
-        title: "UART 115200 8N1 Transmitter",
+        title: "⚙️ [ASM] UART 115200 8N1 Transmitter",
         category: "Serial",
+        lang: "asm",
         numCores: 1,
         desc: "Transmits serial characters with exact cycle-deterministic 8N1 bit framing using sidecar delay $BAUD.",
         code: `; ==============================================================================
@@ -282,8 +498,9 @@ loop:
     },
     {
         id: "i2c_master",
-        title: "I2C Master Byte Write & Read",
+        title: "⚙️ [ASM] I2C Master Byte Write & Read",
         category: "Serial",
+        lang: "asm",
         numCores: 1,
         desc: "Open-drain I2C Master with START/STOP generation, ACK sampling, and SCL clock stretching detection.",
         code: `; ==============================================================================
@@ -334,8 +551,9 @@ halt:
     },
     {
         id: "neopixel_ws2812",
-        title: "WS2812B NeoPixel RGB LED Strip",
+        title: "⚙️ [ASM] WS2812B NeoPixel RGB LED Strip",
         category: "Pulse",
+        lang: "asm",
         numCores: 1,
         desc: "Strict 800 kHz asymmetric pulse width modulation driving 24-bit GRB NeoPixel LED strings.",
         code: `; ==============================================================================
@@ -369,8 +587,9 @@ halt:
     },
     {
         id: "glitch_mitm",
-        title: "Hardware Glitch & Wire-Speed MitM Fuzzer",
+        title: "⚙️ [ASM] Hardware Glitch & Wire-Speed MitM Fuzzer",
         category: "Security",
+        lang: "asm",
         numCores: 1,
         desc: "Active fault injection pulse generator with hardware pattern matcher and wire-speed byte substitution.",
         code: `; ==============================================================================
