@@ -751,7 +751,22 @@ The OmniBus instruction set consists of 16-bit words. Execution is strictly dete
   - `0x78`: `ADDR_BIST_SCORES` (RO: `[15:0]`=vec_cnt, `[31:16]`=pass_cnt).
 - **Microcode Instructions & Extended Telemetry**:
   - `BIST_DIS` (`0xF4E0`), `BIST_LOOP` (`0xF4E1`), `BIST_SPLIT` (`0xF4E2`), `BIST_JITTER` (`0xF4E3`), `BIST_START` (`0xF4E4`), `BIST_STOP` (`0xF4E5`), `BIST_RST` (`0xF4E6`), `BIST_PASS` (`0xF4E7`), `BIST_FAIL` (`0xF4E8`), `BIST_STAGE <n>` (`0xF4F[n]`).
-  - `ASSIST READ, BIST_STATUS` (`0xFB08`), `BIST_PASS` (`0xFB09`), `BIST_FAIL` (`0xFB0A`), `BIST_VEC` (`0xFB0B`).
+### 10. Multi-Core Symmetric OmniBus Micro-Engine (OmniBus MP — Task 35)
+- **Parameterized Symmetric Multi-Core Slices**:
+  - Parameterized synthesis configuration with 1, 2, or 4 independent execution cores (`NUM_CORES = 1, 2, 4`).
+  - Core reset vectors: $\text{RESET\_PC} = \text{CORE\_ID} \times 32$ (Bank 0: 0x00, Bank 1: 0x20, Bank 2: 0x40, Bank 3: 0x60).
+  - Private register files (`ACC`, `OSR`, `ISR`, `R0..R7`, `LC0`, `LC1`) per core.
+- **Hardware Synchronization & Inter-Core Fabric**:
+  - **8 Shared Mailboxes (`MAILBOX[0..7]`)**: Single-cycle read/write access from microcode (`MB_READ`, `MB_WRITE`) and host Wishbone window (`0x7C`).
+  - **4 Single-Cycle Atomic Spinlocks (`SPINLOCK[0..3]`)**: Hardware test-and-set mutual exclusion with atomic grant (`SPINLOCK_ACQ`) and release (`SPINLOCK_REL`).
+  - **Hardware Rendezvous Barrier (`BARRIER_WAIT`)**: Zero-overhead phase-locked synchronization across all active cores.
+  - **Circular Cascade FIFO Crossbar**: Low-latency inter-core stream routing from Core $i$ to Core $(i+1) \bmod N$.
+- **Wishbone B4 Slave Memory Map (`0x28`, `0x2C`, `0x7C`)**:
+  - `0x28`: `ADDR_MP_CTRL` (RW: `[3:0]`=core_en, `[4]`=barrier_rst, `[5]`=stream_mode, `[10:8]`=mailbox_sel, `[15:12]`=spinlock_force_unlock).
+  - `0x2C`: `ADDR_MP_STATUS` (RO: `[3:0]`=core_halted, `[7:4]`=spinlock_status, `[11:8]`=barrier_waiting, `[15:12]`=active_cores, `[23:16]`=core0_pc, `[31:24]`=core1_pc).
+  - `0x7C`: `ADDR_MP_MAILBOX` (RW: 32-bit window mapping 4 consecutive 8-bit mailboxes starting at `mailbox_sel`).
+- **Microcode Instructions**:
+  - `CORE_ID` (`0xFC00`), `SPINLOCK_ACQ <id>` (`0xFD00..0xFD03`), `SPINLOCK_REL <id>` (`0xFE00..0xFE03`), `BARRIER_WAIT` (`0xFF00`), `MB_READ <id>` (`0xF800..0xF807`), `MB_WRITE <id>` (`0xF900..0xF907`).
 
 ---
 

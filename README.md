@@ -31,6 +31,7 @@ All ready-to-run microcode demonstrators, interactive terminals, and test harnes
 
 | Script | Protocol / Feature | Mode & Description |
 | :--- | :--- | :--- |
+| [`scripts/run_multicore_mp.bat`](scripts/run_multicore_mp.bat) | **OmniBus MP Multi-Core Engine** | Parameterized symmetric multi-core execution (1, 2, 4 Cores) with shared mailboxes, atomic spinlocks, and barrier synchronization. |
 | [`scripts/run_omnic_demo.bat`](scripts/run_omnic_demo.bat) | **Omni-C Protocol Compiler** | Structured C-to-Microcode compiler (`omnic`) compiling 6 protocol targets to 16-bit binary images. |
 | [`scripts/run_usb_sie.bat`](scripts/run_usb_sie.bat) | **USB 1.1 Autonomous SIE** | Full-Speed (12 Mbps) & Low-Speed (1.5 Mbps) SIE, token parsing, auto-ACK/NAK/STALL, CRC-5/16, bus reset. |
 | [`scripts/run_profiler.bat`](scripts/run_profiler.bat) | **The Protocol Detective** | Autonomous waveform profiler, auto-baud divisor discovery, clock vs data discriminator & framing detector. |
@@ -86,6 +87,7 @@ All ready-to-run microcode demonstrators, interactive terminals, and test harnes
 * [Task 32 — OmniBus Software Development Kit (SDK) & Assembly Standard Library](documentation/task32.md)
 * [Task 33 — Complete pyUVM Verification & RTL Mutation Testing](documentation/task33.md)
 * [Task 34 — Omni-C / Micro-C High-Level Protocol Compiler](documentation/task34.md)
+* [Task 35 — Multi-Core Symmetric OmniBus Micro-Engine (OmniBus MP)](documentation/task35.md)
 
 ---
 

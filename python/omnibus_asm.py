@@ -158,6 +158,23 @@ OPCODES = {
     "BIST_PASS":         0xF,
     "BIST_FAIL":         0xF,
     "BIST_STAGE":        0xF,
+    # Task 35: OmniBus MP Multi-Core Synchronization Instructions
+    "CORE_ID":           0xF,
+    "GET_CORE_ID":       0xF,
+    "SPINLOCK_ACQ":      0xF,
+    "SPINLOCK_ACQUIRE":  0xF,
+    "SPINLOCK_REL":      0xF,
+    "SPINLOCK_RELEASE":  0xF,
+    "LOCK_ACQ":          0xF,
+    "LOCK_REL":          0xF,
+    "BARRIER_WAIT":      0xF,
+    "BARRIER":           0xF,
+    "MB_READ":           0xF,
+    "MAILBOX_READ":      0xF,
+    "MB_RD":             0xF,
+    "MB_WRITE":          0xF,
+    "MAILBOX_WRITE":     0xF,
+    "MB_WR":             0xF,
 }
 
 # 8-bit GPIO Pin Aliases for SET/WAIT/PINMAP [11:9]
@@ -239,10 +256,10 @@ class OmnibusAssembler:
                     c_val = int(parts[2], 0)
                     symbols[parts[1]] = c_val
                     symbols[parts[1].upper()] = c_val
-                elif directive == ".bank" and len(parts) >= 2:
+                elif directive in (".bank", ".core") and len(parts) >= 2:
                     bank_num = int(parts[1], 0)
                     if bank_num < 0 or bank_num > 3:
-                        raise AssemblerError(f"Line {line_num}: Invalid bank number {bank_num} (must be 0..3)")
+                        raise AssemblerError(f"Line {line_num}: Invalid bank/core number {bank_num} (must be 0..3)")
                     current_addr = bank_num * 32
                 elif directive == ".org" and len(parts) >= 2:
                     current_addr = int(parts[1], 0)
@@ -666,10 +683,10 @@ class OmnibusAssembler:
                     "CRC_VALID": (0, 7),
                     "CRC_ZERO": (0, 7),
                     # ALU Condition Codes (0x8 .. 0xE)
-                    "ZERO": (0, 8), "EQ": (0, 8), "Z": (0, 8),
-                    "NOT_ZERO": (0, 9), "NE": (0, 9), "NZ": (0, 9),
-                    "CARRY": (0, 10), "ULT": (0, 10), "C": (0, 10), "CY": (0, 10),
-                    "NOT_CARRY": (0, 11), "UGE": (0, 11), "NC": (0, 11),
+                    "ZERO": (0, 8), "EQ": (0, 8), "Z": (0, 8), "JZ": (0, 8),
+                    "NOT_ZERO": (0, 9), "NE": (0, 9), "NZ": (0, 9), "JNZ": (0, 9),
+                    "CARRY": (0, 10), "ULT": (0, 10), "C": (0, 10), "CY": (0, 10), "JC": (0, 10),
+                    "NOT_CARRY": (0, 11), "UGE": (0, 11), "NC": (0, 11), "JNC": (0, 11),
                     "NEG": (0, 12), "NEGATIVE": (0, 12), "SIGN": (0, 12), "MINUS": (0, 12),
                     "POS": (0, 13), "POSITIVE": (0, 13), "PLUS": (0, 13),
                     "CRC_ERR": (0, 14), "CRC_BAD": (0, 14), "CRC_ERROR": (0, 14),
@@ -841,24 +858,24 @@ class OmnibusAssembler:
 
             elif op in ("ALU", "ADD", "SUB", "CMP", "AND", "OR", "XOR", "MOV", "NOT", "INV", "INC", "DEC", "CLR", "SHL", "SHR", "ROL", "ROR", "BANK", "SET_BANK", "JMP_BANK"):
                 SRC_REG_MAP = {
-                    "OSR": 0,
-                    "ISR": 1,
-                    "LC0": 2, "LC_0": 2,
-                    "LC1": 3, "LC_1": 3,
-                    "DATA": 4, "I_DATA": 4, "DIN": 4,
-                    "ACC": 5, "A": 5, "BANK": 5, "ACTIVE_BANK": 5,
-                    "CRC_L": 6, "CRC_LOW": 6, "CRC_REG_L": 6,
-                    "CRC_H": 7, "CRC_HIGH": 7, "CRC_REG_H": 7,
+                    "OSR": 0, "R0": 0,
+                    "ISR": 1, "R1": 1,
+                    "LC0": 2, "LC_0": 2, "R2": 2,
+                    "LC1": 3, "LC_1": 3, "R3": 3,
+                    "DATA": 4, "I_DATA": 4, "DIN": 4, "R4": 4,
+                    "ACC": 5, "A": 5, "BANK": 5, "ACTIVE_BANK": 5, "R5": 5,
+                    "CRC_L": 6, "CRC_LOW": 6, "CRC_REG_L": 6, "R6": 6,
+                    "CRC_H": 7, "CRC_HIGH": 7, "CRC_REG_H": 7, "R7": 7,
                 }
                 DST_REG_MAP = {
-                    "OSR": 0,
-                    "ISR": 1,
-                    "LC0": 2, "LC_0": 2,
-                    "LC1": 3, "LC_1": 3,
-                    "O_DATA": 4, "DATA_OUT": 4, "DOUT": 4, "DATA": 4,
-                    "ACC": 5, "A": 5, "BANK": 5, "ACTIVE_BANK": 5,
-                    "CRC_SEED_L": 6, "CRC_SEED_LOW": 6,
-                    "CRC_SEED_H": 7, "CRC_SEED_HIGH": 7,
+                    "OSR": 0, "R0": 0,
+                    "ISR": 1, "R1": 1,
+                    "LC0": 2, "LC_0": 2, "R2": 2,
+                    "LC1": 3, "LC_1": 3, "R3": 3,
+                    "O_DATA": 4, "DATA_OUT": 4, "DOUT": 4, "DATA": 4, "R4": 4,
+                    "ACC": 5, "A": 5, "BANK": 5, "ACTIVE_BANK": 5, "R5": 5,
+                    "CRC_SEED_L": 6, "CRC_SEED_LOW": 6, "R6": 6,
+                    "CRC_SEED_H": 7, "CRC_SEED_HIGH": 7, "R7": 7,
                 }
 
                 alu_cmd = op
@@ -966,7 +983,7 @@ class OmnibusAssembler:
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ALU operation '{alu_cmd}'")
 
-            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD", "GLITCH_CFG", "GLITCH_WIDTH", "GLITCH_DELAY", "GLITCH_DELAY_LO", "GLITCH_DELAY_HI", "GLITCH_ARM", "GLITCH_TRIG", "GLITCH_TRIGGER", "GLITCH_DISARM", "MITM_MATCH", "MITM_REPLACE", "MITM_MASK", "MITM_ENABLE", "MITM_DISABLE", "MITM_RESET", "MITM_CLR", "PROFILER_CFG", "PROFILER_FILTER", "PROFILER_ARM", "PROFILER_STOP", "PROFILER_RST", "PROFILER_RESET", "USB_CFG", "USB_CONFIG", "USB_TX_TOKEN", "USB_TOKEN", "USB_TX_DATA", "USB_DATA_PKT", "USB_SEND_ACK", "USB_ACK", "USB_SEND_NAK", "USB_NAK", "USB_SEND_STALL", "USB_STALL", "USB_SIE_EN", "USB_SIE_DIS", "BIST_CFG", "BIST_CONFIG", "BIST_DIS", "BIST_DISABLE", "BIST_LOOP", "BIST_LOOPBACK", "BIST_SPLIT", "BIST_CROSSBAR", "BIST_JITTER", "BIST_STRESS", "BIST_START", "BIST_EN", "BIST_STOP", "BIST_RST", "BIST_RESET", "BIST_PASS", "BIST_FAIL", "BIST_STAGE"):
+            elif op in ("ASSIST", "ASSIST_CFG", "ASSIST_RESET", "ASSIST_READ", "PULSE_CFG", "GAMEPAD_CFG", "PULSE_TIME0", "PULSE_TIME1", "I2C_SLAVE_CFG", "I2C_RELEASE_SCL", "I2C_SLAVE_DISABLE", "AUDIO_CFG", "AUDIO_VOL", "AUDIO_SAMPLE", "AUDIO_DUTY", "AUDIO_NOTE_LO", "AUDIO_NOTE_HI", "AUDIO_PLAY", "AUDIO_STOP", "JTAG_CFG", "JTAG_TMS", "JTAG_NAV", "JTAG_SHIFT", "SWD_CFG", "SWD_REQ", "SWD_RESET", "SWD_RD32", "SWD_WR32", "SWD_LOAD", "QSPI_CFG", "QSPI_CS", "QSPI_CMD", "QSPI_DUMMY", "QSPI_ADDR", "QSPI_LOAD_ADDR", "QSPI_LOAD", "GLITCH_CFG", "GLITCH_WIDTH", "GLITCH_DELAY", "GLITCH_DELAY_LO", "GLITCH_DELAY_HI", "GLITCH_ARM", "GLITCH_TRIG", "GLITCH_TRIGGER", "GLITCH_DISARM", "MITM_MATCH", "MITM_REPLACE", "MITM_MASK", "MITM_ENABLE", "MITM_DISABLE", "MITM_RESET", "MITM_CLR", "PROFILER_CFG", "PROFILER_FILTER", "PROFILER_ARM", "PROFILER_STOP", "PROFILER_RST", "PROFILER_RESET", "USB_CFG", "USB_CONFIG", "USB_TX_TOKEN", "USB_TOKEN", "USB_TX_DATA", "USB_DATA_PKT", "USB_SEND_ACK", "USB_ACK", "USB_SEND_NAK", "USB_NAK", "USB_SEND_STALL", "USB_STALL", "USB_SIE_EN", "USB_SIE_DIS", "BIST_CFG", "BIST_CONFIG", "BIST_DIS", "BIST_DISABLE", "BIST_LOOP", "BIST_LOOPBACK", "BIST_SPLIT", "BIST_CROSSBAR", "BIST_JITTER", "BIST_STRESS", "BIST_START", "BIST_EN", "BIST_STOP", "BIST_RST", "BIST_RESET", "BIST_PASS", "BIST_FAIL", "BIST_STAGE", "CORE_ID", "GET_CORE_ID", "SPINLOCK_ACQ", "SPINLOCK_ACQUIRE", "SPINLOCK_REL", "SPINLOCK_RELEASE", "LOCK_ACQ", "LOCK_REL", "BARRIER_WAIT", "BARRIER", "MB_READ", "MAILBOX_READ", "MB_RD", "MB_WRITE", "MAILBOX_WRITE", "MB_WR"):
                 # Sub-operations:
                 # 2'b00: ASSIST CFG, nrzi_en, stuff_mode [, init_val]
                 # 2'b01: ASSIST RESET
@@ -1658,6 +1675,29 @@ class OmnibusAssembler:
 
                 elif sub_cmd in ("AUDIO_STOP", "STOP_AUDIO"):
                     word = (0xF << 12) | (0 << 10) | (3 << 7) | (7 << 4)
+
+                # Task 35: OmniBus MP Multi-Core Instructions
+                elif sub_cmd in ("CORE_ID", "GET_CORE_ID"):
+                    word = (0xF << 12) | (3 << 10) | (0 << 8)
+
+                elif sub_cmd in ("SPINLOCK_ACQ", "SPINLOCK_ACQUIRE", "LOCK_ACQ", "LOCK_ACQUIRE"):
+                    lock_id = eval_arg(arg_tokens[0]) & 3 if arg_tokens else 0
+                    word = (0xF << 12) | (3 << 10) | (1 << 8) | (lock_id & 3)
+
+                elif sub_cmd in ("SPINLOCK_REL", "SPINLOCK_RELEASE", "LOCK_REL", "LOCK_RELEASE"):
+                    lock_id = eval_arg(arg_tokens[0]) & 3 if arg_tokens else 0
+                    word = (0xF << 12) | (3 << 10) | (2 << 8) | (lock_id & 3)
+
+                elif sub_cmd in ("BARRIER_WAIT", "BARRIER"):
+                    word = (0xF << 12) | (3 << 10) | (3 << 8)
+
+                elif sub_cmd in ("MB_READ", "MAILBOX_READ", "MB_RD"):
+                    mb_id = eval_arg(arg_tokens[0]) & 7 if arg_tokens else 0
+                    word = (0xF << 12) | (2 << 10) | (0 << 8) | (mb_id & 7)
+
+                elif sub_cmd in ("MB_WRITE", "MAILBOX_WRITE", "MB_WR"):
+                    mb_id = eval_arg(arg_tokens[0]) & 7 if arg_tokens else 0
+                    word = (0xF << 12) | (2 << 10) | (1 << 8) | (mb_id & 7)
 
                 else:
                     raise AssemblerError(f"Line {line_num}: Unknown ASSIST sub-operation '{sub_cmd}'")

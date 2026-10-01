@@ -8,7 +8,7 @@ except ImportError:
     from cocotb.runner import get_runner
 
 
-def test_wishbone_runner():
+def run_mp_suite(num_cores=2):
     sim = os.getenv("SIM", "icarus")
     proj_path = Path(__file__).resolve().parent
     rtl_dir = (proj_path / "../../../../rtl").resolve()
@@ -29,33 +29,27 @@ def test_wishbone_runner():
     runner.build(
         sources=sources,
         hdl_toplevel="OmniBus_Wishbone",
+        parameters={"NUM_CORES": num_cores},
         always=True,
         waves=waves,
+        build_dir=str(proj_path / f"sim_build_mp_{num_cores}core"),
     )
 
     testcase = os.getenv("TESTCASE", None)
-    try:
-        runner.test(
-            hdl_toplevel="OmniBus_Wishbone",
-            test_module="testbench",
-            testcase=testcase,
-            waves=waves,
-        )
-    except BaseException as e:
-        results_file = proj_path / "sim_build" / "results.xml"
-        if results_file.exists():
-            import xml.etree.ElementTree as ET
-            tree = ET.parse(results_file)
-            suite = tree.find(".//testsuite")
-            if suite is not None:
-                failures = int(suite.attrib.get("failures", 0))
-                errors = int(suite.attrib.get("errors", 0))
-                testcases = suite.findall("testcase")
-                if failures == 0 and errors == 0 and len(testcases) > 0:
-                    print(f"All {len(testcases)} tests passed in results.xml.")
-                    sys.exit(0)
-        raise e
+    runner.test(
+        hdl_toplevel="OmniBus_Wishbone",
+        test_module="testbench_multicore_mp",
+        testcase=testcase,
+        waves=waves,
+        build_dir=str(proj_path / f"sim_build_mp_{num_cores}core"),
+    )
+
+
+def test_multicore_runners():
+    for nc in [2, 4]:
+        print(f"=== Running OmniBus MP Test Suite for NUM_CORES = {nc} ===")
+        run_mp_suite(nc)
 
 
 if __name__ == "__main__":
-    test_wishbone_runner()
+    test_multicore_runners()

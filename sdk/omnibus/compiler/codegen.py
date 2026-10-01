@@ -59,7 +59,7 @@ class OmniCCodeGen:
         # First pass: collect pragmas and global declarations
         for decl in program.decls:
             if isinstance(decl, PragmaDirective):
-                self._gen_pragma(decl)
+                self._collect_pragma(decl)
 
         self._emit(f".clock {self.clock_freq}")
         self._emit("")
@@ -73,7 +73,12 @@ class OmniCCodeGen:
         # Second pass: generate globals and functions
         for decl in program.decls:
             if isinstance(decl, PragmaDirective):
-                continue  # Already processed
+                key = decl.key.lower()
+                val = str(decl.value).strip()
+                if key in ("core", "bank"):
+                    self._emit(f".core {val}")
+                elif key == "org":
+                    self._emit(f".org {val}")
             elif isinstance(decl, VarDecl):
                 self._gen_global_var(decl)
             elif isinstance(decl, FunctionDef):
@@ -88,7 +93,7 @@ class OmniCCodeGen:
 
         return "\n".join(raw_asm) + "\n"
 
-    def _gen_pragma(self, pragma: PragmaDirective):
+    def _collect_pragma(self, pragma: PragmaDirective):
         key = pragma.key.lower()
         val = str(pragma.value).strip()
         if key == "clock":
@@ -119,6 +124,9 @@ class OmniCCodeGen:
             self._emit(f"MOV {reg}, {val_str} ; init global {var.name}")
 
     def _gen_function(self, func: FunctionDef):
+        if getattr(func, "is_prototype", False) or func.body is None:
+            return
+
         self._emit(f"; --- Function: {func.name} ---")
         self._emit(f"{func.name}:")
 
@@ -186,8 +194,19 @@ class OmniCCodeGen:
         self.current_scope.define(sym)
 
         if var.init_expr:
-            val_str = self._eval_literal_or_reg(var.init_expr)
-            self._emit(f"MOV {reg}, {val_str} ; local {var.name}")
+            if isinstance(var.init_expr, BuiltinCall):
+                self._gen_builtin_assign(reg, var.init_expr)
+            elif isinstance(var.init_expr, BinaryOp):
+                self._gen_binary_assign(reg, var.init_expr)
+            elif isinstance(var.init_expr, UnaryOp):
+                self._gen_unary_assign(reg, var.init_expr)
+            else:
+                val_str = self._eval_literal_or_reg(var.init_expr)
+                if reg == "acc":
+                    self._emit(f"MOV acc, {val_str} ; local {var.name}")
+                else:
+                    self._emit(f"MOV acc, {val_str} ; local {var.name}")
+                    self._emit(f"MOV {reg}, acc")
 
     def _gen_assign(self, assign: AssignStmt):
         target_name = self._get_var_name(assign.target)
@@ -198,7 +217,11 @@ class OmniCCodeGen:
         if assign.op == "=":
             if isinstance(assign.value, Literal):
                 val = self._format_literal(assign.value)
-                self._emit(f"MOV {target_reg}, {val}")
+                if target_reg == "acc":
+                    self._emit(f"MOV acc, {val}")
+                else:
+                    self._emit(f"MOV acc, {val}")
+                    self._emit(f"MOV {target_reg}, acc")
             elif isinstance(assign.value, Identifier):
                 src_name = assign.value.name
                 src_sym = self.current_scope.lookup(src_name)
@@ -207,10 +230,22 @@ class OmniCCodeGen:
                         val = f"0x{src_sym.const_value:02X}" if src_sym.const_value > 9 else str(src_sym.const_value)
                     else:
                         val = str(src_sym.const_value)
-                    self._emit(f"MOV {target_reg}, {val}")
+                    if target_reg == "acc":
+                        self._emit(f"MOV acc, {val}")
+                    else:
+                        self._emit(f"MOV acc, {val}")
+                        self._emit(f"MOV {target_reg}, acc")
                 else:
                     src_reg = src_sym.reg if src_sym and src_sym.reg else src_name.lower()
-                    self._emit(f"MOV {target_reg}, {src_reg}")
+                    if target_reg == src_reg:
+                        pass
+                    elif target_reg == "acc":
+                        self._emit(f"MOV acc, {src_reg}")
+                    elif src_reg == "acc":
+                        self._emit(f"MOV {target_reg}, acc")
+                    else:
+                        self._emit(f"MOV acc, {src_reg}")
+                        self._emit(f"MOV {target_reg}, acc")
             elif isinstance(assign.value, BinaryOp):
                 self._gen_binary_assign(target_reg, assign.value)
             elif isinstance(assign.value, UnaryOp):
@@ -219,7 +254,11 @@ class OmniCCodeGen:
                 self._gen_builtin_assign(target_reg, assign.value)
             else:
                 val = self._eval_literal_or_reg(assign.value)
-                self._emit(f"MOV {target_reg}, {val}")
+                if target_reg == "acc":
+                    self._emit(f"MOV acc, {val}")
+                else:
+                    self._emit(f"MOV acc, {val}")
+                    self._emit(f"MOV {target_reg}, acc")
 
         elif assign.op in ("+=", "-=", "&=", "|=", "^=", "<<=", ">>="):
             op_map = {
@@ -295,6 +334,20 @@ class OmniCCodeGen:
             self._emit("PULL")
             if target_reg != "osr":
                 self._emit(f"MOV {target_reg}, osr")
+        elif name in ("core_id", "get_core_id"):
+            self._emit("CORE_ID")
+            if target_reg != "acc":
+                self._emit(f"MOV {target_reg}, acc")
+        elif name in ("spinlock_acquire", "spinlock_acq", "lock_acquire", "lock_acq"):
+            lock_id = self._eval_literal_or_reg(call.args[0]) if call.args else "0"
+            self._emit(f"SPINLOCK_ACQ {lock_id}")
+            if target_reg != "acc":
+                self._emit(f"MOV {target_reg}, acc")
+        elif name in ("mailbox_read", "mb_read", "mb_rd"):
+            mb_id = self._eval_literal_or_reg(call.args[0]) if call.args else "0"
+            self._emit(f"MB_READ {mb_id}")
+            if target_reg != "acc":
+                self._emit(f"MOV {target_reg}, acc")
         else:
             self._gen_builtin_call(call)
 
@@ -650,6 +703,24 @@ class OmniCCodeGen:
             self._emit(f"QSPI_CFG {args[0]}")
         elif name == "assist_reset":
             self._emit("ASSIST_RESET")
+
+        # Multi-Core MP Synchronization Primitives
+        elif name in ("core_id", "get_core_id"):
+            self._emit("CORE_ID")
+        elif name in ("spinlock_acquire", "spinlock_acq", "lock_acquire", "lock_acq"):
+            self._emit(f"SPINLOCK_ACQ {args[0] if args else '0'}")
+        elif name in ("spinlock_release", "spinlock_rel", "lock_release", "lock_rel"):
+            self._emit(f"SPINLOCK_REL {args[0] if args else '0'}")
+        elif name in ("barrier_wait", "barrier"):
+            self._emit("BARRIER_WAIT")
+        elif name in ("mailbox_read", "mb_read", "mb_rd"):
+            self._emit(f"MB_READ {args[0] if args else '0'}")
+        elif name in ("mailbox_write", "mb_write", "mb_wr"):
+            mb_id = args[0] if len(args) > 0 else "0"
+            val = args[1] if len(args) > 1 else "acc"
+            if val != "acc":
+                self._emit(f"MOV acc, {val}")
+            self._emit(f"MB_WRITE {mb_id}")
 
         # User-defined function call
         else:

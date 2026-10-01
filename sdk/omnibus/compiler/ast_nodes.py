@@ -28,13 +28,15 @@ class Program(ASTNode):
 class FunctionDef(ASTNode):
     """Function declaration and body."""
     def __init__(self, return_type: str, name: str, params: List["VarDecl"],
-                 body: "Block", is_entry: bool = False, line: int = 1, col: int = 1):
+                 body: Optional["Block"] = None, is_entry: bool = False, is_prototype: bool = False,
+                 line: int = 1, col: int = 1):
         super().__init__(line, col)
         self.return_type = return_type
         self.name = name
         self.params = params
         self.body = body
         self.is_entry = is_entry
+        self.is_prototype = is_prototype
 
 
 class Block(ASTNode):

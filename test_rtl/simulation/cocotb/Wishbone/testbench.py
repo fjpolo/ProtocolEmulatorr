@@ -33,6 +33,8 @@ ADDR_AUDIO       = 0x18
 ADDR_DEBUG       = 0x1C
 ADDR_QSPI        = 0x20
 ADDR_GLITCH      = 0x24
+ADDR_MP_CTRL    = 0x28
+ADDR_MP_STATUS  = 0x2C
 ADDR_DMA_CTRL    = 0x30
 ADDR_DMA_STATUS  = 0x34
 ADDR_DMA_TX_ADDR = 0x38
@@ -45,6 +47,7 @@ ADDR_PROFILER_CTRL   = 0x50
 ADDR_PROFILER_STATUS = 0x54
 ADDR_PROFILER_TMIN   = 0x58
 ADDR_PROFILER_PERIOD = 0x5C
+ADDR_MP_MAILBOX  = 0x7C
 ADDR_IMEM        = 0x80
 
 
@@ -574,9 +577,9 @@ async def test_wb_dma_linear_tx(dut):
         await RisingEdge(dut.i_wb_clk)
         b = int(dut.tx_fifo_rdata.value)
         popped_bytes.append(b)
-        dut.core.o_tx_pop.value = 1
+        dut.core_mp.gen_cores[0].core_inst.o_tx_pop.value = 1
         await RisingEdge(dut.i_wb_clk)
-        dut.core.o_tx_pop.value = 0
+        dut.core_mp.gen_cores[0].core_inst.o_tx_pop.value = 0
 
     dut._log.info(f"Popped bytes: {[hex(x) for x in popped_bytes]}")
     assert popped_bytes == tx_data, f"Data mismatch! Expected {tx_data}, got {popped_bytes}"
@@ -605,10 +608,10 @@ async def test_wb_dma_linear_rx(dut):
     # 2. Push 8 test bytes into rx_fifo
     for b in rx_test_bytes:
         await RisingEdge(dut.i_wb_clk)
-        dut.core.o_data.value = b
-        dut.core.o_rx_push.value = 1
+        dut.core_mp.gen_cores[0].core_inst.o_data.value = b
+        dut.core_mp.gen_cores[0].core_inst.o_rx_push.value = 1
         await RisingEdge(dut.i_wb_clk)
-        dut.core.o_rx_push.value = 0
+        dut.core_mp.gen_cores[0].core_inst.o_rx_push.value = 0
 
     await ClockCycles(dut.i_wb_clk, 2)
     stat = await wb.read(ADDR_STATUS)
@@ -707,9 +710,9 @@ async def test_wb_dma_scatter_gather_chain(dut):
     for _ in range(8):
         await RisingEdge(dut.i_wb_clk)
         popped.append(int(dut.tx_fifo_rdata.value))
-        dut.core.o_tx_pop.value = 1
+        dut.core_mp.gen_cores[0].core_inst.o_tx_pop.value = 1
         await RisingEdge(dut.i_wb_clk)
-        dut.core.o_tx_pop.value = 0
+        dut.core_mp.gen_cores[0].core_inst.o_tx_pop.value = 0
 
     expected = buf1 + buf2
     dut._log.info(f"Scatter-Gather popped bytes: {[hex(x) for x in popped]}")
@@ -929,3 +932,317 @@ async def test_wb_bist_registers(dut):
     assert (status_stopped & 0x01) == 0, "Expected bist_active == 0 after stop"
 
     dut._log.info("Wishbone BIST Control & Status Registers (0x70..0x78) test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 15: OmniBus MP Multi-Core Telemetry & Control Registers (Task 35)
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_mp_registers_and_telemetry(dut):
+    """Test 35A: Verify OmniBus MP multi-core status, active cores, core reset, and stream mode."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+
+    # 1. Read default MP Status:
+    # Bits [3:0]   : active_cores mask (default 0b0011 = 3 for 2-core setup)
+    # Bits [7:4]   : barrier_status (0)
+    # Bits [11:8]  : spinlock_status (0)
+    # Bits [15:12] : NUM_CORES (2)
+    # Bits [22:16] : Core 0 PC
+    # Bits [30:24] : Core 1 PC
+    status = await wb.read(ADDR_MP_STATUS)
+    dut._log.info(f"Initial ADDR_MP_STATUS: 0x{status:08X}")
+    active_cores = status & 0x0F
+    num_cores = (status >> 12) & 0x0F
+    assert active_cores == 0x03, f"Expected active_cores=0x03, got 0x{active_cores:X}"
+    assert num_cores == 2, f"Expected NUM_CORES=2, got {num_cores}"
+
+    # 2. Configure MP Control:
+    # reg_core_en = 0b0001 (enable only core 0) -> bits [3:0]
+    # reg_core_rst = 0b0010 (reset core 1) -> bits [7:4]
+    # reg_stream_mode = 0b01 (Cascade) -> bits [9:8]
+    # Write to ADDR_MP_CTRL
+    ctrl_val = (1 << 8) | (0x2 << 4) | 0x1
+    await wb.write(ADDR_MP_CTRL, ctrl_val)
+    await ClockCycles(dut.i_wb_clk, 5)
+
+    ctrl_read = await wb.read(ADDR_MP_CTRL)
+    dut._log.info(f"Read ADDR_MP_CTRL: 0x{ctrl_read:08X}")
+    assert (ctrl_read & 0x0F) == 0x01, f"Expected core_en=0x1, got {ctrl_read & 0x0F}"
+    assert ((ctrl_read >> 4) & 0x0F) == 0x02, f"Expected core_rst=0x2, got {(ctrl_read >> 4) & 0x0F}"
+    assert ((ctrl_read >> 8) & 0x03) == 0x01, f"Expected stream_mode=1, got {(ctrl_read >> 8) & 0x03}"
+
+    # Restore default multi-core enable (0b0011) and stream mode (0b00)
+    await wb.write(ADDR_MP_CTRL, 0x0003)
+    await ClockCycles(dut.i_wb_clk, 5)
+
+    dut._log.info("OmniBus MP Telemetry & Control Registers test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 16: OmniBus MP Shared Hardware Mailboxes (0x7C & MB_READ / MB_WRITE)
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_mp_shared_mailboxes(dut):
+    """Test 35B: Verify atomic read/write of 8 shared mailboxes from Host Wishbone and microcode."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+
+    # 1. Host writes 0x5A to Mailbox 0 and 0x7E to Mailbox 2 via ADDR_MP_MAILBOX (0x7C)
+    # Write Mailbox 0: sel=0 (bits [10:8]=0), data=0x5A (bits [7:0])
+    await wb.write(ADDR_MP_MAILBOX, (0 << 8) | 0x5A)
+    # Write Mailbox 2: sel=2 (bits [10:8]=2), data=0x7E (bits [7:0])
+    await wb.write(ADDR_MP_MAILBOX, (2 << 8) | 0x7E)
+    await ClockCycles(dut.i_wb_clk, 5)
+
+    # Read back Mailbox window 0 (Mailboxes 3..0):
+    # Word format: {mailbox[3], mailbox[2], mailbox[1], mailbox[0]}
+    mb_w0 = await wb.read(ADDR_MP_MAILBOX)
+    dut._log.info(f"Host Mailbox Window 0: 0x{mb_w0:08X}")
+    assert (mb_w0 & 0xFF) == 0x5A, f"Expected Mailbox 0 = 0x5A, got 0x{mb_w0 & 0xFF:02X}"
+    assert ((mb_w0 >> 16) & 0xFF) == 0x7E, f"Expected Mailbox 2 = 0x7E, got 0x{(mb_w0 >> 16) & 0xFF:02X}"
+
+    # 2. Program Core 0 microcode in Bank 0:
+    # Read Mailbox 0 (0x5A), ADD 0x15 (= 0x6F), write to Mailbox 1
+    # Microcode:
+    # 0: MB_READ 0     (0xF800)
+    # 1: ADD acc, 0x15 (0xB015)
+    # 2: MB_WRITE 1    (0xF901)
+    # 3: NOP [50]      (0x0032)
+    # 4: JMP 3         (0x8003)
+    await wb.write(ADDR_CTRL, 0x02) # prog_en = 1
+    await wb.write(ADDR_IMEM_BANK, 0)
+    await wb.write(ADDR_IMEM + 0x00, 0xF800) # MB_READ 0
+    await wb.write(ADDR_IMEM + 0x04, 0xB015) # ADD acc, 0x15
+    await wb.write(ADDR_IMEM + 0x08, 0xF901) # MB_WRITE 1
+    await wb.write(ADDR_IMEM + 0x0C, 0x0032) # NOP [50]
+    await wb.write(ADDR_IMEM + 0x10, 0x8003) # JMP 3
+
+    # Release programming mode and let Core 0 execute
+    await wb.write(ADDR_CTRL, 0x00)
+    await ClockCycles(dut.i_wb_clk, 30)
+
+    # Read back Mailbox Window 0 from Host
+    mb_w0_post = await wb.read(ADDR_MP_MAILBOX)
+    dut._log.info(f"Post-execution Mailbox Window 0: 0x{mb_w0_post:08X}")
+    mb1_val = (mb_w0_post >> 8) & 0xFF
+    assert mb1_val == 0x6F, f"Expected Mailbox 1 = 0x6F (0x5A + 0x15), got 0x{mb1_val:02X}"
+
+    dut._log.info("OmniBus MP Shared Mailboxes test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 17: OmniBus MP Atomic Hardware Spinlocks (SPINLOCK_ACQ / SPINLOCK_REL)
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_mp_atomic_spinlocks(dut):
+    """Test 35C: Verify atomic mutual exclusion, busy conflict detection, and release arbitration."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+
+    # Halt cores for programming
+    await wb.write(ADDR_CTRL, 0x02)
+
+    # Program Core 0 (Bank 0):
+    # 0: SPINLOCK_ACQ 1   (0xFD01) -> Acquires lock 1 (success, acc=0, carry=0)
+    # 1: NOP [40]         (0x0028) -> Holds lock for 40 cycles
+    # 2: SPINLOCK_REL 1   (0xFE01) -> Releases lock 1
+    # 3: NOP [50]         (0x0032)
+    # 4: JMP 3            (0x8003)
+    await wb.write(ADDR_IMEM_BANK, 0)
+    await wb.write(ADDR_IMEM + 0x00, 0xFD01)
+    await wb.write(ADDR_IMEM + 0x04, 0x0028)
+    await wb.write(ADDR_IMEM + 0x08, 0xFE01)
+    await wb.write(ADDR_IMEM + 0x0C, 0x0032)
+    await wb.write(ADDR_IMEM + 0x10, 0x8003)
+
+    # Program Core 1 (Bank 1):
+    # 32: NOP [10]        (0x000A) -> Starts slightly after Core 0
+    # 33: SPINLOCK_ACQ 1  (0xFD01) -> Attempts acquire lock 1 while held by Core 0 (fails, acc=1, carry=1)
+    # 34: MB_WRITE 2      (0xF902) -> Logs result of first attempt (0x01 = busy) to Mailbox 2
+    # 35: NOP [45]        (0x002D) -> Waits until Core 0 releases lock 1
+    # 36: SPINLOCK_ACQ 1  (0xFD01) -> Attempts acquire again (succeeds, acc=0, carry=0)
+    # 37: MB_WRITE 3      (0xF903) -> Logs result of second attempt (0x00 = success) to Mailbox 3
+    # 38: SPINLOCK_REL 1  (0xFE01) -> Releases lock 1
+    # 39: JMP 39          (0x8027)
+    await wb.write(ADDR_IMEM_BANK, 1)
+    await wb.write(ADDR_IMEM + 0x00, 0x000A)
+    await wb.write(ADDR_IMEM + 0x04, 0xFD01)
+    await wb.write(ADDR_IMEM + 0x08, 0xF902)
+    await wb.write(ADDR_IMEM + 0x0C, 0x002D)
+    await wb.write(ADDR_IMEM + 0x10, 0xFD01)
+    await wb.write(ADDR_IMEM + 0x14, 0xF903)
+    await wb.write(ADDR_IMEM + 0x18, 0xFE01)
+    await wb.write(ADDR_IMEM + 0x1C, 0x8027)
+
+    # Start both cores
+    await wb.write(ADDR_CTRL, 0x00)
+
+    # Check lock status while held by Core 0
+    await ClockCycles(dut.i_wb_clk, 20)
+    status_mid = await wb.read(ADDR_MP_STATUS)
+    lock_status = (status_mid >> 8) & 0x0F
+    dut._log.info(f"Lock status during Core 0 hold: 0x{lock_status:X}")
+    assert (lock_status & 0x02) == 0x02, "Expected Lock 1 to be active/held (bit 1 = 1)"
+
+    # Wait for completion of mutual exclusion sequence
+    await ClockCycles(dut.i_wb_clk, 80)
+    status_end = await wb.read(ADDR_MP_STATUS)
+    lock_status_end = (status_end >> 8) & 0x0F
+    assert (lock_status_end & 0x02) == 0x00, "Expected Lock 1 to be released"
+
+    # Read Mailboxes to verify attempt 1 (busy=1) and attempt 2 (granted=0)
+    mb_val = await wb.read(ADDR_MP_MAILBOX)
+    mb2 = (mb_val >> 16) & 0xFF
+    mb3 = (mb_val >> 24) & 0xFF
+    dut._log.info(f"Core 1 Lock Acquisition Logs: Attempt 1={mb2}, Attempt 2={mb3}")
+    assert mb2 == 0x01, f"Expected attempt 1 busy (0x01), got 0x{mb2:02X}"
+    assert mb3 == 0x00, f"Expected attempt 2 granted (0x00), got 0x{mb3:02X}"
+
+    dut._log.info("OmniBus MP Atomic Hardware Spinlocks test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 18: OmniBus MP Hardware Rendezvous Barrier (BARRIER_WAIT)
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_mp_hardware_barrier(dut):
+    """Test 35D: Verify simultaneous phase-locked release across all active cores."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+
+    # Halt cores for programming
+    await wb.write(ADDR_CTRL, 0x02)
+
+    # Program Core 0 (Bank 0):
+    # 0: MOV acc, 0xAA    (0xB6AA)
+    # 1: NOP [15]         (0x000F)
+    # 2: BARRIER_WAIT     (0xFF00) -> Waits at barrier for Core 1
+    # 3: MB_WRITE 0       (0xF900) -> Writes 0xAA to Mailbox 0 after release
+    # 4: JMP 4            (0x8004)
+    await wb.write(ADDR_IMEM_BANK, 0)
+    await wb.write(ADDR_IMEM + 0x00, 0xB6AA)
+    await wb.write(ADDR_IMEM + 0x04, 0x000F)
+    await wb.write(ADDR_IMEM + 0x08, 0xFF00)
+    await wb.write(ADDR_IMEM + 0x0C, 0xF900)
+    await wb.write(ADDR_IMEM + 0x10, 0x8004)
+
+    # Program Core 1 (Bank 1):
+    # 32: MOV acc, 0x55   (0xB655)
+    # 33: NOP [40]        (0x0028) -> Arrives much later than Core 0
+    # 34: BARRIER_WAIT    (0xFF00) -> Arrives at barrier, triggering simultaneous release
+    # 35: MB_WRITE 1      (0xF901) -> Writes 0x55 to Mailbox 1 after release
+    # 36: JMP 36          (0x8024)
+    await wb.write(ADDR_IMEM_BANK, 1)
+    await wb.write(ADDR_IMEM + 0x00, 0xB655)
+    await wb.write(ADDR_IMEM + 0x04, 0x0028)
+    await wb.write(ADDR_IMEM + 0x08, 0xFF00)
+    await wb.write(ADDR_IMEM + 0x0C, 0xF901)
+    await wb.write(ADDR_IMEM + 0x10, 0x8024)
+
+    # Start cores
+    await wb.write(ADDR_CTRL, 0x00)
+
+    # At cycle 25: Core 0 is stalled at barrier, Core 1 is still in delay
+    await ClockCycles(dut.i_wb_clk, 25)
+    st_barrier = await wb.read(ADDR_MP_STATUS)
+    barrier_mask = (st_barrier >> 4) & 0x0F
+    dut._log.info(f"Barrier status at cycle 25: 0x{barrier_mask:X}")
+    assert (barrier_mask & 0x01) == 0x01, "Expected Core 0 to be arrived/waiting at barrier"
+    assert (barrier_mask & 0x02) == 0x00, "Expected Core 1 to NOT yet have arrived at barrier"
+
+    # Wait for Core 1 to arrive and release to fire
+    await ClockCycles(dut.i_wb_clk, 40)
+    mb_out = await wb.read(ADDR_MP_MAILBOX)
+    dut._log.info(f"Post-barrier Mailbox Window 0: 0x{mb_out:08X}")
+    mb0 = mb_out & 0xFF
+    mb1 = (mb_out >> 8) & 0xFF
+    assert mb0 == 0xAA, f"Expected Mailbox 0 = 0xAA, got 0x{mb0:02X}"
+    assert mb1 == 0x55, f"Expected Mailbox 1 = 0x55, got 0x{mb1:02X}"
+
+    dut._log.info("OmniBus MP Hardware Rendezvous Barrier test PASSED!")
+
+
+# -----------------------------------------------------------------------------
+# Test 19: OmniBus MP Inter-Core Cascade Pipeline Streaming
+# -----------------------------------------------------------------------------
+@cocotb.test()
+async def test_wb_mp_cascade_pipeline_streaming(dut):
+    """Test 35E: Verify Inter-Core Cascade Stream: Host TX -> Core 0 -> FIFO 0 -> Core 1 -> Host RX."""
+    cocotb.start_soon(Clock(dut.i_wb_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+    wb = WishboneMaster(dut)
+
+    # 1. Halt cores and configure Cascade stream mode (stream_mode = 01)
+    await wb.write(ADDR_CTRL, 0x02)
+    # Enable Cores 0 & 1 with stream_mode=1 (Cascade Pipeline)
+    await wb.write(ADDR_MP_CTRL, (1 << 8) | 0x03)
+
+    # 2. Program Core 0 (Bank 0):
+    # Pull byte from Host TX FIFO, Add 0x10, push downstream to Inter-Core FIFO 0
+    # Microcode:
+    # 0: PULL BLOCK       (0x9001)
+    # 1: MOV acc, osr     (0xB800)
+    # 2: ADD acc, 0x10    (0xB010)
+    # 3: MOV isr, acc     (0xB908)
+    # 4: PUSH BLOCK       (0xA001)
+    # 5: JMP 0            (0x8000)
+    await wb.write(ADDR_IMEM_BANK, 0)
+    await wb.write(ADDR_IMEM + 0x00, 0x9001)
+    await wb.write(ADDR_IMEM + 0x04, 0xB800)
+    await wb.write(ADDR_IMEM + 0x08, 0xB010)
+    await wb.write(ADDR_IMEM + 0x0C, 0xB908)
+    await wb.write(ADDR_IMEM + 0x10, 0xA001)
+    await wb.write(ADDR_IMEM + 0x14, 0x8000)
+
+    # 3. Program Core 1 (Bank 1):
+    # Pull byte from Inter-Core FIFO 0, XOR 0x01, push upstream to Host RX FIFO
+    # Microcode:
+    # 32: PULL BLOCK      (0x9001)
+    # 33: MOV acc, osr    (0xB800)
+    # 34: XOR acc, 0x01   (0xB501)
+    # 35: MOV isr, acc    (0xB908)
+    # 36: PUSH BLOCK      (0xA001)
+    # 37: JMP 32          (0x8020)
+    await wb.write(ADDR_IMEM_BANK, 1)
+    await wb.write(ADDR_IMEM + 0x00, 0x9001)
+    await wb.write(ADDR_IMEM + 0x04, 0xB800)
+    await wb.write(ADDR_IMEM + 0x08, 0xB501)
+    await wb.write(ADDR_IMEM + 0x0C, 0xB908)
+    await wb.write(ADDR_IMEM + 0x10, 0xA001)
+    await wb.write(ADDR_IMEM + 0x14, 0x8020)
+
+    # Release programming mode and run pipeline
+    await wb.write(ADDR_CTRL, 0x00)
+    await ClockCycles(dut.i_wb_clk, 5)
+
+    # 4. Host writes 4 bytes into Host TX FIFO:
+    # Test vector: [0x05, 0x12, 0x34, 0xA0]
+    # Core 0 transforms: x + 0x10 -> [0x15, 0x22, 0x44, 0xB0]
+    # Core 1 transforms: y ^ 0x01 -> [0x14, 0x23, 0x45, 0xB1]
+    input_bytes = [0x05, 0x12, 0x34, 0xA0]
+    expected_bytes = [(b + 0x10) ^ 0x01 for b in input_bytes]
+
+    for b in input_bytes:
+        await wb.write(ADDR_DATA, b)
+
+    # Wait for data to propagate through both pipeline stages
+    await ClockCycles(dut.i_wb_clk, 50)
+
+    # 5. Read back 4 bytes from Host RX FIFO
+    received_bytes = []
+    for _ in range(4):
+        val = (await wb.read(ADDR_DATA)) & 0xFF
+        received_bytes.append(val)
+
+    dut._log.info(f"Cascade Pipeline Inputs:   {[hex(x) for x in input_bytes]}")
+    dut._log.info(f"Cascade Pipeline Expected: {[hex(x) for x in expected_bytes]}")
+    dut._log.info(f"Cascade Pipeline Received: {[hex(x) for x in received_bytes]}")
+
+    assert received_bytes == expected_bytes, f"Mismatch in cascade stream: expected {expected_bytes}, got {received_bytes}"
+
+    dut._log.info("OmniBus MP Inter-Core Cascade Pipeline Streaming test PASSED!")

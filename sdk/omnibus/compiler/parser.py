@@ -154,10 +154,13 @@ class OmniCParser:
         name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier after type")
         name = name_tok.value
 
-        # Check if function: name(...) { ... }
+        # Check if function: name(...) { ... } or name(...);
         if self._match(TokenType.LPAREN):
             params = self._parse_param_list()
             self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+            if self._match(TokenType.SEMICOLON):
+                return FunctionDef(type_name, name, params, None, is_entry=False,
+                                   is_prototype=True, line=start_tok.line, col=start_tok.col)
             body = self._parse_block()
             is_entry = (name == "main")
             return FunctionDef(type_name, name, params, body, is_entry=is_entry,

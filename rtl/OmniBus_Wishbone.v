@@ -15,7 +15,8 @@
 
 module OmniBus_Wishbone #(
     parameter integer FIFO_DEPTH        = 16,
-    parameter integer DEFAULT_BAUD_DIV  = 433   // 115200 baud @ 50MHz
+    parameter integer DEFAULT_BAUD_DIV  = 433,  // 115200 baud @ 50MHz
+    parameter integer NUM_CORES         = 2     // Supported: 1, 2, or 4 Cores
 )(
     // -------------------------------------------------------------------------
     // Wishbone B4 Slave Interface
@@ -62,16 +63,18 @@ module OmniBus_Wishbone #(
     // =========================================================================
     // Address Map Offsets (32-bit aligned words)
     // =========================================================================
-    localparam [7:0] ADDR_DATA      = 8'h00;  // RW: TX FIFO write / RX FIFO read
-    localparam [7:0] ADDR_STATUS    = 8'h04;  // RO: FIFO flags, levels, PC telemetry
-    localparam [7:0] ADDR_CTRL      = 8'h08;  // RW: Soft reset, prog_en, FIFO flushes, IRQ mask
-    localparam [7:0] ADDR_BAUD      = 8'h0C;  // RW: Dynamic baud rate divisor
-    localparam [7:0] ADDR_GPIO      = 8'h10;  // RO: GPIO pin readback [i_gpio, o_gpio, o_oe]
-    localparam [7:0] ADDR_IMEM_BANK = 8'h14;  // RW: Active IMEM bank for programming window (0..3)
-    localparam [7:0] ADDR_AUDIO     = 8'h18;  // RW: Audio sample, mode, APU control, and telemetry
-    localparam [7:0] ADDR_DEBUG     = 8'h1C;  // RO: Hardware JTAG TAP state, SWD ACK, parity error & telemetry
-    localparam [7:0] ADDR_QSPI      = 8'h20;  // RO: Hardware Quad-SPI state, width, cpol, rx_byte & addr_reg telemetry
-    localparam [7:0] ADDR_GLITCH    = 8'h24;  // RO: Hardware Glitch status, timer & MitM telemetry
+    localparam [7:0] ADDR_DATA        = 8'h00;  // RW: TX FIFO write / RX FIFO read
+    localparam [7:0] ADDR_STATUS      = 8'h04;  // RO: FIFO flags, levels, PC telemetry
+    localparam [7:0] ADDR_CTRL        = 8'h08;  // RW: Soft reset, prog_en, FIFO flushes, IRQ mask
+    localparam [7:0] ADDR_BAUD        = 8'h0C;  // RW: Dynamic baud rate divisor
+    localparam [7:0] ADDR_GPIO        = 8'h10;  // RO: GPIO pin readback [i_gpio, o_gpio, o_oe]
+    localparam [7:0] ADDR_IMEM_BANK   = 8'h14;  // RW: Active IMEM bank for programming window (0..3)
+    localparam [7:0] ADDR_AUDIO       = 8'h18;  // RW: Audio sample, mode, APU control, and telemetry
+    localparam [7:0] ADDR_DEBUG       = 8'h1C;  // RO: Hardware JTAG TAP state, SWD ACK, parity error & telemetry
+    localparam [7:0] ADDR_QSPI        = 8'h20;  // RO: Hardware Quad-SPI state, width, cpol, rx_byte & addr_reg telemetry
+    localparam [7:0] ADDR_GLITCH      = 8'h24;  // RO: Hardware Glitch status, timer & MitM telemetry
+    localparam [7:0] ADDR_MP_CTRL     = 8'h28;  // RW: Multi-Core MP Control (core_en, core_rst, stream_mode, barrier_rst)
+    localparam [7:0] ADDR_MP_STATUS   = 8'h2C;  // RO: Multi-Core MP Status (active_cores, barrier, spinlock, core count, PC)
     localparam [7:0] ADDR_DMA_CTRL    = 8'h30;  // RW: DMA global & channel control / start
     localparam [7:0] ADDR_DMA_STATUS  = 8'h34;  // RO: DMA channel status & FSM states
     localparam [7:0] ADDR_DMA_TX_ADDR = 8'h38;  // RW: Linear TX Source Address / SG Desc Address
@@ -80,18 +83,19 @@ module OmniBus_Wishbone #(
     localparam [7:0] ADDR_DMA_RX_LEN  = 8'h44;  // RW: Linear RX Byte Count
     localparam [7:0] ADDR_DMA_TX_DESC = 8'h48;  // RO: Current active TX descriptor address
     localparam [7:0] ADDR_DMA_RX_DESC = 8'h4C;  // RO: Current active RX descriptor address
-    localparam [7:0] ADDR_PROFILER_CTRL   = 8'h50;  // RW: Profiler Control: [2:0]=pin, [6:3]=filter, [8]=arm, [9]=stop, [10]=rst, [11]=irq_en
-    localparam [7:0] ADDR_PROFILER_STATUS = 8'h54;  // RO: Profiler Status: [0]=busy, [1]=done, [2]=idle_pol, [3]=is_clock, [7:4]=proto_id, [15:8]=edge_count
-    localparam [7:0] ADDR_PROFILER_TMIN   = 8'h58;  // RO: Profiler t_min: [15:0]=tmin (baud divisor), [31:16]=tmax
-    localparam [7:0] ADDR_PROFILER_PERIOD = 8'h5C;  // RO: Profiler Symmetry: [15:0]=tmin_high, [31:16]=tmin_low
-    localparam [7:0] ADDR_USB_CTRL        = 8'h60;  // RW: [0]=sie_en, [1]=speed_mode, [2]=auto_ack, [9:3]=dev_addr, [25:10]=bit_div
-    localparam [7:0] ADDR_USB_STATUS      = 8'h64;  // RO: [7:0]=status_byte, [11:8]=token_pid, [15:12]=token_endp, [22:16]=token_addr, [27:24]=rx_pid, [28]=bus_reset, [29]=bus_idle
-    localparam [7:0] ADDR_USB_EP_CTRL     = 8'h68;  // RW: [3:0]=ep_stall, [7:4]=ep_nak, [11:8]=ep_toggle
-    localparam [7:0] ADDR_USB_TX_TOKEN    = 8'h6C;  // WO: [3:0]=token_pid, [10:4]=token_addr, [14:11]=token_endp, [15]=tx_req, [19:16]=handshake_pid, [20]=handshake_req
-    localparam [7:0] ADDR_BIST_CTRL       = 8'h70;  // RW: [1:0]=mode, [2]=jitter_en, [3]=bist_en, [4]=start, [5]=stop, [6]=rst, [11:8]=stage
-    localparam [7:0] ADDR_BIST_STATUS     = 8'h74;  // RO: [0]=active, [1]=fail_flag, [3:2]=mode, [7:4]=stage, [23:8]=fail_cnt[15:0]
-    localparam [7:0] ADDR_BIST_SCORES     = 8'h78;  // RO: [15:0]=vec_cnt, [31:16]=pass_cnt
-    localparam [7:0] ADDR_IMEM        = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
+    localparam [7:0] ADDR_PROFILER_CTRL   = 8'h50;  // RW: Profiler Control
+    localparam [7:0] ADDR_PROFILER_STATUS = 8'h54;  // RO: Profiler Status
+    localparam [7:0] ADDR_PROFILER_TMIN   = 8'h58;  // RO: Profiler t_min
+    localparam [7:0] ADDR_PROFILER_PERIOD = 8'h5C;  // RO: Profiler Symmetry
+    localparam [7:0] ADDR_USB_CTRL        = 8'h60;  // RW: USB SIE Control
+    localparam [7:0] ADDR_USB_STATUS      = 8'h64;  // RO: USB SIE Status
+    localparam [7:0] ADDR_USB_EP_CTRL     = 8'h68;  // RW: USB Endpoint Control
+    localparam [7:0] ADDR_USB_TX_TOKEN    = 8'h6C;  // WO: USB TX Token Request
+    localparam [7:0] ADDR_BIST_CTRL       = 8'h70;  // RW: BIST Control
+    localparam [7:0] ADDR_BIST_STATUS     = 8'h74;  // RO: BIST Status
+    localparam [7:0] ADDR_BIST_SCORES     = 8'h78;  // RO: BIST Pass / Total Vectors
+    localparam [7:0] ADDR_MP_MAILBOX      = 8'h7C;  // RW: Multi-Core Shared Mailbox Window (0..7)
+    localparam [7:0] ADDR_IMEM            = 8'h80;  // Base address for 32-word IMEM window (0x80..0xFC)
 
     // =========================================================================
     // Control & Configuration Registers
@@ -105,6 +109,15 @@ module OmniBus_Wishbone #(
     reg        reg_irq_tx_empty_en;
     reg        reg_irq_rx_ready_en;
     reg        reg_irq_rx_afull_en;
+
+    // Multi-Core MP Registers
+    reg [3:0]  reg_core_en;
+    reg [3:0]  reg_core_rst;
+    reg [1:0]  reg_stream_mode;
+    reg        reg_barrier_rst;
+    reg [2:0]  reg_wb_mb_sel;
+    reg [7:0]  reg_wb_mb_wdata;
+    reg        reg_wb_mb_we;
 
     // DMA Control Registers
     reg        reg_dma_tx_en;
@@ -232,6 +245,10 @@ module OmniBus_Wishbone #(
     wire        core_rx_push;
     wire [15:0] core_prog_rdata;
 
+    assign tx_fifo_pop   = core_tx_pop;
+    assign rx_fifo_push  = core_rx_push;
+    assign rx_fifo_wdata = core_odata;
+
     // Autonomous Profiler Telemetry Wires (Task 27)
     wire        profiler_busy;
     wire        profiler_done;
@@ -261,9 +278,7 @@ module OmniBus_Wishbone #(
     wire [15:0] bist_pass_cnt;
     wire [15:0] bist_fail_cnt;
 
-    assign tx_fifo_pop   = core_tx_pop;
-    assign rx_fifo_push  = core_rx_push;
-    assign rx_fifo_wdata = core_odata;
+
 
     // Direct IMEM programming signals from Wishbone (mapped through reg_imem_bank)
     wire        wb_imem_sel  = (i_wb_addr[7] == 1'b1); // Address 0x80 to 0xFF
@@ -274,25 +289,84 @@ module OmniBus_Wishbone #(
     wire core_prog_en = reg_prog_en || wb_imem_sel;
 
     // =========================================================================
-    // ProtocolEmulator Instance
+    // Multi-Core Protocol Engine Instance (OmniBus MP)
     // =========================================================================
+    wire [3:0]             mp_active_cores;
+    wire [3:0]             mp_barrier_status;
+    wire [3:0]             mp_spinlock_status;
+    wire [NUM_CORES*7-1:0] mp_core_pc;
+    wire [NUM_CORES-1:0]   mp_core_halted;
+    wire [31:0]            mp_mb_rdata_w0;
+    wire [31:0]            mp_mb_rdata_w1;
+    wire [7:0]             mp_gpio_out;
+    wire [7:0]             mp_gpio_oe;
+    wire                   mp_tx;
+    wire                   mp_spi_sck;
+    wire                   mp_spi_cs_n;
+
+    wire [3:0] default_core_en = (NUM_CORES == 1) ? 4'b0001 :
+                                 (NUM_CORES == 2) ? 4'b0011 : 4'b1111;
+    wire [3:0] eff_core_en     = (reg_core_en != 4'b0000) ? reg_core_en : default_core_en;
+
+    ProtocolEmulator_MP #(
+        .NUM_CORES (NUM_CORES),
+        .FIFO_DEPTH(FIFO_DEPTH)
+    ) core_mp (
+        .i_clk              (i_wb_clk),
+        .i_reset_n          (core_rst_n),
+        .i_data             (tx_fifo_rdata),
+        .o_data             (core_odata),
+        .i_tx_valid         (!tx_fifo_empty),
+        .o_tx_pop           (core_tx_pop),
+        .i_rx_full          (rx_fifo_full),
+        .o_rx_push          (core_rx_push),
+        .i_baud_div         (reg_baud),
+        .i_gpio             (i_gpio),
+        .o_gpio             (mp_gpio_out),
+        .o_gpio_oe          (mp_gpio_oe),
+        .i_rx               (i_rx),
+        .o_tx               (mp_tx),
+        .o_spi_sck          (mp_spi_sck),
+        .o_spi_cs_n         (mp_spi_cs_n),
+        .i_prog_en          (core_prog_en),
+        .i_prog_we          (wb_imem_we),
+        .i_prog_addr        (wb_imem_addr),
+        .i_prog_data        (i_wb_data[15:0]),
+        .o_prog_rdata       (core_prog_rdata),
+        .i_core_en          (eff_core_en),
+        .i_core_rst         (reg_core_rst),
+        .i_stream_mode      (reg_stream_mode),
+        .i_barrier_rst      (reg_barrier_rst),
+        .o_active_cores     (mp_active_cores),
+        .o_barrier_status   (mp_barrier_status),
+        .o_spinlock_status  (mp_spinlock_status),
+        .o_core_pc          (mp_core_pc),
+        .o_core_halted      (mp_core_halted),
+        .i_wb_mb_sel        (reg_wb_mb_sel),
+        .i_wb_mb_wdata      (reg_wb_mb_wdata),
+        .i_wb_mb_we         (reg_wb_mb_we),
+        .o_wb_mb_rdata_w0   (mp_mb_rdata_w0),
+        .o_wb_mb_rdata_w1   (mp_mb_rdata_w1)
+    );
+
+    // Single-Core Acceleration & Diagnostics Unit (for Profiler, USB SIE, BIST telemetry)
     ProtocolEmulator core (
         .i_clk        (i_wb_clk),
         .i_reset_n    (core_rst_n),
-        .i_data       (tx_fifo_rdata),
-        .o_data       (core_odata),
-        .i_tx_valid   (!tx_fifo_empty),
-        .o_tx_pop     (core_tx_pop),
-        .i_rx_full    (rx_fifo_full),
-        .o_rx_push    (core_rx_push),
+        .i_data       (8'h00),
+        .o_data       (),
+        .i_tx_valid   (1'b0),
+        .o_tx_pop     (),
+        .i_rx_full    (1'b0),
+        .o_rx_push    (),
         .i_baud_div   (reg_baud),
         .i_gpio       (i_gpio),
-        .o_gpio       (o_gpio),
-        .o_gpio_oe    (o_gpio_oe),
+        .o_gpio       (),
+        .o_gpio_oe    (),
         .i_rx         (i_rx),
-        .o_tx         (o_tx),
-        .o_spi_sck    (o_spi_sck),
-        .o_spi_cs_n   (o_spi_cs_n),
+        .o_tx         (),
+        .o_spi_sck    (),
+        .o_spi_cs_n   (),
         // Task 27 Profiler
         .i_profiler_wb_arm   (reg_profiler_arm),
         .i_profiler_wb_stop  (reg_profiler_stop),
@@ -350,8 +424,14 @@ module OmniBus_Wishbone #(
         .i_prog_we    (wb_imem_we),
         .i_prog_addr  (wb_imem_addr),
         .i_prog_data  (i_wb_data[15:0]),
-        .o_prog_rdata (core_prog_rdata)
+        .o_prog_rdata ()
     );
+
+    assign o_gpio     = mp_gpio_out;
+    assign o_gpio_oe  = mp_gpio_oe;
+    assign o_tx       = mp_tx;
+    assign o_spi_sck  = mp_spi_sck;
+    assign o_spi_cs_n = mp_spi_cs_n;
 
     // =========================================================================
     // Direct Memory Access (DMA) Scatter-Gather Controller Instance
@@ -460,6 +540,27 @@ module OmniBus_Wishbone #(
         i_gpio
     };
 
+    // Multi-Core Telemetry Extraction
+    wire [6:0] c0_pc = mp_core_pc[6:0];
+    wire [6:0] c1_pc = (NUM_CORES > 1) ? mp_core_pc[13:7] : 7'd0;
+
+    wire [31:0] reg_mp_ctrl_read = {
+        16'd0,
+        3'd0, reg_barrier_rst,
+        2'd0, reg_stream_mode,
+        reg_core_rst,
+        eff_core_en
+    };
+
+    wire [31:0] reg_mp_status_read = {
+        1'b0, c1_pc,
+        1'b0, c0_pc,
+        NUM_CORES[3:0],
+        mp_spinlock_status,
+        mp_barrier_status,
+        mp_active_cores
+    };
+
     // Combinational Read Multiplexer
     reg [31:0] wb_rdata_comb;
     always @(*) begin
@@ -477,6 +578,8 @@ module OmniBus_Wishbone #(
                 ADDR_DEBUG:       wb_rdata_comb = {16'h0000, core.swd_last_ack, core.swd_parity_err, core.swd_en, 3'b000, core.jtag_tdo_sampled, core.jtag_state, core.jtag_tms, core.jtag_tck, core.jtag_en};
                 ADDR_QSPI:        wb_rdata_comb = {core.qspi_addr_reg[15:0], core.qspi_rx_byte, core.qspi_state, core.qspi_cpol, core.qspi_width, core.qspi_en};
                 ADDR_GLITCH:      wb_rdata_comb = {core.mitm_match_count, core.glitch_timer[7:0], core.mitm_replace_byte, core.glitch_fired, core.mitm_match_found, core.glitch_armed, core.glitch_active, core.glitch_pol, core.glitch_pin};
+                ADDR_MP_CTRL:     wb_rdata_comb = reg_mp_ctrl_read;
+                ADDR_MP_STATUS:   wb_rdata_comb = reg_mp_status_read;
                 ADDR_DMA_CTRL:    wb_rdata_comb = {23'd0, reg_dma_abort, reg_dma_rx_sg_en, reg_dma_rx_irq_en, reg_dma_rx_start, reg_dma_rx_en, reg_dma_tx_sg_en, reg_dma_tx_irq_en, reg_dma_tx_start, reg_dma_tx_en};
                 ADDR_DMA_STATUS:  wb_rdata_comb = dma_status;
                 ADDR_DMA_TX_ADDR: wb_rdata_comb = reg_dma_tx_addr;
@@ -495,6 +598,7 @@ module OmniBus_Wishbone #(
                 ADDR_BIST_CTRL:       wb_rdata_comb = {20'd0, reg_bist_wb_stage, 1'b0, 1'b0, 1'b0, reg_bist_wb_en, reg_bist_wb_jitter_en, reg_bist_wb_mode};
                 ADDR_BIST_STATUS:     wb_rdata_comb = {8'd0, bist_fail_cnt, bist_stage, bist_mode, bist_fail_flag, bist_active};
                 ADDR_BIST_SCORES:     wb_rdata_comb = {bist_pass_cnt, bist_vec_cnt};
+                ADDR_MP_MAILBOX:      wb_rdata_comb = mp_mb_rdata_w0;
                 default:          wb_rdata_comb = 32'h00000000;
             endcase
         end
@@ -512,6 +616,13 @@ module OmniBus_Wishbone #(
             reg_irq_tx_empty_en <= 1'b0;
             reg_irq_rx_ready_en <= 1'b0;
             reg_irq_rx_afull_en <= 1'b0;
+            reg_core_en         <= default_core_en;
+            reg_core_rst        <= 4'd0;
+            reg_stream_mode     <= 2'b00;
+            reg_barrier_rst     <= 1'b0;
+            reg_wb_mb_sel       <= 3'd0;
+            reg_wb_mb_wdata     <= 8'h00;
+            reg_wb_mb_we        <= 1'b0;
             reg_dma_tx_en       <= 1'b0;
             reg_dma_tx_start    <= 1'b0;
             reg_dma_tx_irq_en   <= 1'b0;
@@ -562,6 +673,8 @@ module OmniBus_Wishbone #(
             reg_profiler_arm  <= 1'b0;
             reg_profiler_stop <= 1'b0;
             reg_profiler_rst  <= 1'b0;
+            reg_wb_mb_we      <= 1'b0;
+            reg_barrier_rst   <= 1'b0;
 
             if (wb_valid && !o_wb_ack) begin
                 o_wb_ack  <= 1'b1;
@@ -582,6 +695,21 @@ module OmniBus_Wishbone #(
                         end
                         ADDR_IMEM_BANK: begin
                             reg_imem_bank <= i_wb_data[1:0];
+                        end
+                        ADDR_MP_CTRL: begin
+                            if (i_wb_sel[0]) begin
+                                reg_core_en  <= i_wb_data[3:0];
+                                reg_core_rst <= i_wb_data[7:4];
+                            end
+                            if (i_wb_sel[1]) begin
+                                reg_stream_mode <= i_wb_data[9:8];
+                                reg_barrier_rst <= i_wb_data[12];
+                            end
+                        end
+                        ADDR_MP_MAILBOX: begin
+                            reg_wb_mb_we    <= 1'b1;
+                            reg_wb_mb_sel   <= i_wb_data[10:8];
+                            reg_wb_mb_wdata <= i_wb_data[7:0];
                         end
                         ADDR_DMA_CTRL: begin
                             reg_dma_tx_en     <= i_wb_data[0];

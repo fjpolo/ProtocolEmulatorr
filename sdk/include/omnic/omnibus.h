@@ -38,4 +38,12 @@
 #define FLAG_CARRY      carry
 #define FLAG_I2C_MATCH  i2c_match
 
+// Multi-Core OmniBus MP Primitives (Task 35)
+uint8_t core_id(void);
+uint8_t spinlock_acquire(uint8_t lock_id);
+void spinlock_release(uint8_t lock_id);
+void barrier_wait(void);
+uint8_t mailbox_read(uint8_t mb_id);
+void mailbox_write(uint8_t mb_id, uint8_t data);
+
 #endif // OMNIBUS_H
