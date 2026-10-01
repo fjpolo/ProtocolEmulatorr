@@ -54,18 +54,8 @@ def fuzz_cli():
 
 
 def compile_cli():
-    from .compiler.driver import OmniCCompiler
-    parser = argparse.ArgumentParser(description="Omni-C (omnibus-cc) Protocol Compiler")
-    parser.add_argument("source", help="Source Omni-C file (.c)")
-    parser.add_argument("-o", "--output", help="Output assembly file (.asm)")
-    parser.add_argument("-I", "--include", action="append", default=[], help="Additional include directory")
-    parser.add_argument("--no-opt", action="store_true", help="Disable optimizer")
-    args = parser.parse_args()
-
-    compiler = OmniCCompiler(include_paths=args.include, optimize=not args.no_opt)
-    asm_output = compiler.compile_file(args.source, output_asm=args.output)
-    if not args.output:
-        print(asm_output)
+    import python.omnic as omnic_main
+    omnic_main.main()
 
 
 def main():

@@ -13,6 +13,8 @@ setup(
     entry_points={
         "console_scripts": [
             "omnibus = omnibus.cli:main",
+            "omnic = omnibus.cli:compile_cli",
+            "omnibus-cc = omnibus.cli:compile_cli",
             "omnibus-load = omnibus.cli:load_cli",
             "omnibus-fuzz = omnibus.cli:fuzz_cli",
             "omnibus-profiler = omnibus.cli:profiler_cli"

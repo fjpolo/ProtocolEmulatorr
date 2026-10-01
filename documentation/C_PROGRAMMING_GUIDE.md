@@ -87,12 +87,15 @@ void main(void) {
 
 Compile the C source into OmniBus assembly and a Verilog hex file using the turnkey `omnic` batch script:
 
-```bash
-# Using the root batch script on Windows:
+```powershell
+# In Windows PowerShell:
+.\omnic uart_echo.c -o uart_echo.asm --hex uart_echo.hex
+
+# In Windows Command Prompt (CMD):
 omnic uart_echo.c -o uart_echo.asm --hex uart_echo.hex
 
 # Or using the script directory wrapper:
-.\scripts\omnic.bat uart_echo.c -o uart_echo.asm --hex uart_echo.hex
+.\scripts\omnic uart_echo.c -o uart_echo.asm --hex uart_echo.hex
 
 # On Linux / macOS / WSL:
 ./scripts/omnic.sh uart_echo.c -o uart_echo.asm --hex uart_echo.hex
@@ -481,17 +484,20 @@ void main(void) {
 
 ## 6. Compilation & CLI Toolchain
 
-### 6.1. Turnkey Omni-C Compiler Script (`omnic.bat` / `scripts/omnic.bat`)
+### 6.1. Turnkey Omni-C Compiler Script (`omnic.bat` / `omnic.ps1` / `scripts/omnic.bat`)
 
-The fastest way to compile C protocols is using the project's native batch script wrapper:
+The fastest way to compile C protocols is using the project's native script wrappers:
 
-```bash
-# Windows command prompt / PowerShell:
-omnic <source.c> [options]
+```powershell
+# In Windows PowerShell:
+.\omnic <source.c> [options]
 # or
-.\scripts\omnic.bat <source.c> [options]
+.\scripts\omnic <source.c> [options]
 
-# Linux / macOS / WSL:
+# In Windows Command Prompt (CMD):
+omnic <source.c> [options]
+
+# On Linux / macOS / WSL:
 ./scripts/omnic.sh <source.c> [options]
 ```
 
