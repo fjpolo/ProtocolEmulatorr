@@ -4,6 +4,7 @@ An open-source, general-purpose protocol emulator ASIC targeting the **Jane Stre
 
 > Detailed Specifications:
 > - Hardware Datasheet & Terminal Specifications: [DATASHEET.md](documentation/DATASHEET.md)
+> - C Programming & Compilation Guide: [C_PROGRAMMING_GUIDE.md](documentation/C_PROGRAMMING_GUIDE.md)
 > - Glitch / Fault Injector & MitM Engine User Guide: [GLITCH_MITM_USER_GUIDE.md](documentation/GLITCH_MITM_USER_GUIDE.md)
 > - Architecture and Hardware ISA: [CONCEPT.md](documentation/CONCEPT.md)
 > - Assembler, Compiler, and Toolchain: [TOOLCHAIN_CONCEPT.md](documentation/TOOLCHAIN_CONCEPT.md)
@@ -30,6 +31,7 @@ All ready-to-run microcode demonstrators, interactive terminals, and test harnes
 
 | Script | Protocol / Feature | Mode & Description |
 | :--- | :--- | :--- |
+| [`scripts/run_omnic_demo.bat`](scripts/run_omnic_demo.bat) | **Omni-C Protocol Compiler** | Structured C-to-Microcode compiler (`omnic`) compiling 6 protocol targets to 16-bit binary images. |
 | [`scripts/run_usb_sie.bat`](scripts/run_usb_sie.bat) | **USB 1.1 Autonomous SIE** | Full-Speed (12 Mbps) & Low-Speed (1.5 Mbps) SIE, token parsing, auto-ACK/NAK/STALL, CRC-5/16, bus reset. |
 | [`scripts/run_profiler.bat`](scripts/run_profiler.bat) | **The Protocol Detective** | Autonomous waveform profiler, auto-baud divisor discovery, clock vs data discriminator & framing detector. |
 | [`scripts/run_dma.bat`](scripts/run_dma.bat) | **OmniBus DMA Controller** | 32-bit Wishbone B4 Master dual-channel memory streamer & Scatter-Gather linked-list test suite. |
@@ -83,6 +85,7 @@ All ready-to-run microcode demonstrators, interactive terminals, and test harnes
 * [Task 31 — Interactive Web IDE & WebAssembly Visual Emulator](documentation/task31.md)
 * [Task 32 — OmniBus Software Development Kit (SDK) & Assembly Standard Library](documentation/task32.md)
 * [Task 33 — Complete pyUVM Verification & RTL Mutation Testing](documentation/task33.md)
+* [Task 34 — Omni-C / Micro-C High-Level Protocol Compiler](documentation/task34.md)
 
 ---
 
@@ -284,6 +287,31 @@ Located in [`test_rtl/mutation/ProtocolEmulator/`](file:///c:/Workspace/ASIC/Pro
 ```
 
 See [Task 33 Documentation](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task33.md) for complete verification reports, sequence hierarchies, and mutation kill matrices.
+
+---
+
+## Omni-C / Micro-C High-Level Protocol Compiler (`omnic`)
+
+OmniBus provides a dedicated, optimizing C-to-Microcode compiler located in [`sdk/omnibus/compiler/`](file:///c:/Workspace/ASIC/ProtocolEmulator/sdk/omnibus/compiler/) and [`python/omnic.py`](file:///c:/Workspace/ASIC/ProtocolEmulator/python/omnic.py):
+- **C Language Subset**: Typed functions, register allocation hints (`reg r0 var`), control flow (`if`/`else`, `while`, `do-while`), zero-overhead hardware loops (`repeat (N)` via `DJNZ`), and inline assembly (`__asm__`).
+- **Standard Protocol Headers (`sdk/include/omnic/`)**: Production-ready C libraries for `uart.h`, `i2c.h` (open-drain master with clock stretching), `spi.h` (Mode 0 streaming), `ws2812.h` (800 kHz RGB pulses), `onewire.h` (Dallas DHT11/DS18B20), `audio.h` (Delta-Sigma DAC / Chiptune), and `mitm.h` (wire-speed packet mutator).
+- **Peephole & Delay Coalescing Optimizer**: Merges consecutive delay cycles into single-instruction sidecar delays (`SET/WAIT/OUT/IN [delay]`), eliminates dead code, and optimizes register allocation.
+- **Multi-Format Compilation**: Emits `.asm`, Intel/Verilog `.hex`, Verilog `$readmemh` `.mem`, raw binary `.bin`, and embedded C headers `.h`.
+
+### Compiling Omni-C Protocols
+```bash
+# Using turnkey batch script (Windows):
+omnic examples/omnic/i2c_eeprom.c -o build/i2c_eeprom.asm --hex build/i2c_eeprom.hex
+
+# Via OmniBus SDK CLI:
+python sdk/omnibus/cli.py compile examples/omnic/spi_flash.c -o build/spi_flash.asm --hex build/spi_flash.hex
+
+# Run turnkey demo suite across all example targets:
+.\scripts\run_omnic_demo.bat
+```
+
+See [C Programming Guide](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/C_PROGRAMMING_GUIDE.md) and [Task 34 Documentation](file:///c:/Workspace/ASIC/ProtocolEmulator/documentation/task34.md) for complete language specifications, AST hierarchy, and compiler architecture.
+
 
 
 

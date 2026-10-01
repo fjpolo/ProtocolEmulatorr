@@ -152,19 +152,54 @@ bit_loop:
 
 ---
 
-## 3. High-Level Protocol DSL and Timing Synthesizer (`omnibus-cc`)
+## 3. High-Level Protocol Compilers: Omni-C (`omnic`) & Protocol DSL
 
-While assembly provides cycle-by-cycle control, implementing multi-state protocols (such as USB enumeration, JTAG TAP navigation, or CAN frame arbitration) is significantly accelerated by a declarative Python-based Domain-Specific Language.
+While assembly provides cycle-by-cycle control, implementing multi-state protocols is significantly accelerated by higher-level abstractions:
+1. **Omni-C / Micro-C Protocol Compiler (`omnic` / `sdk/omnibus/compiler/`)**: Structured C compiler compiling standard `.c` files directly to optimized OmniBus assembly (`.asm`) and binary hex images (`.hex`, `.bin`, `.mem`, `.h`).
+2. **Declarative Python Protocol DSL (`omnibus.dsl`)**: Python-based declarative framework for synthesising state machines and timing margins.
 
-### 3.1. DSL Architecture
+### 3.1. Omni-C Compiler Architecture
 
-The OmniBus Protocol DSL represents protocols as hierarchical state machines with precise timing constraints. The synthesizer:
-1. Calculates integer cycle divisions and fractional prescalers.
-2. Allocates hardware loop counters (`LC0`, `LC1`) and general registers (`R0`–`R3`).
-3. Emits optimized OmniBus assembly code.
-4. Reports timing margins and maximum jitter boundaries.
+The Omni-C compiler pipeline comprises seven modular stages:
+1. **Preprocessor (`driver.py`)**: Resolves recursive `#include` directives, performs macro expansion, and parses `#pragma clock` / `#pragma entry` pragmas.
+2. **Lexer (`lexer.py`)**: Tokenizes C keywords, literals (hex, bin, dec), register keywords (`r0`–`r7`, `acc`, `osr`, `isr`), hardware sentinels (`$BAUD`, `$HBAUD`), and sidecar delays.
+3. **Parser (`parser.py`)**: Recursive descent parser with standard operator precedence, structured control flow (`if`/`else`, `while`, `do-while`, `repeat(N)`), explicit register binding (`reg r0 var`), and hardware intrinsic builtins.
+4. **Symbol Table & Allocator (`symbols.py`)**: Lexical scoping with `RegisterAllocator` for automatic register assignment.
+5. **AST Hierarchy (`ast_nodes.py`)**: Strongly-typed AST nodes.
+6. **Optimizer (`optimizer.py`)**: Multi-pass peephole optimizer for sidecar delay coalescing and dead code removal.
+7. **Code Generator (`codegen.py`)**: Emits clean OmniBus assembly with nested hardware loop counters (`LC0`, `LC1`) and conditional jump synthesis.
 
-### 3.2. DSL Code Example: SPI Master Transceiver
+### 3.2. Omni-C Code Example: I2C EEPROM Byte Write and Read
+
+```c
+#include <omnibus.h>
+#include <i2c.h>
+
+void main(void) {
+    i2c_init();
+
+    // Write byte 0x55 to EEPROM address 0x05 at device 0xA0
+    i2c_start();
+    acc = 0xA0; osr = acc; i2c_write_byte(); // Device Address (Write)
+    acc = 0x05; osr = acc; i2c_write_byte(); // Memory Address
+    pull(BLOCK);            i2c_write_byte(); // Data Byte
+    i2c_stop();
+
+    nop(20); // EEPROM write cycle delay
+
+    // Read byte back from EEPROM address 0x05
+    i2c_start();
+    acc = 0xA0; osr = acc; i2c_write_byte();
+    acc = 0x05; osr = acc; i2c_write_byte();
+    i2c_start();
+    acc = 0xA1; osr = acc; i2c_write_byte(); // Device Address (Read)
+    i2c_read_byte_ack();
+    push(BLOCK);                             // Push byte to RX FIFO
+    i2c_stop();
+}
+```
+
+### 3.3. Python DSL Code Example: SPI Master Transceiver
 
 ```python
 #!/usr/bin/env python3
@@ -302,8 +337,10 @@ while True:
    - Validated against 98 automated Cocotb testcases (100% pass rate).
 2. **Milestone 2: Web IDE, Simulator & Waveform Engine (`web_ide/` / OmniBus Studio) — [DELIVERED & VERIFIED]**
    - Task 31 delivers **OmniBus Studio**: an interactive in-browser IDE with cycle-accurate silicon emulation, multi-channel logic analyzer canvas, VCD export, real-time Web Audio API PDM synthesizer, and WebSerial physical board flasher.
-3. **Milestone 3: High-Level Protocol Compiler (`omnibus-cc`)**
-   - Python declarative DSL for generating UART, SPI, and I2C microcode.
+3. **Milestone 3: High-Level Protocol Compiler (`omnibus-cc` / `omnic`) — [DELIVERED & VERIFIED]**
+   - High-level C-to-Microcode optimizing compiler (`omnic`) and standard protocol library (`sdk/include/omnic/`).
+   - Python declarative DSL (`omnibus.dsl`) for generating UART, SPI, and I2C microcode.
+   - Comprehensive test suite in `sdk/tests/test_omnic.py` with 100% pass rate across all 15 test suites and 7 working protocol targets.
 4. **Milestone 4: Host Driver and Profiler Interface (`omnibus-ctl` / `python/omnibus_loader.py`) — [DELIVERED & HARDWARE-TESTED]**
    - In-system microcode loader and runtime streaming library tested on Tang Console 60K, Tang Nano 20K, and Tang Nano 9K.
 

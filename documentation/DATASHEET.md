@@ -88,39 +88,80 @@ The **OmniBus ProtocolEmulator** is a deterministic, microcode-programmable phys
 
 ## 2. ASIC Pinout & Terminal Descriptions
 
-### A. ASIC Package Pinout Diagram (QFP-48 / Standard Macro)
+### A. ASIC Package & Signal Interface Diagrams
 
-The following diagram illustrates every physical IO pin of the **OmniBus ProtocolEmulator Core**:
+#### 1. OmniBus Core Macro Signal Interface
+The following diagram illustrates the functional terminal ports and bus widths of the synthesizable **OmniBus ProtocolEmulator Core**:
 
 ```
-                                    +-----------------------------+
-                                    |      OmniBus Core ASIC      |
-                                    |     (QFP-48 / QFN-48)       |
-                                    +-----------------------------+
-                     [Power & Clock]|                             |[Unified Bidirectional GPIO]
-                i_clk  -----------> | 1                         48| <---------> io_gpio[0] (TX / SDA / 1W)
-            i_reset_n  -----------> | 2                         47| <---------> io_gpio[1] (SCK / SCL)
-                                    | 3                         46| <---------> io_gpio[2] (CS_n / LATCH)
-                [Host Data In / Out]|                             | <---------> io_gpio[3]
-          i_data[7:0]  ===========> | 4..11                     45| <---------> io_gpio[4]
-          o_data[7:0]  <=========== | 12..19                    44| <---------> io_gpio[5]
-                                    |                             | <---------> io_gpio[6]
-              [FIFO Handshake Flags]|                             | <---------> io_gpio[7]
-           i_tx_valid  -----------> | 20                          |
-             o_tx_pop  <----------- | 21                          |[Dedicated Role Convenience]
-            i_rx_full  -----------> | 22                        40| <---------- o_tx (UART TX / MOSI)
-            o_rx_push  <----------- | 23                        39| <---------- o_spi_sck (SPI SCK)
-                                    |                           38| <---------- o_spi_cs_n (SPI CS#)
-         [Dynamic Baud Rate Divisor]|                           37| ----------> i_rx (UART RX / MISO)
-     i_baud_div[15:0] ============> | 24..27                      |
-                                    |                             |[Dual-Port IMEM Bootloader]
-                                    |                           36| ----------> i_prog_en (Core Freeze)
-                                    |                           35| ----------> i_prog_we (RAM Write Strobe)
-                                    |                           34| ==========> i_prog_addr[6:0] (0..127)
-                                    |                           33| ==========> i_prog_data[15:0] (Instr In)
-                                    |                           32| <========== o_prog_rdata[15:0] (Readback)
-                                    +-----------------------------+
+                                    +-----------------------------------+
+                                    |         OmniBus Core Macro        |
+                                    |        (RTL Terminal Ports)       |
+                                    +-----------------------------------+
+                     [Power & Clock]|                                   |[Unified Bidirectional GPIO]
+                i_clk  -----------> |                                   | <---------> io_gpio[7:0] (Dynamic Role Matrix)
+            i_reset_n  -----------> |                                   |
+                                    |                                   |[Dedicated Role Convenience]
+                [Host Data In / Out]|                                   | <---------- o_tx (UART TX / MOSI)
+          i_data[7:0]  ===========> |                                   | <---------- o_spi_sck (SPI SCK)
+          o_data[7:0]  <=========== |                                   | <---------- o_spi_cs_n (SPI CS#)
+                                    |                                   | ----------> i_rx (UART RX / MISO)
+              [FIFO Handshake Flags]|                                   |
+           i_tx_valid  -----------> |                                   |[Dual-Port IMEM Bootloader]
+             o_tx_pop  <----------- |                                   | ----------> i_prog_en (Core Freeze)
+            i_rx_full  -----------> |                                   | ----------> i_prog_we (RAM Write Strobe)
+            o_rx_push  <----------- |                                   | ==========> i_prog_addr[6:0] (0..127)
+                                    |                                   | ==========> i_prog_data[15:0] (Instr In)
+         [Dynamic Baud Rate Divisor]|                                   | <========== o_prog_rdata[15:0] (Readback)
+     i_baud_div[15:0] ============> |                                   |
+                                    +-----------------------------------+
 ```
+
+#### 2. Discrete Standalone ASIC Package Pinout (LQFP-100 / QFN-100)
+When deployed as a dedicated standalone IC exposing all internal parallel programming buses and dynamic prescalers directly to off-chip pins, the full 100-pin mapping is assigned as follows:
+
+```
++---------------------+-------------------+---------------------+---------------------------------------------------------+
+| Pin Group           | Pin Numbers (100) | Signal Name         | Width & Direction  | Description                        |
++---------------------+-------------------+---------------------+--------------------+------------------------------------+
+| Power & Clock       | 1                 | i_clk               | 1-bit Input        | 50 MHz Master Clock                |
+|                     | 2                 | i_reset_n           | 1-bit Input        | Active-Low Master Reset            |
+|                     | 3, 24, 45, 62, 80 | VDD / VSS           | Power / Ground     | Core & I/O Power Decoupling Rings  |
+| Host Data I/O       | 4..11             | i_data[7:0]         | 8-bit Input        | Host TX FIFO Input Byte            |
+|                     | 12..19            | o_data[7:0]         | 8-bit Output       | Host RX FIFO Output Byte           |
+| FIFO Handshaking    | 20                | i_tx_valid          | 1-bit Input        | TX Data Available Strobe           |
+|                     | 21                | o_tx_pop            | 1-bit Output       | TX Pop Strobe on PULL              |
+|                     | 22                | i_rx_full           | 1-bit Input        | RX FIFO Full Stall Strobe          |
+|                     | 23                | o_rx_push           | 1-bit Output       | RX Push Strobe on PUSH             |
+| Dynamic Prescaler   | 25..40 (16 pins!) | i_baud_div[15:0]    | 16-bit Input       | Baud Rate Prescaler (Cycles/Bit-1) |
+| Dedicated Aliases   | 41                | o_tx                | 1-bit Output       | Dedicated Legacy UART TX / MOSI    |
+|                     | 42                | o_spi_sck           | 1-bit Output       | Dedicated Legacy SPI SCK           |
+|                     | 43                | o_spi_cs_n          | 1-bit Output       | Dedicated Legacy SPI CS#           |
+|                     | 44                | i_rx                | 1-bit Input        | Dedicated Legacy UART RX / MISO    |
+| Unified GPIO Bus    | 46..53 (8 pins)   | io_gpio[7:0]        | 8-bit Bidirect     | Reconfigurable PINMAP Matrix       |
+| IMEM Bootloader     | 54                | i_prog_en           | 1-bit Input        | Bootloader Core Freeze Mode        |
+|                     | 55                | i_prog_we           | 1-bit Input        | IMEM Synchronous Write Strobe      |
+|                     | 56..61, 63 (7b)   | i_prog_addr[6:0]    | 7-bit Input        | IMEM Word Address (0..127)         |
+|                     | 64..79 (16 pins)  | i_prog_data[15:0]   | 16-bit Input       | IMEM Instruction Write Word        |
+|                     | 81..96 (16 pins)  | o_prog_rdata[15:0]  | 16-bit Output      | IMEM Instruction Readback Word     |
+| Telemetry & Debug   | 97..100           | dbg_status[3:0]     | 4-bit Output       | BIST, Profiler, and Error Status   |
++---------------------+-------------------+---------------------+--------------------+------------------------------------+
+```
+
+#### 3. Tiny Tapeout 6×4 ASIC Allocation (IHP 130nm CMOS5L — 24 I/Os)
+In Tiny Tapeout and standard embedded SoC designs (e.g. QFP-48 / QFN-48), the 16-bit baud divisor `i_baud_div[15:0]` and 128-word IMEM are dynamically configured in-band through [`OmniBootloader`](file:///c:/Workspace/ASIC/ProtocolEmulator/rtl/OmniBootloader.v) or the Wishbone B4 bus, requiring only 24 physical pads:
+
+* **`ui_in[7:0]` (8 Dedicated Inputs)**:
+  - `ui_in[0]`: UART RX (Bootloader microcode loading & dynamic `i_baud_div` configuration)
+  - `ui_in[1]`: Host TX Valid / Wishbone STB
+  - `ui_in[7:2]`: Host Data / Wishbone Address & Control
+* **`uo_out[7:0]` (8 Dedicated Outputs)**:
+  - `uo_out[0]`: UART TX (Bootloader telemetry, echo, and IMEM readback)
+  - `uo_out[1]`: Glitch / Crowbar Hardware Fault Trigger Output
+  - `uo_out[3:2]`: FIFO Pop / Push Strobes
+  - `uo_out[7:4]`: Real-Time BIST Score & Status LEDs
+* **`uio[7:0]` (8 Bidirectional I/Os)**:
+  - `uio[7:0]`: Unified Bidirectional GPIO Bus (`io_gpio[7:0]`), individually switchable between drive, open-drain pull-down, and high-impedance input.
 
 ### B. Logical IO Interconnect Diagram
 

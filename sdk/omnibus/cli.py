@@ -53,12 +53,28 @@ def fuzz_cli():
         print("[+] Glitch Generator ARMED.")
 
 
+def compile_cli():
+    from .compiler.driver import OmniCCompiler
+    parser = argparse.ArgumentParser(description="Omni-C (omnibus-cc) Protocol Compiler")
+    parser.add_argument("source", help="Source Omni-C file (.c)")
+    parser.add_argument("-o", "--output", help="Output assembly file (.asm)")
+    parser.add_argument("-I", "--include", action="append", default=[], help="Additional include directory")
+    parser.add_argument("--no-opt", action="store_true", help="Disable optimizer")
+    args = parser.parse_args()
+
+    compiler = OmniCCompiler(include_paths=args.include, optimize=not args.no_opt)
+    asm_output = compiler.compile_file(args.source, output_asm=args.output)
+    if not args.output:
+        print(asm_output)
+
+
 def main():
     parser = argparse.ArgumentParser(description="OmniBus Master SDK CLI")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("load", help="Flash microcode to hardware")
     subparsers.add_parser("detect", help="Run hardware waveform profiler")
     subparsers.add_parser("fuzz", help="Configure glitch / MitM fuzzer")
+    subparsers.add_parser("compile", help="Compile Omni-C source (.c) to assembly (.asm)")
     args = parser.parse_args()
 
     if args.command == "load":
@@ -67,9 +83,12 @@ def main():
         profiler_cli()
     elif args.command == "fuzz":
         fuzz_cli()
+    elif args.command == "compile":
+        compile_cli()
     else:
         parser.print_help()
 
 
 if __name__ == "__main__":
     main()
+

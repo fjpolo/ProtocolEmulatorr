@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit tests for the OmniBus Software SDK.
+Unit tests for the OmniBus Software SDK (Dual Track: Assembly and C).
 """
 
 import unittest
@@ -9,15 +9,21 @@ import sys
 
 # Ensure SDK is on python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "python")))
 
 from omnibus.assembler import assemble, assemble_file
+from omnibus.compiler import OmniCCompiler
 from omnibus.dsl import Protocol, Pin, Direction
 
 class TestOmniBusSDK(unittest.TestCase):
     def setUp(self):
-        self.examples_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "examples"))
+        self.sdk_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        self.examples_dir = os.path.join(self.sdk_dir, "examples")
+        self.asm_dir = os.path.join(self.examples_dir, "asm")
+        self.c_dir = os.path.join(self.examples_dir, "c")
+        self.include_dir = os.path.join(self.sdk_dir, "include", "omnic")
 
-    def test_assemble_examples(self):
+    def test_assemble_asm_examples(self):
         asm_files = [
             "01_uart_hello.asm",
             "02_i2c_sensor_read.asm",
@@ -25,11 +31,31 @@ class TestOmniBusSDK(unittest.TestCase):
             "04_mitm_flash_fuzzer.asm"
         ]
         for fname in asm_files:
-            fpath = os.path.join(self.examples_dir, fname)
+            fpath = os.path.join(self.asm_dir, fname)
             words = assemble_file(fpath)
             self.assertGreater(len(words), 0, f"Failed assembling {fname}")
             self.assertLessEqual(len(words), 128, f"{fname} exceeds 128-word IMEM capacity")
-            print(f"[+] Assembled {fname}: {len(words)} words.")
+            print(f"[+] [ASM Track] Assembled {fname}: {len(words)} words.")
+
+    def test_compile_c_examples(self):
+        c_files = [
+            "uart_echo.c",
+            "i2c_eeprom.c",
+            "spi_flash.c",
+            "ws2812_rainbow.c",
+            "dht11_sensor.c",
+            "mitm_fuzzer.c",
+            "chiptune_player.c"
+        ]
+        compiler = OmniCCompiler(include_paths=[self.include_dir])
+        for fname in c_files:
+            fpath = os.path.join(self.c_dir, fname)
+            asm_code = compiler.compile_file(fpath)
+            self.assertGreater(len(asm_code), 0, f"Failed compiling {fname}")
+            words = assemble(asm_code)
+            self.assertGreater(len(words), 0, f"Failed assembling compiled {fname}")
+            self.assertLessEqual(len(words), 128, f"{fname} exceeds 128-word IMEM capacity")
+            print(f"[+] [C Track] Compiled & Assembled {fname}: {len(words)} words.")
 
     def test_protocol_dsl_synthesis(self):
         class TestUART(Protocol):
@@ -46,7 +72,8 @@ class TestOmniBusSDK(unittest.TestCase):
         
         words = assemble(code)
         self.assertEqual(len(words), 3)
-        print(f"[+] DSL Synthesized and Assembled: {len(words)} words.")
+        print(f"[+] [DSL Track] DSL Synthesized and Assembled: {len(words)} words.")
 
 if __name__ == "__main__":
     unittest.main()
+
