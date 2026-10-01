@@ -179,7 +179,21 @@ export class OmniBusAssembler {
             "BIST_RESET": 0xF,
             "BIST_PASS": 0xF,
             "BIST_FAIL": 0xF,
-            "BIST_STAGE": 0xF
+            "BIST_STAGE": 0xF,
+            // Multi-Core OmniBus MP (Task 35)
+            "CORE_ID": 0xF,
+            "SPINLOCK_ACQ": 0xF,
+            "SPINLOCK_REL": 0xF,
+            "LOCK_ACQ": 0xF,
+            "LOCK_REL": 0xF,
+            "BARRIER_WAIT": 0xF,
+            "BARRIER": 0xF,
+            "MB_READ": 0xF,
+            "MB_RD": 0xF,
+            "MAILBOX_READ": 0xF,
+            "MB_WRITE": 0xF,
+            "MB_WR": 0xF,
+            "MAILBOX_WRITE": 0xF
         };
     }
 
@@ -232,13 +246,40 @@ export class OmniBusAssembler {
                     this.entryLabel = parts[1];
                 } else if (dir === ".org") {
                     currentPC = this.parseValue(parts[1]);
-                } else if (dir === ".bank") {
+                } else if (dir === ".bank" || dir === ".core") {
                     const bankNum = this.parseValue(parts[1]);
                     currentPC = (bankNum & 3) * 32;
                 } else if (dir === ".pins") {
                     inPinsSection = true;
+                } else if (dir === ".define") {
+                    if (parts.length >= 3) {
+                        const cName = parts[1];
+                        const cVal = this.parseValue(parts[2]);
+                        this.constants[cName] = cVal;
+                        this.constants[cName.toUpperCase()] = cVal;
+                    }
+                } else if (dir === ".include") {
+                    // Predefined includes handled or skipped safely
                 }
 
+                parsedLines.push({ raw: rawLines[i], lineNum: i + 1, isDirective: true, text: line });
+                continue;
+            }
+
+            // Preprocessor defines: #define NAME VAL or `define NAME VAL
+            const defMatch = line.match(/^[#`]?define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$/);
+            if (defMatch) {
+                const dName = defMatch[1];
+                const dVal = this.parseValue(defMatch[2].split("//")[0].split(";")[0].trim());
+                this.constants[dName] = dVal;
+                this.constants[dName.toUpperCase()] = dVal;
+                parsedLines.push({ raw: rawLines[i], lineNum: i + 1, isDirective: true, text: line });
+                continue;
+            }
+
+            // Preprocessor includes: #include "..." or `include "..."
+            const incMatch = line.match(/^[#`]?include\s+["<](.*)[">]/);
+            if (incMatch) {
                 parsedLines.push({ raw: rawLines[i], lineNum: i + 1, isDirective: true, text: line });
                 continue;
             }
@@ -604,23 +645,38 @@ export class OmniBusAssembler {
             }
 
             default: {
-                let assistSub = 0;
                 let val = args.length > 0 ? this.evalExpression(args[0]) : 0;
 
-                if (mnemonic.startsWith("PULSE")) assistSub = 0x1;
-                else if (mnemonic.startsWith("GAMEPAD")) assistSub = 0x2;
-                else if (mnemonic.startsWith("I2C_SLAVE")) assistSub = 0x3;
-                else if (mnemonic.startsWith("AUDIO")) assistSub = 0x4;
-                else if (mnemonic.startsWith("JTAG")) assistSub = 0x5;
-                else if (mnemonic.startsWith("SWD")) assistSub = 0x6;
-                else if (mnemonic.startsWith("QSPI")) assistSub = 0x7;
-                else if (mnemonic.startsWith("GLITCH")) assistSub = 0x8;
-                else if (mnemonic.startsWith("MITM")) assistSub = 0x9;
-                else if (mnemonic.startsWith("PROFILER")) assistSub = 0xA;
-                else if (mnemonic.startsWith("USB")) assistSub = 0xB;
-                else if (mnemonic.startsWith("BIST")) assistSub = 0xC;
+                // Multi-Core OmniBus MP (Task 35) Instructions
+                if (mnemonic === "CORE_ID") {
+                    word = 0xFC00;
+                } else if (mnemonic === "SPINLOCK_ACQ" || mnemonic === "LOCK_ACQ") {
+                    word = 0xFD00 | (val & 3);
+                } else if (mnemonic === "SPINLOCK_REL" || mnemonic === "LOCK_REL") {
+                    word = 0xFE00 | (val & 3);
+                } else if (mnemonic === "MB_READ" || mnemonic === "MB_RD" || mnemonic === "MAILBOX_READ") {
+                    word = 0xF800 | (val & 7);
+                } else if (mnemonic === "MB_WRITE" || mnemonic === "MB_WR" || mnemonic === "MAILBOX_WRITE") {
+                    word = 0xF900 | (val & 7);
+                } else if (mnemonic === "BARRIER_WAIT" || mnemonic === "BARRIER") {
+                    word = 0xFF00;
+                } else {
+                    let assistSub = 0;
+                    if (mnemonic.startsWith("PULSE")) assistSub = 0x1;
+                    else if (mnemonic.startsWith("GAMEPAD")) assistSub = 0x2;
+                    else if (mnemonic.startsWith("I2C_SLAVE")) assistSub = 0x3;
+                    else if (mnemonic.startsWith("AUDIO")) assistSub = 0x4;
+                    else if (mnemonic.startsWith("JTAG")) assistSub = 0x5;
+                    else if (mnemonic.startsWith("SWD")) assistSub = 0x6;
+                    else if (mnemonic.startsWith("QSPI")) assistSub = 0x7;
+                    else if (mnemonic.startsWith("GLITCH")) assistSub = 0x8;
+                    else if (mnemonic.startsWith("MITM")) assistSub = 0x9;
+                    else if (mnemonic.startsWith("PROFILER")) assistSub = 0xA;
+                    else if (mnemonic.startsWith("USB")) assistSub = 0xB;
+                    else if (mnemonic.startsWith("BIST")) assistSub = 0xC;
 
-                word = (0xF << 12) | ((assistSub & 0xF) << 8) | (val & 0xFF);
+                    word = (0xF << 12) | ((assistSub & 0xF) << 8) | (val & 0xFF);
+                }
                 break;
             }
         }

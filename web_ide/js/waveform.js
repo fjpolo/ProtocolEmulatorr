@@ -1,9 +1,9 @@
 // =============================================================================
 // File        : waveform.js
-// Module      : OmniBus Interactive Logic Analyzer & Waveform Canvas
+// Module      : OmniBus MP Interactive Logic Analyzer & Multi-Core Waveform Canvas
 // Description : High-performance multi-channel digital logic analyzer with
-//               zoom, pan, delta measurement cursors, and protocol decoders
-//               (UART, SPI, I2C, NeoPixel, USB NRZI).
+//               multi-core PC bus rendering, barrier pulses, spinlock traces,
+//               zoom, pan, delta measurement cursors, and protocol decoders.
 // License     : MIT License
 // =============================================================================
 
@@ -14,36 +14,54 @@ export class WaveformViewer {
         this.emulator = emulator;
 
         this.viewStartCycle = 0;
-        this.cyclesPerPixel = 2.0; // Zoom factor
+        this.cyclesPerPixel = 2.0;
         this.cursorCycle = null;
         this.cursor2Cycle = null;
         this.isPanning = false;
         this.panStartX = 0;
         this.panStartCycle = 0;
 
-        this.channels = [
-            { name: "UIO[0] / TX / SDA / D+", key: "p0", color: "#00F0FF" },
-            { name: "UIO[1] / RX / SCL / D-", key: "p1", color: "#10B981" },
-            { name: "UIO[2] / SCK / WS2812",  key: "p2", color: "#F59E0B" },
-            { name: "UIO[3] / CS / JOYBUS",   key: "p3", color: "#8B5CF6" },
-            { name: "UIO[4] / PDM_AUDIO",     key: "p4", color: "#EC4899" },
-            { name: "UIO[5] / GLITCH_OUT",    key: "p5", color: "#EF4444" },
-            { name: "UIO[6] / GPIO6",         key: "p6", color: "#3B82F6" },
-            { name: "UIO[7] / GPIO7",         key: "p7", color: "#6366F1" },
-            { name: "GLITCH_ACTIVE",          key: "glitch", color: "#F43F5E" },
-            { name: "OSR_VALID",              key: "osrValid", color: "#14B8A6" }
-        ];
-
+        this.updateChannels();
         this.setupEvents();
+    }
+
+    updateChannels() {
+        const numCores = this.emulator.numCores || 2;
+        this.channels = [];
+
+        // Add active multi-core program counter buses
+        for (let i = 0; i < numCores; i++) {
+            const colors = ["#00F0FF", "#10B981", "#F59E0B", "#8B5CF6"];
+            this.channels.push({
+                name: `CORE ${i} PC [Bank ${i}]`,
+                key: `pc${i}`,
+                type: "bus",
+                color: colors[i]
+            });
+        }
+
+        // Multi-Core synchronization signals
+        this.channels.push({ name: "BARRIER PULSE", key: "barrierPulse", type: "digital", color: "#EC4899" });
+        this.channels.push({ name: "SPINLOCKS [0..1]", key: "spinlocks", type: "digital", color: "#EF4444" });
+
+        // Physical GPIO pins
+        this.channels.push(
+            { name: "UIO[0] / TX0 / SDA", key: "p0", type: "digital", color: "#00F0FF" },
+            { name: "UIO[1] / SCK0 / SCL", key: "p1", type: "digital", color: "#10B981" },
+            { name: "UIO[2] / CS0 / WS2812", key: "p2", type: "digital", color: "#F59E0B" },
+            { name: "UIO[3] / RX0 / JOY",  key: "p3", type: "digital", color: "#8B5CF6" },
+            { name: "UIO[4] / TX1 / MOSI", key: "p4", type: "digital", color: "#3B82F6" },
+            { name: "UIO[5] / SCK1 / GLITCH", key: "p5", type: "digital", color: "#F43F5E" },
+            { name: "UIO[6] / CS1 / GPIO6", key: "p6", type: "digital", color: "#6366F1" },
+            { name: "UIO[7] / RX1 / GPIO7", key: "p7", type: "digital", color: "#14B8A6" }
+        );
     }
 
     setupEvents() {
         this.canvas.addEventListener("mousedown", (e) => {
             if (e.shiftKey) {
-                // Secondary cursor
                 this.cursor2Cycle = this.pixelToCycle(e.offsetX);
             } else if (e.button === 0) {
-                // Primary cursor or pan
                 this.isPanning = true;
                 this.panStartX = e.offsetX;
                 this.panStartCycle = this.viewStartCycle;
@@ -68,13 +86,76 @@ export class WaveformViewer {
 
         this.canvas.addEventListener("wheel", (e) => {
             e.preventDefault();
-            const mouseCycle = this.pixelToCycle(e.offsetX);
             const zoomFactor = e.deltaY < 0 ? 0.75 : 1.33;
-            
-            this.cyclesPerPixel = Math.max(0.05, Math.min(200.0, this.cyclesPerPixel * zoomFactor));
-            this.viewStartCycle = Math.max(0, mouseCycle - (e.offsetX * this.cyclesPerPixel));
-            this.render();
+            this.zoom(zoomFactor, e.offsetX);
         });
+    }
+
+    zoom(zoomFactor, centerPx = null) {
+        const width = this.canvas.parentElement ? this.canvas.parentElement.clientWidth : 800;
+        const cx = centerPx !== null ? centerPx : Math.max(170, (width + 170) / 2);
+        const mouseCycle = this.pixelToCycle(cx);
+        
+        this.cyclesPerPixel = Math.max(0.01, Math.min(200.0, this.cyclesPerPixel * zoomFactor));
+        this.viewStartCycle = Math.max(0, mouseCycle - (cx * this.cyclesPerPixel));
+        this.render();
+    }
+
+    zoomIn() {
+        this.zoom(0.70);
+    }
+
+    zoomOut() {
+        this.zoom(1.40);
+    }
+
+    zoomFit() {
+        const trace = this.emulator.trace;
+        const width = this.canvas.parentElement ? this.canvas.parentElement.clientWidth : 800;
+        const availableWidth = Math.max(100, width - 180);
+
+        if (trace && trace.length > 0) {
+            const minCycle = trace[0].cycle || 0;
+            const maxCycle = trace[trace.length - 1].cycle || this.emulator.totalCycles || 10;
+            const totalCycles = Math.max(10, maxCycle - minCycle);
+            this.cyclesPerPixel = Math.max(0.01, Math.min(200.0, totalCycles / availableWidth));
+            this.viewStartCycle = Math.max(0, minCycle);
+        } else {
+            this.cyclesPerPixel = 2.0;
+            this.viewStartCycle = 0;
+        }
+        this.render();
+    }
+
+    resetZoom() {
+        this.cyclesPerPixel = 2.0;
+        this.viewStartCycle = 0;
+        this.render();
+    }
+
+    clearCursors() {
+        this.cursorCycle = null;
+        this.cursor2Cycle = null;
+        this.render();
+    }
+
+    pan(deltaPixels) {
+        this.viewStartCycle = Math.max(0, this.viewStartCycle + deltaPixels * this.cyclesPerPixel);
+        this.render();
+    }
+
+    updateScaleBadge() {
+        const scaleBadge = document.getElementById("waveform-scale-badge");
+        if (scaleBadge) {
+            const timePerPx = (this.cyclesPerPixel / (this.emulator.clkFreqHz / 1e9));
+            let timeStr = `${timePerPx.toFixed(1)}ns/px`;
+            if (timePerPx >= 1000) {
+                timeStr = `${(timePerPx / 1000).toFixed(2)}µs/px`;
+            } else if (timePerPx < 0.1) {
+                timeStr = `${(timePerPx * 1000).toFixed(0)}ps/px`;
+            }
+            scaleBadge.textContent = `${this.cyclesPerPixel.toFixed(this.cyclesPerPixel < 1 ? 2 : 1)} cyc/px (${timeStr})`;
+        }
     }
 
     pixelToCycle(px) {
@@ -86,6 +167,8 @@ export class WaveformViewer {
     }
 
     render() {
+        this.updateChannels();
+        this.updateScaleBadge();
         const dpr = window.devicePixelRatio || 1;
         const width = this.canvas.parentElement.clientWidth;
         const height = this.canvas.parentElement.clientHeight || 320;
@@ -109,14 +192,14 @@ export class WaveformViewer {
         if (trace.length === 0) {
             ctx.fillStyle = "#64748B";
             ctx.font = "14px 'Inter', sans-serif";
-            ctx.fillText("No simulation trace recorded. Press 'Run' or 'Step' to simulate microcode.", 20, height / 2);
+            ctx.fillText("No simulation trace recorded. Press 'Run' or 'Step' to simulate multi-core microcode.", 20, height / 2);
             ctx.restore();
             return;
         }
 
         const numChannels = this.channels.length;
         const headerHeight = 28;
-        const channelHeight = Math.max(24, Math.floor((height - headerHeight) / numChannels));
+        const channelHeight = Math.max(22, Math.floor((height - headerHeight) / numChannels));
 
         // 1. Grid & Time Rulers
         this.renderTimeGrid(ctx, width, height, headerHeight);
@@ -126,11 +209,11 @@ export class WaveformViewer {
             const ch = this.channels[chIdx];
             const chTop = headerHeight + chIdx * channelHeight;
             const chBase = chTop + channelHeight - 4;
-            const chHigh = chTop + 6;
+            const chHigh = chTop + 4;
 
             // Channel Label Background
             ctx.fillStyle = "#111827";
-            ctx.fillRect(0, chTop, 160, channelHeight - 2);
+            ctx.fillRect(0, chTop, 170, channelHeight - 2);
 
             // Channel Label Text
             ctx.fillStyle = ch.color;
@@ -145,8 +228,12 @@ export class WaveformViewer {
             ctx.lineTo(width, chTop + channelHeight - 1);
             ctx.stroke();
 
-            // Draw Digital Signal Wave
-            this.renderDigitalTrace(ctx, trace, ch.key, ch.color, width, chBase, chHigh);
+            // Draw Signal (Digital or Bus)
+            if (ch.type === "bus") {
+                this.renderBusTrace(ctx, trace, ch.key, ch.color, width, chBase, chHigh);
+            } else {
+                this.renderDigitalTrace(ctx, trace, ch.key, ch.color, width, chBase, chHigh);
+            }
         }
 
         // 3. Render Measurement Cursors
@@ -156,11 +243,9 @@ export class WaveformViewer {
     }
 
     renderTimeGrid(ctx, width, height, headerHeight) {
-        // Time ruler bar
         ctx.fillStyle = "#0F172A";
         ctx.fillRect(0, 0, width, headerHeight);
 
-        // Calculate sensible grid interval based on zoom
         const minPixelInterval = 80;
         let cycleInterval = Math.pow(10, Math.ceil(Math.log10(minPixelInterval * this.cyclesPerPixel)));
         if (cycleInterval / this.cyclesPerPixel < minPixelInterval / 2) {
@@ -176,14 +261,12 @@ export class WaveformViewer {
 
         for (let c = firstGridCycle; c < this.viewStartCycle + width * this.cyclesPerPixel; c += cycleInterval) {
             const x = this.cycleToPixel(c);
-            if (x >= 160 && x < width) {
-                // Vertical grid line
+            if (x >= 170 && x < width) {
                 ctx.beginPath();
                 ctx.moveTo(x, headerHeight);
                 ctx.lineTo(x, height);
                 ctx.stroke();
 
-                // Ruler tick & timestamp
                 ctx.beginPath();
                 ctx.moveTo(x, headerHeight - 6);
                 ctx.lineTo(x, headerHeight);
@@ -209,7 +292,7 @@ export class WaveformViewer {
 
         for (let i = startIdx; i < endIdx; i++) {
             const s = trace[i];
-            const x = Math.max(160, this.cycleToPixel(s.cycle));
+            const x = Math.max(170, this.cycleToPixel(s.cycle));
             const level = s[key] ? 1 : 0;
             const y = level === 1 ? yHigh : yLow;
 
@@ -218,8 +301,7 @@ export class WaveformViewer {
                 started = true;
             } else {
                 if (level !== lastLevel) {
-                    // Vertical transition edge
-                    ctx.lineTo(x, lastLevel === 1 ? yHigh : yLow);
+                    ctx.lineTo(x, y === yHigh ? yLow : yHigh);
                     ctx.lineTo(x, y);
                 } else {
                     ctx.lineTo(x, y);
@@ -228,65 +310,107 @@ export class WaveformViewer {
 
             lastLevel = level;
             lastX = x;
-            if (x > width + 20) break;
+            if (x > width) break;
         }
 
-        if (started) {
-            ctx.lineTo(width, lastLevel === 1 ? yHigh : yLow);
-            ctx.stroke();
+        ctx.stroke();
+    }
+
+    renderBusTrace(ctx, trace, key, color, width, yLow, yHigh) {
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.font = "10px 'JetBrains Mono', monospace";
+
+        const startIdx = Math.max(0, trace.findIndex(s => s.cycle >= this.viewStartCycle) - 1);
+        const endIdx = trace.length;
+
+        let lastVal = null;
+        let busStartX = 170;
+
+        for (let i = startIdx; i < endIdx; i++) {
+            const s = trace[i];
+            const x = Math.max(170, this.cycleToPixel(s.cycle));
+            const val = s[key] !== undefined ? s[key] : 0;
+
+            if (lastVal === null) {
+                lastVal = val;
+                busStartX = x;
+            } else if (val !== lastVal || i === endIdx - 1 || x > width) {
+                const busWidth = Math.max(4, x - busStartX);
+                
+                // Draw bus diamond envelope
+                ctx.beginPath();
+                ctx.moveTo(busStartX + 2, yHigh);
+                ctx.lineTo(x - 2, yHigh);
+                ctx.lineTo(x, (yHigh + yLow) / 2);
+                ctx.lineTo(x - 2, yLow);
+                ctx.lineTo(busStartX + 2, yLow);
+                ctx.lineTo(busStartX, (yHigh + yLow) / 2);
+                ctx.closePath();
+                ctx.stroke();
+
+                if (busWidth > 32) {
+                    const text = `0x${lastVal.toString(16).padStart(2, "0").toUpperCase()}`;
+                    ctx.fillText(text, busStartX + 4, (yHigh + yLow) / 2 + 3);
+                }
+
+                lastVal = val;
+                busStartX = x;
+            }
+
+            if (x > width) break;
         }
     }
 
     renderCursors(ctx, width, height, headerHeight) {
-        if (this.cursorCycle !== null) {
-            const x1 = this.cycleToPixel(this.cursorCycle);
-            if (x1 >= 160 && x1 <= width) {
-                ctx.strokeStyle = "#00F0FF";
+        // Primary Cursor (Yellow)
+        if (this.cursorCycle !== null && this.cursorCycle >= this.viewStartCycle) {
+            const cx = this.cycleToPixel(this.cursorCycle);
+            if (cx >= 170 && cx < width) {
+                ctx.strokeStyle = "#FBBF24";
                 ctx.lineWidth = 1.5;
                 ctx.setLineDash([4, 4]);
                 ctx.beginPath();
-                ctx.moveTo(x1, 0);
-                ctx.lineTo(x1, height);
+                ctx.moveTo(cx, headerHeight);
+                ctx.lineTo(cx, height);
                 ctx.stroke();
                 ctx.setLineDash([]);
 
-                // Cursor 1 label
-                ctx.fillStyle = "#00F0FF";
-                ctx.font = "10px 'JetBrains Mono', monospace";
-                ctx.fillText(`C1: ${this.cursorCycle}`, x1 + 4, headerHeight + 14);
+                ctx.fillStyle = "#FBBF24";
+                ctx.fillRect(cx - 24, headerHeight - 22, 48, 16);
+                ctx.fillStyle = "#000";
+                ctx.font = "bold 9px 'JetBrains Mono', monospace";
+                ctx.fillText(`C1:${this.cursorCycle}`, cx - 20, headerHeight - 10);
             }
         }
 
-        if (this.cursor2Cycle !== null) {
-            const x2 = this.cycleToPixel(this.cursor2Cycle);
-            if (x2 >= 160 && x2 <= width) {
-                ctx.strokeStyle = "#F59E0B";
+        // Secondary Cursor (Cyan)
+        if (this.cursor2Cycle !== null && this.cursor2Cycle >= this.viewStartCycle) {
+            const c2x = this.cycleToPixel(this.cursor2Cycle);
+            if (c2x >= 170 && c2x < width) {
+                ctx.strokeStyle = "#00F0FF";
                 ctx.lineWidth = 1.5;
-                ctx.setLineDash([4, 4]);
+                ctx.setLineDash([2, 2]);
                 ctx.beginPath();
-                ctx.moveTo(x2, 0);
-                ctx.lineTo(x2, height);
+                ctx.moveTo(c2x, headerHeight);
+                ctx.lineTo(c2x, height);
                 ctx.stroke();
                 ctx.setLineDash([]);
 
-                // Cursor 2 label
-                ctx.fillStyle = "#F59E0B";
-                ctx.font = "10px 'JetBrains Mono', monospace";
-                ctx.fillText(`C2: ${this.cursor2Cycle}`, x2 + 4, headerHeight + 28);
-            }
+                ctx.fillStyle = "#00F0FF";
+                ctx.fillRect(c2x - 24, headerHeight - 22, 48, 16);
+                ctx.fillStyle = "#000";
+                ctx.font = "bold 9px 'JetBrains Mono', monospace";
+                ctx.fillText(`C2:${this.cursor2Cycle}`, c2x - 20, headerHeight - 10);
 
-            // Delta Banner if both cursors set
-            if (this.cursorCycle !== null) {
-                const deltaCycles = Math.abs(this.cursor2Cycle - this.cursorCycle);
-                const deltaNs = (deltaCycles / (this.emulator.clkFreqHz / 1e9)).toFixed(2);
-                const freqKhz = deltaCycles > 0 ? ((this.emulator.clkFreqHz / deltaCycles) / 1e3).toFixed(2) : "0";
-
-                const banner = `Δ: ${deltaCycles} cycles | ${deltaNs} ns | ${freqKhz} kHz`;
-                ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
-                ctx.fillRect(width - 240, 4, 230, 20);
-                ctx.fillStyle = "#38BDF8";
-                ctx.font = "bold 11px 'JetBrains Mono', monospace";
-                ctx.fillText(banner, width - 230, 18);
+                if (this.cursorCycle !== null) {
+                    const delta = Math.abs(this.cursor2Cycle - this.cursorCycle);
+                    const dtNs = (delta / (this.emulator.clkFreqHz / 1e9)).toFixed(1);
+                    ctx.fillStyle = "#F8FAFC";
+                    ctx.font = "11px 'JetBrains Mono', monospace";
+                    ctx.fillText(`ΔT = ${delta} cyc (${dtNs} ns)`, 180, headerHeight - 10);
+                }
             }
         }
     }

@@ -1,9 +1,9 @@
 // =============================================================================
 // File        : app.js
-// Module      : OmniBus Web IDE Main Application Orchestrator
-// Description : Manages UI state, code editing, assembly compilation,
-//               cycle-by-cycle execution, waveform visualization, audio,
-//               and WebSerial hardware flashing.
+// Module      : OmniBus MP Web IDE Main Application Orchestrator
+// Description : Manages Multi-Core UI state, code editing, assembly compilation,
+//               cycle-by-cycle execution, multi-core waveform visualization,
+//               shared mailbox & spinlock telemetry, and WebSerial hardware flashing.
 // License     : MIT License
 // =============================================================================
 
@@ -17,16 +17,17 @@ import { PRESETS } from "./presets.js";
 class OmniBusApp {
     constructor() {
         this.assembler = new OmniBusAssembler(50000000);
-        this.emulator = new OmniBusEmulator(50000000);
+        this.emulator = new OmniBusEmulator(50000000, 2);
         this.audio = new OmniBusAudioEngine();
         this.webSerial = new OmniBusWebSerial();
         this.waveform = null;
 
-        this.currentPresetId = "uart_tx";
+        this.currentPresetId = "multicore_uart_spi_bridge";
         this.animFrameId = null;
-        this.execSpeed = 1000; // Cycles per animation frame
+        this.execSpeed = 1000;
         this.compiledData = null;
 
+        window.app = this;
         this.init();
     }
 
@@ -43,10 +44,12 @@ class OmniBusApp {
         this.codeEditor = document.getElementById("code-editor");
         this.lineNumbers = document.getElementById("line-numbers");
         this.presetSelect = document.getElementById("preset-select");
+        this.coreCountSelect = document.getElementById("core-count-select");
         this.statusBadge = document.getElementById("status-badge");
         this.clockFreqSelect = document.getElementById("clock-freq-select");
         this.speedSlider = document.getElementById("speed-slider");
         this.speedLabel = document.getElementById("speed-label");
+        this.labelNumCores = document.getElementById("label-num-cores");
 
         // Action Buttons
         this.btnAssemble = document.getElementById("btn-assemble");
@@ -59,24 +62,47 @@ class OmniBusApp {
         this.btnFlashSerial = document.getElementById("btn-flash-serial");
         this.btnExportVcd = document.getElementById("btn-export-vcd");
         this.btnExportHex = document.getElementById("btn-export-hex");
+        this.btnInjectTx = document.getElementById("btn-inject-tx");
+        this.inputTxByte = document.getElementById("input-tx-byte");
 
-        // Register / State DOM
-        this.valPc = document.getElementById("val-pc");
-        this.valState = document.getElementById("val-state");
-        this.valDelay = document.getElementById("val-delay");
-        this.valInst = document.getElementById("val-inst");
+        // Waveform & Zoom Controls
+        this.btnZoomIn = document.getElementById("btn-zoom-in");
+        this.btnZoomOut = document.getElementById("btn-zoom-out");
+        this.btnZoomFit = document.getElementById("btn-zoom-fit");
+        this.btnZoomReset = document.getElementById("btn-zoom-reset");
+        this.btnClearCursors = document.getElementById("btn-clear-cursors");
+        this.waveformScaleBadge = document.getElementById("waveform-scale-badge");
+
+        // Multi-Core Slices DOM
+        this.coreCards = [
+            document.getElementById("core-card-0"),
+            document.getElementById("core-card-1"),
+            document.getElementById("core-card-2"),
+            document.getElementById("core-card-3")
+        ];
+
+        // Shared Synchronization Fabric DOM
         this.valCycles = document.getElementById("val-cycles");
-        this.valLc0 = document.getElementById("val-lc0");
-        this.valLc1 = document.getElementById("val-lc1");
-        this.valAcc = document.getElementById("val-acc");
-        this.valFlags = document.getElementById("val-flags");
-        this.valOsr = document.getElementById("val-osr");
-        this.valIsr = document.getElementById("val-isr");
-        this.valTxCount = document.getElementById("val-tx-count");
-        this.valRxCount = document.getElementById("val-rx-count");
+        this.mbValElements = Array.from({ length: 8 }, (_, i) => document.getElementById(`mb-val-${i}`));
+        this.mbCellElements = Array.from({ length: 8 }, (_, i) => document.getElementById(`mb-cell-${i}`));
+        this.lockStatusElements = Array.from({ length: 4 }, (_, i) => document.getElementById(`lock-status-${i}`));
+        this.lockCellElements = Array.from({ length: 4 }, (_, i) => document.getElementById(`lock-cell-${i}`));
+        this.barrierNodes = Array.from({ length: 4 }, (_, i) => document.getElementById(`barrier-node-${i}`));
+        this.barrierPulseElem = document.getElementById("barrier-pulse");
+
+        // FIFOs DOM
         this.txFifoList = document.getElementById("tx-fifo-list");
         this.rxFifoList = document.getElementById("rx-fifo-list");
-        this.callStackContainer = document.getElementById("call-stack-container");
+        this.cascadeFifoLists = [
+            document.getElementById("cascade-fifo-0"),
+            document.getElementById("cascade-fifo-1"),
+            document.getElementById("cascade-fifo-2")
+        ];
+        this.cascadeRows = [
+            document.getElementById("cascade-row-0"),
+            document.getElementById("cascade-row-1"),
+            document.getElementById("cascade-row-2")
+        ];
 
         // Pin Matrix
         this.pinElements = Array.from({ length: 8 }, (_, i) => document.getElementById(`pin-${i}`));
@@ -99,304 +125,448 @@ class OmniBusApp {
     setupWaveform() {
         const canvas = document.getElementById("waveform-canvas");
         this.waveform = new WaveformViewer(canvas, this.emulator);
-        this.waveform.render();
     }
 
     bindEvents() {
-        this.presetSelect.addEventListener("change", (e) => {
-            this.loadPreset(e.target.value);
-        });
-
-        this.codeEditor.addEventListener("input", () => {
-            this.updateLineNumbers();
-        });
-
-        this.codeEditor.addEventListener("scroll", () => {
-            this.lineNumbers.scrollTop = this.codeEditor.scrollTop;
-        });
-
-        this.btnAssemble.addEventListener("click", () => this.assembleCode());
-        
-        this.btnRun.addEventListener("click", () => this.startExecution());
-        this.btnPause.addEventListener("click", () => this.pauseExecution());
-        this.btnStepInst.addEventListener("click", () => this.stepInstruction());
-        this.btnStepCycle.addEventListener("click", () => this.stepCycle());
-        this.btnReset.addEventListener("click", () => this.resetEmulator());
-
-        this.speedSlider.addEventListener("input", (e) => {
-            this.execSpeed = parseInt(e.target.value, 10);
-            this.speedLabel.textContent = `${this.execSpeed} cyc/frame`;
-        });
-
+        this.presetSelect.addEventListener("change", (e) => this.loadPreset(e.target.value));
+        this.coreCountSelect.addEventListener("change", (e) => this.setCoreTopology(parseInt(e.target.value, 10)));
         this.clockFreqSelect.addEventListener("change", (e) => {
             const freq = parseInt(e.target.value, 10);
             this.assembler.clkFreqHz = freq;
             this.emulator.clkFreqHz = freq;
-            this.log(`Clock frequency updated to ${(freq / 1e6).toFixed(1)} MHz`);
+            this.log(`Master clock set to ${(freq / 1e6).toFixed(1)} MHz`);
+        });
+
+        this.codeEditor.addEventListener("input", () => this.updateLineNumbers());
+        this.codeEditor.addEventListener("scroll", () => {
+            this.lineNumbers.scrollTop = this.codeEditor.scrollTop;
+        });
+
+        this.speedSlider.addEventListener("input", (e) => {
+            this.execSpeed = parseInt(e.target.value, 10);
+            this.speedLabel.textContent = `${this.execSpeed} cyc/fr`;
+        });
+
+        // Execution actions
+        this.btnAssemble.addEventListener("click", () => this.assembleCode());
+        this.btnRun.addEventListener("click", () => this.startSimulation());
+        this.btnPause.addEventListener("click", () => this.pauseSimulation());
+        this.btnStepInst.addEventListener("click", () => this.stepInstruction());
+        this.btnStepCycle.addEventListener("click", () => this.stepCycle());
+        this.btnReset.addEventListener("click", () => this.resetSimulation());
+
+        // Waveform Zoom actions
+        if (this.btnZoomIn) this.btnZoomIn.addEventListener("click", () => this.waveform?.zoomIn());
+        if (this.btnZoomOut) this.btnZoomOut.addEventListener("click", () => this.waveform?.zoomOut());
+        if (this.btnZoomFit) this.btnZoomFit.addEventListener("click", () => this.waveform?.zoomFit());
+        if (this.btnZoomReset) this.btnZoomReset.addEventListener("click", () => this.waveform?.resetZoom());
+        if (this.btnClearCursors) this.btnClearCursors.addEventListener("click", () => this.waveform?.clearCursors());
+
+        // Byte injection
+        this.btnInjectTx.addEventListener("click", () => {
+            const val = parseInt(this.inputTxByte.value.trim(), 16);
+            if (!isNaN(val)) {
+                this.emulator.pushTxByte(val);
+                this.log(`Injected 0x${val.toString(16).padStart(2, "0").toUpperCase()} into Host TX FIFO`);
+                this.updateUi();
+            }
         });
 
         // WebSerial
-        this.webSerial.setLogCallback((msg) => this.log(msg));
-        this.btnConnectSerial.addEventListener("click", async () => {
-            try {
-                if (!this.webSerial.isConnected) {
-                    await this.webSerial.connect();
-                    this.btnConnectSerial.textContent = "Disconnect";
-                    this.btnConnectSerial.classList.add("connected");
-                    this.btnFlashSerial.disabled = false;
-                } else {
-                    await this.webSerial.disconnect();
-                    this.btnConnectSerial.textContent = "Connect Hardware";
-                    this.btnConnectSerial.classList.remove("connected");
-                    this.btnFlashSerial.disabled = true;
-                }
-            } catch (err) {
-                this.log(`[Error] ${err.message}`);
-            }
-        });
+        this.btnConnectSerial.addEventListener("click", () => this.connectSerial());
+        this.btnFlashSerial.addEventListener("click", () => this.flashSerial());
 
-        this.btnFlashSerial.addEventListener("click", async () => {
-            if (!this.compiledData || !this.compiledData.success) {
+        // Exports
+        this.btnExportHex.addEventListener("click", () => this.exportHex());
+        this.btnExportVcd.addEventListener("click", () => this.exportVcd());
+
+        // Keyboard shortcuts (Ctrl+B assemble, +, -, 0, 1, Esc for Waveform)
+        window.addEventListener("keydown", (e) => {
+            const activeTag = document.activeElement?.tagName?.toLowerCase();
+            const isTyping = (activeTag === "textarea" || activeTag === "input");
+
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+                e.preventDefault();
                 this.assembleCode();
+                return;
             }
-            if (this.compiledData && this.compiledData.success) {
-                try {
-                    await this.webSerial.programMicrocode(this.compiledData.machineCode);
-                } catch (err) {
-                    this.log(`[Flash Error] ${err.message}`);
+
+            if (!isTyping) {
+                if (e.key === "+" || e.key === "=") {
+                    e.preventDefault();
+                    this.waveform?.zoomIn();
+                } else if (e.key === "-" || e.key === "_") {
+                    e.preventDefault();
+                    this.waveform?.zoomOut();
+                } else if (e.key === "0") {
+                    e.preventDefault();
+                    this.waveform?.zoomFit();
+                } else if (e.key === "1") {
+                    e.preventDefault();
+                    this.waveform?.resetZoom();
+                } else if (e.key === "Escape") {
+                    this.waveform?.clearCursors();
+                } else if (e.key === "ArrowLeft") {
+                    e.preventDefault();
+                    this.waveform?.pan(-40);
+                } else if (e.key === "ArrowRight") {
+                    e.preventDefault();
+                    this.waveform?.pan(40);
                 }
             }
         });
+    }
 
-        // Interactive Stimulus: Inject TX byte
-        const btnInjectTx = document.getElementById("btn-inject-tx");
-        const inputTxByte = document.getElementById("input-tx-byte");
-        if (btnInjectTx && inputTxByte) {
-            btnInjectTx.addEventListener("click", () => {
-                const val = parseInt(inputTxByte.value, 16) || 0;
-                this.emulator.pushTxByte(val);
-                this.log(`Pushed 0x${val.toString(16).padStart(2, "0").toUpperCase()} to TX FIFO`);
-                this.updateUi();
-            });
+    setCoreTopology(numCores) {
+        this.emulator.setNumCores(numCores);
+        this.labelNumCores.textContent = numCores;
+        this.coreCountSelect.value = numCores;
+
+        for (let i = 0; i < 4; i++) {
+            if (this.coreCards[i]) {
+                this.coreCards[i].style.display = (i < numCores) ? "flex" : "none";
+            }
+            if (i < 3 && this.cascadeRows[i]) {
+                this.cascadeRows[i].style.display = (i < numCores - 1) ? "flex" : "none";
+            }
+            if (this.barrierNodes[i]) {
+                this.barrierNodes[i].style.opacity = (i < numCores) ? "1.0" : "0.3";
+            }
         }
 
-        // Export VCD
-        this.btnExportVcd.addEventListener("click", () => this.exportVcd());
-        this.btnExportHex.addEventListener("click", () => this.exportHex());
+        this.log(`Multi-Core Topology reconfigured: ${numCores} Symmetric Core(s) (NUM_CORES = ${numCores})`);
+        this.waveform?.render();
+        this.updateUi();
     }
 
     loadPreset(presetId) {
-        const p = PRESETS.find(item => item.id === presetId);
-        if (p) {
-            this.codeEditor.value = p.code;
-            this.updateLineNumbers();
-            this.assembleCode();
-            this.log(`Loaded preset: ${p.title}`);
+        const preset = PRESETS.find(p => p.id === presetId);
+        if (!preset) return;
+
+        this.currentPresetId = presetId;
+        this.codeEditor.value = preset.code;
+        this.updateLineNumbers();
+
+        if (preset.numCores) {
+            this.setCoreTopology(preset.numCores);
         }
+
+        this.log(`Loaded preset [${preset.category}]: "${preset.title}"`);
+        this.assembleCode();
     }
 
     updateLineNumbers() {
         const lines = this.codeEditor.value.split("\n").length;
-        this.lineNumbers.innerHTML = Array.from({ length: lines }, (_, i) => `<div>${i + 1}</div>`).join("");
+        this.lineNumbers.innerHTML = Array.from({ length: lines }, (_, i) => i + 1).join("<br>");
     }
 
     assembleCode() {
-        const src = this.codeEditor.value;
-        this.compiledData = this.assembler.assemble(src);
+        const source = this.codeEditor.value;
+        const result = this.assembler.assemble(source);
 
-        if (this.compiledData.success) {
-            this.statusBadge.textContent = "ASSEMBLY OK";
-            this.statusBadge.className = "status-badge ok";
-            this.emulator.loadProgram(this.compiledData.machineCode);
-            this.renderHexListing();
-            this.log(`Assembly successful: ${this.compiledData.machineCode.length} words emitted.`);
-            this.updateUi();
-            return true;
-        } else {
-            this.statusBadge.textContent = `ERRORS (${this.compiledData.errors.length})`;
-            this.statusBadge.className = "status-badge error";
-            this.compiledData.errors.forEach(err => {
-                this.log(`[ASM Error Line ${err.line}] ${err.message}`);
-            });
+        if (this.assembler.errors.length > 0) {
+            this.statusBadge.textContent = "SYNTAX ERR";
+            this.statusBadge.className = "status-badge err";
+            this.log(`[Error] Compilation failed with ${this.assembler.errors.length} error(s):`);
+            this.assembler.errors.forEach(err => this.log(`  Line ${err.lineNum}: ${err.message}`));
             return false;
         }
+
+        this.statusBadge.textContent = `OK (${this.assembler.machineCode.length} INST)`;
+        this.statusBadge.className = "status-badge ok";
+        this.compiledData = this.assembler.machineCode;
+
+        this.emulator.loadProgram(this.compiledData);
+        this.log(`[Assemble] Successfully compiled ${this.compiledData.length} instructions into multi-bank IMEM.`);
+        this.renderHexDisasm();
+        this.updateUi();
+        return true;
     }
 
-    startExecution() {
-        if (!this.compiledData || !this.compiledData.success) {
+    startSimulation() {
+        if (!this.compiledData) {
             if (!this.assembleCode()) return;
         }
+
         this.emulator.running = true;
         this.btnRun.disabled = true;
         this.btnPause.disabled = false;
-        this.runLoop();
+        this.btnStepInst.disabled = true;
+        this.btnStepCycle.disabled = true;
+
+        const loop = () => {
+            if (!this.emulator.running) return;
+
+            for (let i = 0; i < this.execSpeed; i++) {
+                this.emulator.stepCycle();
+            }
+
+            this.updateUi();
+            this.waveform?.render();
+            this.animFrameId = requestAnimationFrame(loop);
+        };
+
+        this.animFrameId = requestAnimationFrame(loop);
+        this.log("Multi-Core continuous simulation running...");
     }
 
-    pauseExecution() {
+    pauseSimulation() {
         this.emulator.running = false;
         if (this.animFrameId) {
             cancelAnimationFrame(this.animFrameId);
             this.animFrameId = null;
         }
+
         this.btnRun.disabled = false;
         this.btnPause.disabled = true;
+        this.btnStepInst.disabled = false;
+        this.btnStepCycle.disabled = false;
+
+        this.log(`Simulation paused at cycle ${this.emulator.totalCycles}.`);
         this.updateUi();
-    }
-
-    runLoop() {
-        if (!this.emulator.running) return;
-
-        for (let i = 0; i < this.execSpeed; i++) {
-            if (!this.emulator.stepCycle()) {
-                this.pauseExecution();
-                break;
-            }
-        }
-
-        this.updateUi();
-        this.animFrameId = requestAnimationFrame(() => this.runLoop());
+        this.waveform?.render();
     }
 
     stepInstruction() {
+        if (!this.compiledData) this.assembleCode();
         this.emulator.stepInstruction();
         this.updateUi();
+        this.waveform?.render();
     }
 
     stepCycle() {
+        if (!this.compiledData) this.assembleCode();
         this.emulator.stepCycle();
         this.updateUi();
+        this.waveform?.render();
     }
 
-    resetEmulator() {
-        this.pauseExecution();
+    resetSimulation() {
+        this.pauseSimulation();
         this.emulator.reset();
-        if (this.compiledData && this.compiledData.success) {
-            this.emulator.loadProgram(this.compiledData.machineCode);
+        if (this.compiledData) {
+            this.emulator.loadProgram(this.compiledData);
         }
-        this.log("Micro-engine reset.");
+        this.log("Multi-engine reset to initial vector (RESET_PC = CORE_ID * 32).");
+        this.updateUi();
+        this.waveform?.render();
+    }
+
+    forceUnlock(lockId) {
+        this.emulator.forceUnlockSpinlock(lockId);
+        this.log(`Host Wishbone Override: Force-unlocked Spinlock ${lockId}`);
         this.updateUi();
     }
 
     updateUi() {
-        // Register displays
-        this.valPc.textContent = `0x${this.emulator.pc.toString(16).padStart(2, "0").toUpperCase()} (${this.emulator.pc})`;
-        this.valState.textContent = this.emulator.state;
-        this.valDelay.textContent = this.emulator.delayCnt;
-        this.valInst.textContent = `0x${this.emulator.activeInst.toString(16).padStart(4, "0").toUpperCase()}`;
-        this.valCycles.textContent = this.emulator.totalCycles.toLocaleString();
-        
-        this.valLc0.textContent = this.emulator.lc0;
-        this.valLc1.textContent = this.emulator.lc1;
-        this.valAcc.textContent = `0x${this.emulator.acc.toString(16).padStart(2, "0").toUpperCase()} (${this.emulator.acc})`;
-        this.valFlags.textContent = `Z:${this.emulator.flags.z} C:${this.emulator.flags.c} N:${this.emulator.flags.n}`;
-        
-        this.valOsr.textContent = `0x${this.emulator.osr.toString(16).padStart(8, "0").toUpperCase()}`;
-        this.valIsr.textContent = `0x${this.emulator.isr.toString(16).padStart(8, "0").toUpperCase()}`;
-        
-        this.valTxCount.textContent = `${this.emulator.txFifo.length}/${this.emulator.fifoDepth}`;
-        this.valRxCount.textContent = `${this.emulator.rxFifo.length}/${this.emulator.fifoDepth}`;
+        const emu = this.emulator;
 
-        // FIFOs List
-        this.txFifoList.innerHTML = this.emulator.txFifo.map(b => `<span class="fifo-byte">0x${b.toString(16).padStart(2, "0").toUpperCase()}</span>`).join("") || "<span class='empty'>(empty)</span>";
-        this.rxFifoList.innerHTML = this.emulator.rxFifo.map(b => `<span class="fifo-byte">0x${b.toString(16).padStart(2, "0").toUpperCase()}</span>`).join("") || "<span class='empty'>(empty)</span>";
-
-        // Call Stack
-        let stackHtml = "";
+        // 1. Update Real-Time Multi-Core Tiles
         for (let i = 0; i < 4; i++) {
-            const isTop = (i === this.emulator.callSp - 1);
-            const val = this.emulator.callStack[i];
-            stackHtml += `<div class="stack-slot ${isTop ? 'active-slot' : ''}">[SP ${i}] PC: 0x${val.toString(16).padStart(2, "0").toUpperCase()}</div>`;
+            const core = emu.cores[i];
+            const card = this.coreCards[i];
+            if (!card || !core.enabled) continue;
+
+            const elState = document.getElementById(`core-state-${i}`);
+            const elInst  = document.getElementById(`core-inst-${i}`);
+            const elPc    = document.getElementById(`core-pc-${i}`);
+            const elAcc   = document.getElementById(`core-acc-${i}`);
+            const elFz    = document.getElementById(`core-fz-${i}`);
+            const elLc0   = document.getElementById(`core-lc0-${i}`);
+
+            if (elState) {
+                elState.textContent = core.state;
+                elState.className = `core-state-pill ${core.state.toLowerCase().replace('_', '-')}`;
+            }
+            if (elInst) elInst.textContent = core.lastDisasm || "NOP";
+            if (elPc) elPc.textContent = `0x${core.pc.toString(16).padStart(2, "0").toUpperCase()}`;
+            if (elAcc) elAcc.textContent = `0x${core.acc.toString(16).padStart(2, "0").toUpperCase()}`;
+            if (elFz) elFz.textContent = core.flags.z;
+            if (elLc0) elLc0.textContent = core.lc0;
         }
-        this.callStackContainer.innerHTML = stackHtml;
 
-        // Pin Matrix LED states
-        const gpio = this.emulator.getEffectiveGpio();
-        const oe = this.emulator.uioOe;
-        const od = this.emulator.gpioOd;
+        // 2. Hardware Synchronization Fabric
+        if (this.valCycles) {
+            this.valCycles.textContent = `${emu.totalCycles} Cycles`;
+        }
 
-        for (let p = 0; p < 8; p++) {
-            const el = this.pinElements[p];
-            if (el) {
-                const bitVal = (gpio >> p) & 1;
-                const isOe = (oe >> p) & 1;
-                const isOd = (od >> p) & 1;
-                
-                el.className = "pin-badge";
-                if (bitVal === 1) el.classList.add("pin-high");
-                else el.classList.add("pin-low");
-                if (isOd) el.classList.add("pin-od");
-
-                el.querySelector(".pin-level").textContent = bitVal === 1 ? "1" : "0";
-                el.querySelector(".pin-mode").textContent = isOd ? "OD" : (isOe ? "OUT" : "IN");
+        // Shared Mailboxes
+        for (let mb = 0; mb < 8; mb++) {
+            const valElem = this.mbValElements[mb];
+            const cellElem = this.mbCellElements[mb];
+            if (valElem) {
+                valElem.textContent = `0x${emu.mailboxes[mb].toString(16).padStart(2, "0").toUpperCase()}`;
+            }
+            if (cellElem) {
+                const last = emu.mbLastAccess[mb];
+                if (last && (emu.totalCycles - last.cycle < 5)) {
+                    cellElem.className = `mb-cell ${last.action === "WRITE" ? "write-glow" : "read-glow"}`;
+                } else {
+                    cellElem.className = "mb-cell";
+                }
             }
         }
 
-        // Render Waveform Logic Analyzer
-        if (this.waveform) {
-            this.waveform.render();
+        // Spinlocks
+        for (let lk = 0; lk < 4; lk++) {
+            const statusElem = this.lockStatusElements[lk];
+            const cellElem = this.lockCellElements[lk];
+            const owner = emu.spinlocks[lk];
+            if (statusElem) {
+                statusElem.textContent = owner === null ? "FREE" : `HELD: C${owner}`;
+            }
+            if (cellElem) {
+                cellElem.className = `spinlock-cell ${owner === null ? "unlocked" : "locked"}`;
+            }
+        }
+
+        // Barrier Radar
+        for (let bn = 0; bn < 4; bn++) {
+            const node = this.barrierNodes[bn];
+            if (node) {
+                const led = node.querySelector(".node-led");
+                if (led) {
+                    if (emu.barrierArrived[bn]) {
+                        led.className = "node-led arrived";
+                    } else {
+                        led.className = "node-led";
+                    }
+                }
+            }
+        }
+
+        if (this.barrierPulseElem) {
+            if (emu.barrierReleasePulse) {
+                this.barrierPulseElem.className = "barrier-center-pulse active";
+            } else {
+                this.barrierPulseElem.className = "barrier-center-pulse";
+            }
+        }
+
+        // 3. FIFOs & Cascade Queues
+        this.renderFifo(this.txFifoList, emu.txFifo);
+        this.renderFifo(this.rxFifoList, emu.rxFifo);
+        for (let cf = 0; cf < 3; cf++) {
+            if (this.cascadeFifoLists[cf]) {
+                this.renderFifo(this.cascadeFifoLists[cf], emu.cascadeFifos[cf]);
+            }
+        }
+
+        // 4. Physical Pin Matrix (UIO[0..7])
+        const effective = emu.getEffectiveGpio();
+        for (let p = 0; p < 8; p++) {
+            const pinElem = this.pinElements[p];
+            if (pinElem) {
+                const isHigh = ((effective >> p) & 1) === 1;
+                const isDriven = ((emu.uioOe >> p) & 1) === 1;
+                const lvlElem = pinElem.querySelector(".pin-level");
+                const modeElem = pinElem.querySelector(".pin-mode");
+
+                if (lvlElem) {
+                    lvlElem.textContent = isHigh ? "1" : "0";
+                    lvlElem.className = `pin-level ${isHigh ? "high" : ""}`;
+                }
+                if (modeElem) {
+                    modeElem.textContent = isDriven ? "OUT" : "IN";
+                }
+            }
         }
     }
 
-    renderHexListing() {
-        if (!this.compiledData || !this.compiledData.debugMap) return;
-        this.hexViewContainer.innerHTML = this.compiledData.debugMap.map(d => {
-            return `<div class="hex-row ${d.pc === this.emulator.pc ? 'hex-active' : ''}">
-                <span class="hex-pc">0x${d.pc.toString(16).padStart(2, "0").toUpperCase()}</span>
-                <span class="hex-word">${d.hex}</span>
-                <span class="hex-asm">${d.raw}</span>
-            </div>`;
-        }).join("");
+    renderFifo(container, fifoArray) {
+        if (!container) return;
+        if (fifoArray.length === 0) {
+            container.innerHTML = `<span style="font-size: 9px; color: var(--text-dim); margin-left: 4px;">empty</span>`;
+            return;
+        }
+        container.innerHTML = fifoArray.slice(0, 8).map(b => 
+            `<span class="fifo-byte-badge">0x${b.toString(16).padStart(2, "0").toUpperCase()}</span>`
+        ).join("");
     }
 
-    log(msg) {
+    renderHexDisasm() {
+        if (!this.hexViewContainer || !this.assembler.machineCode) return;
+        const mc = this.assembler.machineCode;
+        let html = "";
+        for (let i = 0; i < mc.length; i++) {
+            const hex = mc[i].toString(16).padStart(4, "0").toUpperCase();
+            const disasm = this.emulator.disassembleInstruction(mc[i]);
+            const bank = Math.floor(i / 32);
+            html += `<div class="hex-row"><span style="color: var(--text-dim);">[B${bank}:${i.toString(16).padStart(2, "0").toUpperCase()}]</span> <span style="color: var(--primary-cyan);">0x${hex}</span> -- <span style="color: #FFF;">${disasm}</span></div>`;
+        }
+        this.hexViewContainer.innerHTML = html;
+    }
+
+    log(message) {
+        if (!this.terminalOutput) return;
+        const line = document.createElement("div");
+        line.className = "log-line";
         const time = new Date().toLocaleTimeString();
-        const div = document.createElement("div");
-        div.className = "log-line";
-        div.innerHTML = `<span class="log-time">[${time}]</span> ${msg}`;
-        this.terminalOutput.appendChild(div);
+        line.innerHTML = `<span class="log-time">[${time}]</span> ${message}`;
+        this.terminalOutput.appendChild(line);
         this.terminalOutput.scrollTop = this.terminalOutput.scrollHeight;
+    }
+
+    async connectSerial() {
+        try {
+            await this.webSerial.connect();
+            this.btnFlashSerial.disabled = false;
+            this.btnConnectSerial.textContent = "🔌 Connected";
+            this.log("WebSerial: Connected to OmniBus hardware bridge.");
+        } catch (err) {
+            this.log(`WebSerial Connection Error: ${err.message}`);
+        }
+    }
+
+    async flashSerial() {
+        if (!this.compiledData) {
+            this.log("Cannot flash: Assemble microcode first.");
+            return;
+        }
+        try {
+            this.log(`WebSerial: Flashing ${this.compiledData.length} words to FPGA silicon...`);
+            await this.webSerial.flashMicrocode(this.compiledData);
+            this.log("WebSerial: [SUCCESS] Silicon IMEM flashed successfully!");
+        } catch (err) {
+            this.log(`WebSerial Flash Error: ${err.message}`);
+        }
     }
 
     exportHex() {
         if (!this.compiledData) this.assembleCode();
-        const blob = new Blob([this.compiledData.verilogHex], { type: "text/plain" });
+        const hex = this.assembler.getVerilogMemHex();
+        const blob = new Blob([hex], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = "program.hex";
+        a.href = url;
+        a.download = "multicore_program.hex";
         a.click();
+        URL.revokeObjectURL(url);
+        this.log("Exported Verilog $readmemh memory file: multicore_program.hex");
     }
 
     exportVcd() {
         const trace = this.emulator.trace;
         if (trace.length === 0) {
-            this.log("No simulation trace to export.");
+            this.log("No waveform trace available to export.");
             return;
         }
-
-        let vcd = `$date\n  ${new Date().toISOString()}\n$end\n`;
-        vcd += `$version\n  OmniBus Web IDE VCD Generator\n$end\n`;
-        vcd += `$timescale 20ns $end\n`;
-        vcd += `$scope module top $end\n`;
-        vcd += `$var wire 1 ! clk $end\n`;
-        vcd += `$var wire 8 " uio [7:0] $end\n`;
-        vcd += `$var wire 1 # glitch $end\n`;
-        vcd += `$upscope $end\n$enddefinitions $end\n`;
-
+        let vcd = `$date\n  ${new Date().toISOString()}\n$end\n$version\n  OmniBus Studio MP\n$end\n$timescale 1ns $end\n$scope module top $end\n`;
+        vcd += `$var wire 1 ! UIO0 $end\n$var wire 1 \" UIO1 $end\n$var wire 1 # UIO2 $end\n$var wire 1 $ UIO3 $end\n$upscope $end\n$enddefinitions $end\n#0\n$dumpvars\n`;
         trace.forEach(s => {
-            vcd += `#${s.cycle}\n`;
-            vcd += `b${s.gpio.toString(2).padStart(8, "0")} "\n`;
-            vcd += `${s.glitch} #\n`;
+            vcd += `#${s.cycle * 20}\n${s.p0}!\n${s.p1}\"\n${s.p2}#\n${s.p3}$\n`;
         });
-
         const blob = new Blob([vcd], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = "omnibus_trace.vcd";
+        a.href = url;
+        a.download = "omnibus_multicore_trace.vcd";
         a.click();
-        this.log("Exported waveform to omnibus_trace.vcd");
+        URL.revokeObjectURL(url);
+        this.log("Exported Sigrok / PulseView waveform: omnibus_multicore_trace.vcd");
     }
 }
 
-window.addEventListener("DOMContentLoaded", () => {
-    window.app = new OmniBusApp();
+document.addEventListener("DOMContentLoaded", () => {
+    new OmniBusApp();
 });

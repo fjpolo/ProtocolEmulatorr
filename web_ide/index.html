@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OmniBus Studio | Interactive Web IDE & Silicon Emulator</title>
-    <meta name="description" content="Cycle-accurate silicon micro-engine emulator, macro assembler, logic analyzer, and WebSerial flasher for the OmniBus Protocol Emulator ASIC.">
+    <title>OmniBus Studio | Multi-Core MP Visualizer & Silicon Emulator</title>
+    <meta name="description" content="Cycle-accurate multi-core silicon micro-engine emulator, macro assembler, logic analyzer, shared mailbox & spinlock visualizer, and WebSerial flasher for the OmniBus MP ASIC.">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -13,36 +13,59 @@
     <header class="top-nav">
         <div class="brand-section">
             <div class="brand-logo">Ω</div>
-            <h1 class="brand-title">OmniBus Studio</h1>
-            <span class="brand-chip-tag">IHP 130nm ASIC IDE</span>
+            <div>
+                <h1 class="brand-title">OmniBus Studio</h1>
+                <div class="brand-subtitle">Multi-Core MP Silicon Visualizer</div>
+            </div>
+            <span class="brand-chip-tag">IHP 130nm ASIC</span>
         </div>
 
         <div class="toolbar-actions">
+            <!-- Multi-Core Topology Selector -->
+            <div class="toolbar-group">
+                <label for="core-count-select" class="toolbar-label">Cores:</label>
+                <select id="core-count-select" class="select-control" title="Configurable Core Topology (NUM_CORES)">
+                    <option value="1">1 Core (Single)</option>
+                    <option value="2" selected>2 Cores (Dual-Core)</option>
+                    <option value="4">4 Cores (Quad-Core Grid)</option>
+                </select>
+            </div>
+
             <!-- Preset Selector -->
-            <select id="preset-select" class="select-control" title="Select Example Preset"></select>
+            <div class="toolbar-group">
+                <select id="preset-select" class="select-control" style="min-width: 200px;" title="Select Multi-Core Example Preset"></select>
+            </div>
 
             <!-- Clock Frequency -->
-            <select id="clock-freq-select" class="select-control" title="Master Clock Frequency">
-                <option value="50000000" selected>50.0 MHz</option>
-                <option value="25000000">25.0 MHz</option>
-                <option value="12000000">12.0 MHz</option>
-            </select>
+            <div class="toolbar-group">
+                <select id="clock-freq-select" class="select-control" title="Master Clock Frequency">
+                    <option value="50000000" selected>50.0 MHz</option>
+                    <option value="25000000">25.0 MHz</option>
+                    <option value="12000000">12.0 MHz</option>
+                </select>
+            </div>
 
             <!-- Execution Controls -->
-            <button id="btn-assemble" class="btn btn-primary" title="Assemble Microcode (Ctrl+B)">⚡ Assemble</button>
-            <button id="btn-run" class="btn btn-success" title="Run Continuous Simulation">▶ Run</button>
-            <button id="btn-pause" class="btn" disabled title="Pause Simulation">⏸ Pause</button>
-            <button id="btn-step-inst" class="btn" title="Step 1 Instruction">⏭ Step Inst</button>
-            <button id="btn-step-cycle" class="btn" title="Step 1 Clock Cycle">⏱ Step Cyc</button>
-            <button id="btn-reset" class="btn" title="Reset Micro-engine">↺ Reset</button>
+            <div class="btn-group">
+                <button id="btn-assemble" class="btn btn-primary" title="Assemble Microcode (Ctrl+B)">⚡ Assemble</button>
+                <button id="btn-run" class="btn btn-success" title="Run Continuous Simulation">▶ Run</button>
+                <button id="btn-pause" class="btn" disabled title="Pause Simulation">⏸ Pause</button>
+                <button id="btn-step-inst" class="btn" title="Step 1 Instruction (All Cores)">⏭ Step Inst</button>
+                <button id="btn-step-cycle" class="btn" title="Step 1 Clock Cycle">⏱ Step Cyc</button>
+                <button id="btn-reset" class="btn" title="Reset Multi-Engine">↺ Reset</button>
+            </div>
 
             <!-- Hardware WebSerial Flasher -->
-            <button id="btn-connect-serial" class="btn" title="Connect to Tang Console 60K / Nano 20K via WebSerial">🔌 Connect Board</button>
-            <button id="btn-flash-serial" class="btn" disabled title="Flash Microcode to FPGA Silicon">🔥 Flash Silicon</button>
+            <div class="btn-group">
+                <button id="btn-connect-serial" class="btn" title="Connect to FPGA Board via WebSerial">🔌 Connect</button>
+                <button id="btn-flash-serial" class="btn" disabled title="Flash Microcode to FPGA Silicon">🔥 Flash</button>
+            </div>
 
             <!-- Export Buttons -->
-            <button id="btn-export-hex" class="btn" title="Export Verilog $readmemh HEX">💾 Hex</button>
-            <button id="btn-export-vcd" class="btn" title="Export Sigrok/PulseView VCD">📈 VCD</button>
+            <div class="btn-group">
+                <button id="btn-export-hex" class="btn" title="Export Verilog $readmemh HEX">💾 Hex</button>
+                <button id="btn-export-vcd" class="btn" title="Export Sigrok VCD">📈 VCD</button>
+            </div>
         </div>
     </header>
 
@@ -60,19 +83,109 @@
 
             <div class="editor-container">
                 <div id="line-numbers" class="line-numbers">1</div>
-                <textarea id="code-editor" class="code-textarea" spellcheck="false" placeholder="; Enter OmniBus 16-bit microcode here..."></textarea>
+                <textarea id="code-editor" class="code-textarea" spellcheck="false" placeholder="; Enter OmniBus multi-core microcode here..."></textarea>
             </div>
         </section>
 
-        <!-- Center Pane: Logic Analyzer Waveform & Console -->
+        <!-- Center Pane: Multi-Core Execution Grid & Logic Analyzer -->
         <section class="panel center-pane">
-            <div class="panel-header">
-                <div class="panel-title">
-                    <span>Digital Logic Analyzer & Waveform View</span>
+            
+            <!-- Multi-Core Real-time Execution Grid -->
+            <div class="multicore-grid-header">
+                <span class="panel-title" style="font-size: 11px;">Symmetric Multi-Core Execution Slices (NUM_CORES = <span id="label-num-cores">2</span>)</span>
+                <div class="stream-mode-badge" id="badge-stream-mode">Cascade Crossbar Active</div>
+            </div>
+            
+            <div class="multicore-slices-container" id="multicore-slices-container">
+                <!-- Core 0 Tile -->
+                <div class="core-card core-0" id="core-card-0">
+                    <div class="core-header">
+                        <div class="core-title-badge"><span class="core-dot"></span>CORE 0 [Bank 0]</div>
+                        <div class="core-state-pill" id="core-state-0">FETCH</div>
+                    </div>
+                    <div class="core-body">
+                        <div class="core-inst-display" id="core-inst-0">PINMAP tx=0, rx=3</div>
+                        <div class="core-reg-row">
+                            <div class="core-reg"><span class="lbl">PC:</span><span class="val" id="core-pc-0">0x00</span></div>
+                            <div class="core-reg"><span class="lbl">ACC:</span><span class="val" id="core-acc-0">0x00</span></div>
+                            <div class="core-reg"><span class="lbl">Z:</span><span class="val" id="core-fz-0">1</span></div>
+                            <div class="core-reg"><span class="lbl">LC:</span><span class="val" id="core-lc0-0">0</span></div>
+                        </div>
+                    </div>
                 </div>
-                <div style="display: flex; align-items: center; gap: 10px;">
-                    <span id="speed-label" style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim);">1000 cyc/frame</span>
-                    <input type="range" id="speed-slider" min="1" max="5000" value="1000" style="width: 100px;">
+
+                <!-- Core 1 Tile -->
+                <div class="core-card core-1" id="core-card-1">
+                    <div class="core-header">
+                        <div class="core-title-badge"><span class="core-dot"></span>CORE 1 [Bank 1]</div>
+                        <div class="core-state-pill" id="core-state-1">FETCH</div>
+                    </div>
+                    <div class="core-body">
+                        <div class="core-inst-display" id="core-inst-1">PINMAP tx=4, rx=7</div>
+                        <div class="core-reg-row">
+                            <div class="core-reg"><span class="lbl">PC:</span><span class="val" id="core-pc-1">0x20</span></div>
+                            <div class="core-reg"><span class="lbl">ACC:</span><span class="val" id="core-acc-1">0x00</span></div>
+                            <div class="core-reg"><span class="lbl">Z:</span><span class="val" id="core-fz-1">1</span></div>
+                            <div class="core-reg"><span class="lbl">LC:</span><span class="val" id="core-lc0-1">0</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Core 2 Tile -->
+                <div class="core-card core-2" id="core-card-2" style="display: none;">
+                    <div class="core-header">
+                        <div class="core-title-badge"><span class="core-dot"></span>CORE 2 [Bank 2]</div>
+                        <div class="core-state-pill" id="core-state-2">FETCH</div>
+                    </div>
+                    <div class="core-body">
+                        <div class="core-inst-display" id="core-inst-2">CRC_INIT SMBUS</div>
+                        <div class="core-reg-row">
+                            <div class="core-reg"><span class="lbl">PC:</span><span class="val" id="core-pc-2">0x40</span></div>
+                            <div class="core-reg"><span class="lbl">ACC:</span><span class="val" id="core-acc-2">0x00</span></div>
+                            <div class="core-reg"><span class="lbl">Z:</span><span class="val" id="core-fz-2">1</span></div>
+                            <div class="core-reg"><span class="lbl">LC:</span><span class="val" id="core-lc0-2">0</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Core 3 Tile -->
+                <div class="core-card core-3" id="core-card-3" style="display: none;">
+                    <div class="core-header">
+                        <div class="core-title-badge"><span class="core-dot"></span>CORE 3 [Bank 3]</div>
+                        <div class="core-state-pill" id="core-state-3">FETCH</div>
+                    </div>
+                    <div class="core-body">
+                        <div class="core-inst-display" id="core-inst-3">SET cs, 0</div>
+                        <div class="core-reg-row">
+                            <div class="core-reg"><span class="lbl">PC:</span><span class="val" id="core-pc-3">0x60</span></div>
+                            <div class="core-reg"><span class="lbl">ACC:</span><span class="val" id="core-acc-3">0x00</span></div>
+                            <div class="core-reg"><span class="lbl">Z:</span><span class="val" id="core-fz-3">1</span></div>
+                            <div class="core-reg"><span class="lbl">LC:</span><span class="val" id="core-lc0-3">0</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Waveform View & Logic Analyzer -->
+            <div class="panel-header" style="border-top: 1px solid var(--border-subtle);">
+                <div class="panel-title" style="display: flex; align-items: center; gap: 8px;">
+                    <span>Logic Analyzer & Waveform View</span>
+                    <span id="waveform-scale-badge" class="scale-badge" title="Current Time Scale Resolution">2.0 cyc/px</span>
+                </div>
+                <div class="waveform-toolbar-controls">
+                    <!-- Zoom & Navigation Buttons -->
+                    <div class="btn-group">
+                        <button id="btn-zoom-in" class="btn btn-sm" title="Zoom In (+ / Scroll Up)">🔍+ In</button>
+                        <button id="btn-zoom-out" class="btn btn-sm" title="Zoom Out (- / Scroll Down)">🔍- Out</button>
+                        <button id="btn-zoom-fit" class="btn btn-sm" title="Fit Entire Simulation Trace (Key: 0)">⤢ Fit</button>
+                        <button id="btn-zoom-reset" class="btn btn-sm" title="Reset Zoom to 100% (Key: 1)">↺ 1:1</button>
+                        <button id="btn-clear-cursors" class="btn btn-sm" title="Clear Measurement Cursors (Esc)">✕ Cursors</button>
+                    </div>
+                    <!-- Sim Speed Slider -->
+                    <div style="display: flex; align-items: center; gap: 6px; margin-left: 4px;">
+                        <span id="speed-label" style="font-size: 10px; font-family: var(--font-mono); color: var(--text-dim);">1000 cyc/fr</span>
+                        <input type="range" id="speed-slider" min="1" max="5000" value="1000" style="width: 75px;" title="Simulation speed">
+                    </div>
                 </div>
             </div>
 
@@ -80,62 +193,98 @@
                 <canvas id="waveform-canvas"></canvas>
             </div>
 
+            <!-- Console Output -->
             <div class="console-panel">
                 <div class="panel-header" style="height: 28px; background: #070A10;">
-                    <span class="panel-title" style="font-size: 10px;">Console & WebSerial Telemetry</span>
+                    <span class="panel-title" style="font-size: 10px;">Multi-Core Execution Log & Telemetry</span>
                 </div>
                 <div id="terminal-output" class="console-output">
-                    <div class="log-line"><span class="log-time">[Init]</span> OmniBus Studio ready. Cycle-accurate 16-bit emulator active.</div>
+                    <div class="log-line"><span class="log-time">[Init]</span> OmniBus MP Studio ready. Multi-Core symmetric emulator active.</div>
                 </div>
             </div>
         </section>
 
-        <!-- Right Pane: Silicon Inspector & Subsystems -->
+        <!-- Right Pane: Hardware Synchronization & Inspector -->
         <aside class="panel inspector-pane">
             
-            <!-- Core Registers -->
-            <div class="card">
+            <!-- Shared Synchronization Fabric Card -->
+            <div class="card sync-fabric-card">
                 <div class="card-title">
-                    <span>Core Engine State</span>
-                    <span id="val-state" style="color: var(--accent-emerald);">FETCH</span>
+                    <span>Hardware Synchronization Fabric</span>
+                    <span id="val-cycles" style="font-size: 11px; color: var(--primary-cyan);">0 Cycles</span>
                 </div>
-                <div class="register-grid">
-                    <div class="reg-item"><div class="reg-label">PC</div><div id="val-pc" class="reg-val">0x00</div></div>
-                    <div class="reg-item"><div class="reg-label">Delay Cnt</div><div id="val-delay" class="reg-val">0</div></div>
-                    <div class="reg-item"><div class="reg-label">Active Inst</div><div id="val-inst" class="reg-val">0x0000</div></div>
-                    <div class="reg-item"><div class="reg-label">Cycles</div><div id="val-cycles" class="reg-val">0</div></div>
-                    <div class="reg-item"><div class="reg-label">LC0</div><div id="val-lc0" class="reg-val">0</div></div>
-                    <div class="reg-item"><div class="reg-label">LC1</div><div id="val-lc1" class="reg-val">0</div></div>
-                    <div class="reg-item"><div class="reg-label">ACC</div><div id="val-acc" class="reg-val">0x00</div></div>
-                    <div class="reg-item"><div class="reg-label">Flags</div><div id="val-flags" class="reg-val">Z:1 C:0</div></div>
+
+                <!-- 8 Shared Mailboxes -->
+                <div class="fabric-section-title">8 Shared Mailboxes (MAILBOX[0..7])</div>
+                <div class="mailbox-grid" id="mailbox-grid">
+                    <div class="mb-cell" id="mb-cell-0"><div class="mb-label">MB0</div><div class="mb-val" id="mb-val-0">0x00</div></div>
+                    <div class="mb-cell" id="mb-cell-1"><div class="mb-label">MB1</div><div class="mb-val" id="mb-val-1">0x00</div></div>
+                    <div class="mb-cell" id="mb-cell-2"><div class="mb-label">MB2</div><div class="mb-val" id="mb-val-2">0x00</div></div>
+                    <div class="mb-cell" id="mb-cell-3"><div class="mb-label">MB3</div><div class="mb-val" id="mb-val-3">0x00</div></div>
+                    <div class="mb-cell" id="mb-cell-4"><div class="mb-label">MB4</div><div class="mb-val" id="mb-val-4">0x00</div></div>
+                    <div class="mb-cell" id="mb-cell-5"><div class="mb-label">MB5</div><div class="mb-val" id="mb-val-5">0x00</div></div>
+                    <div class="mb-cell" id="mb-cell-6"><div class="mb-label">MB6</div><div class="mb-val" id="mb-val-6">0x00</div></div>
+                    <div class="mb-cell" id="mb-cell-7"><div class="mb-label">MB7</div><div class="mb-val" id="mb-val-7">0x00</div></div>
+                </div>
+
+                <!-- 4 Atomic Spinlocks -->
+                <div class="fabric-section-title" style="margin-top: 10px;">4 Atomic Spinlocks (SPINLOCK[0..3])</div>
+                <div class="spinlock-grid" id="spinlock-grid">
+                    <div class="spinlock-cell unlocked" id="lock-cell-0">
+                        <div class="lock-name">LOCK 0</div>
+                        <div class="lock-status" id="lock-status-0">FREE</div>
+                        <button class="btn-unlock" onclick="window.app?.forceUnlock(0)">Unlock</button>
+                    </div>
+                    <div class="spinlock-cell unlocked" id="lock-cell-1">
+                        <div class="lock-name">LOCK 1</div>
+                        <div class="lock-status" id="lock-status-1">FREE</div>
+                        <button class="btn-unlock" onclick="window.app?.forceUnlock(1)">Unlock</button>
+                    </div>
+                    <div class="spinlock-cell unlocked" id="lock-cell-2">
+                        <div class="lock-name">LOCK 2</div>
+                        <div class="lock-status" id="lock-status-2">FREE</div>
+                        <button class="btn-unlock" onclick="window.app?.forceUnlock(2)">Unlock</button>
+                    </div>
+                    <div class="spinlock-cell unlocked" id="lock-cell-3">
+                        <div class="lock-name">LOCK 3</div>
+                        <div class="lock-status" id="lock-status-3">FREE</div>
+                        <button class="btn-unlock" onclick="window.app?.forceUnlock(3)">Unlock</button>
+                    </div>
+                </div>
+
+                <!-- Barrier Rendezvous Radar -->
+                <div class="fabric-section-title" style="margin-top: 10px;">Hardware Rendezvous Barrier</div>
+                <div class="barrier-radar" id="barrier-radar">
+                    <div class="barrier-core-node" id="barrier-node-0"><span class="node-lbl">C0</span><div class="node-led"></div></div>
+                    <div class="barrier-core-node" id="barrier-node-1"><span class="node-lbl">C1</span><div class="node-led"></div></div>
+                    <div class="barrier-core-node" id="barrier-node-2"><span class="node-lbl">C2</span><div class="node-led"></div></div>
+                    <div class="barrier-core-node" id="barrier-node-3"><span class="node-lbl">C3</span><div class="node-led"></div></div>
+                    <div class="barrier-center-pulse" id="barrier-pulse">LOCKSTEP RELEASE</div>
                 </div>
             </div>
 
-            <!-- Shift Registers & FIFOs -->
+            <!-- Inter-Core Cascade Stream Queues -->
             <div class="card">
                 <div class="card-title">
-                    <span>SERDES & Ping-Pong FIFOs</span>
+                    <span>Streaming & Inter-Core Cascade FIFOs</span>
                 </div>
-                <div class="register-grid" style="margin-bottom: 8px;">
-                    <div class="reg-item"><div class="reg-label">OSR (32b)</div><div id="val-osr" class="reg-val">0x00000000</div></div>
-                    <div class="reg-item"><div class="reg-label">ISR (32b)</div><div id="val-isr" class="reg-val">0x00000000</div></div>
+                <div class="cascade-flow-visualizer">
+                    <div class="fifo-row"><span class="fifo-lbl">Host TX:</span><div id="tx-fifo-list" class="fifo-container"></div></div>
+                    <div class="fifo-row" id="cascade-row-0"><span class="fifo-lbl">Core 0 &rarr; 1:</span><div id="cascade-fifo-0" class="fifo-container"></div></div>
+                    <div class="fifo-row" id="cascade-row-1"><span class="fifo-lbl">Core 1 &rarr; 2:</span><div id="cascade-fifo-1" class="fifo-container"></div></div>
+                    <div class="fifo-row" id="cascade-row-2"><span class="fifo-lbl">Core 2 &rarr; 3:</span><div id="cascade-fifo-2" class="fifo-container"></div></div>
+                    <div class="fifo-row"><span class="fifo-lbl">Host RX:</span><div id="rx-fifo-list" class="fifo-container"></div></div>
                 </div>
-
-                <div style="font-size: 10px; color: var(--text-dim); margin: 6px 0 2px 0;">TX FIFO (<span id="val-tx-count">0/64</span>):</div>
-                <div id="tx-fifo-list" class="fifo-container"></div>
-                <div style="display: flex; gap: 6px; margin-top: 4px;">
-                    <input type="text" id="input-tx-byte" value="0x55" style="width: 50px; background: #070A10; border: 1px solid var(--border-subtle); color: #FFF; font-family: var(--font-mono); font-size: 11px; padding: 2px 4px; border-radius: 4px;">
-                    <button id="btn-inject-tx" class="btn" style="padding: 2px 8px; font-size: 10px;">Push Byte</button>
+                <div style="display: flex; gap: 6px; margin-top: 8px;">
+                    <input type="text" id="input-tx-byte" value="0x5A" style="width: 55px; background: #070A10; border: 1px solid var(--border-subtle); color: #FFF; font-family: var(--font-mono); font-size: 11px; padding: 2px 4px; border-radius: 4px;">
+                    <button id="btn-inject-tx" class="btn" style="padding: 2px 8px; font-size: 10px;">Inject Host TX Byte</button>
                 </div>
-
-                <div style="font-size: 10px; color: var(--text-dim); margin: 8px 0 2px 0;">RX FIFO (<span id="val-rx-count">0/64</span>):</div>
-                <div id="rx-fifo-list" class="fifo-container"></div>
             </div>
 
             <!-- Pin Matrix & Open-Drain Status -->
             <div class="card">
                 <div class="card-title">
-                    <span>8-Pin Matrix (uio[7:0])</span>
+                    <span>Unified 8-Pin Matrix (UIO[7:0])</span>
                 </div>
                 <div class="pin-matrix-grid">
                     <div id="pin-0" class="pin-badge"><div class="pin-name">UIO0</div><div class="pin-level">0</div><div class="pin-mode">IN</div></div>
@@ -149,18 +298,10 @@
                 </div>
             </div>
 
-            <!-- Hardware Call Stack -->
+            <!-- Machine Code (Hex / Disasm) -->
             <div class="card">
                 <div class="card-title">
-                    <span>4-Deep Hardware Call Stack</span>
-                </div>
-                <div id="call-stack-container"></div>
-            </div>
-
-            <!-- Assembled Machine Code Inspector -->
-            <div class="card">
-                <div class="card-title">
-                    <span>Machine Code (Hex / Disasm)</span>
+                    <span>128-Word Machine Code RAM</span>
                 </div>
                 <div id="hex-view-container" class="hex-view-container"></div>
             </div>
@@ -168,7 +309,7 @@
         </aside>
     </main>
 
-    <!-- Main Module Entry Point -->
+    <!-- Main Application Entry Point -->
     <script type="module" src="js/app.js"></script>
 </body>
 </html>
