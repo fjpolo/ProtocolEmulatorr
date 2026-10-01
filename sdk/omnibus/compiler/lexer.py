@@ -201,8 +201,8 @@ class OmniCLexer:
             start_col = self.col
             ch = self._peek()
 
-            # Preprocessor Directives (#define, #pragma, #include)
-            if ch == "#":
+            # Preprocessor Directives (#define, `define, #pragma, #include, `include)
+            if ch in ("#", "`"):
                 tokens.append(self._read_preprocessor())
                 continue
 

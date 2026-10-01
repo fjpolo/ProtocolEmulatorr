@@ -12,6 +12,8 @@
 #pragma clock 50MHz
 #pragma baud 115200
 
+#include "OmniBus_Config.vh"
+
 // Standard Pin Aliases
 #define PIN_TX      0
 #define PIN_RX      1

@@ -17,9 +17,11 @@
 `default_nettype none
 `timescale 1ns/1ps
 
+`include "OmniBus_Config.vh"
+
 module ProtocolEmulator_MP #(
-    parameter integer NUM_CORES  = 2,     // Supported: 1, 2, or 4
-    parameter integer FIFO_DEPTH = 16
+    parameter integer NUM_CORES  = `NUM_CORES,     // Supported: 1, 2, or 4
+    parameter integer FIFO_DEPTH = `DEFAULT_FIFO_DEPTH
 )(
     input   wire            i_clk,
     input   wire            i_reset_n,

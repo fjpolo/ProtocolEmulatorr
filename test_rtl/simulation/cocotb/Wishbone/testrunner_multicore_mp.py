@@ -28,6 +28,7 @@ def run_mp_suite(num_cores=2):
     runner = get_runner(sim)
     runner.build(
         sources=sources,
+        includes=[rtl_dir],
         hdl_toplevel="OmniBus_Wishbone",
         parameters={"NUM_CORES": num_cores},
         always=True,

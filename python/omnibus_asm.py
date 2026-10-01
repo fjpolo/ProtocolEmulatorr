@@ -204,9 +204,36 @@ class OmnibusAssembler:
         self.bit_delay = max(0, cycles_per_bit - 1)
         self.half_bit_delay = max(0, round(cycles_per_bit / 2) - 1)
 
-    def assemble(self, source_text):
+    def _preprocess_asm(self, source_text, base_dir="."):
+        include_paths = [
+            base_dir,
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rtl")),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "sdk", "include", "omnic")),
+        ]
+        expanded_lines = []
+        for raw_line in source_text.splitlines():
+            stripped = raw_line.strip()
+            # Match include directive: .include "file", #include "file", `include "file"
+            inc_match = re.match(r'^\s*([#`.]?include)\s+["<](.*?)[">]', stripped)
+            if inc_match:
+                hdr = inc_match.group(2)
+                found_path = None
+                for inc_dir in include_paths:
+                    cand = os.path.join(inc_dir, hdr)
+                    if os.path.isfile(cand):
+                        found_path = cand
+                        break
+                if found_path:
+                    with open(found_path, "r", encoding="utf-8") as hf:
+                        sub_text = hf.read()
+                    expanded_lines.extend(self._preprocess_asm(sub_text, os.path.dirname(found_path)))
+                continue
+            expanded_lines.append(raw_line)
+        return expanded_lines
+
+    def assemble(self, source_text, base_dir="."):
         """Assembles assembly source text into a list of (address, 16-bit word, source_line)."""
-        lines = source_text.splitlines()
+        lines = self._preprocess_asm(source_text, base_dir)
         labels = {}
         # Baud-rate aware symbols (computed from clock/baud parameters)
         symbols = {
@@ -228,6 +255,19 @@ class OmnibusAssembler:
             line = re.sub(r"[;#].*$", "", raw_line)
             line = re.sub(r"//.*$", "", line).strip()
             if not line:
+                continue
+
+            # Check for defines: `define NAME VAL, #define NAME VAL, .define NAME VAL
+            def_match = re.match(r"^\s*[#`.]?define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$", raw_line.strip())
+            if def_match:
+                d_name = def_match.group(1)
+                d_val_str = def_match.group(2).split("//")[0].split(";")[0].strip()
+                try:
+                    d_val = int(d_val_str, 0)
+                except ValueError:
+                    d_val = symbols.get(d_val_str, symbols.get(d_val_str.upper(), 0))
+                symbols[d_name] = d_val
+                symbols[d_name.upper()] = d_val
                 continue
 
             # Check for directives: .clock, .baud, .equ, .const, .pins, .entry, .org, .bank
@@ -1711,7 +1751,7 @@ def assemble_file(filepath):
     with open(filepath, "r", encoding="utf-8") as f:
         source = f.read()
     asm = OmnibusAssembler()
-    return asm.assemble(source)
+    return asm.assemble(source, base_dir=os.path.dirname(os.path.abspath(filepath)))
 
 
 def main():

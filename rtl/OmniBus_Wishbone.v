@@ -13,10 +13,12 @@
 `default_nettype wire
 `timescale 1ns/1ps
 
+`include "OmniBus_Config.vh"
+
 module OmniBus_Wishbone #(
-    parameter integer FIFO_DEPTH        = 16,
-    parameter integer DEFAULT_BAUD_DIV  = 433,  // 115200 baud @ 50MHz
-    parameter integer NUM_CORES         = 2     // Supported: 1, 2, or 4 Cores
+    parameter integer FIFO_DEPTH        = `DEFAULT_FIFO_DEPTH,
+    parameter integer DEFAULT_BAUD_DIV  = `DEFAULT_BAUD_DIV,  // 115200 baud @ 50MHz
+    parameter integer NUM_CORES         = `NUM_CORES          // Supported: 1, 2, or 4 Cores
 )(
     // -------------------------------------------------------------------------
     // Wishbone B4 Slave Interface

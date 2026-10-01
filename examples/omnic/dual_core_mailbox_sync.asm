@@ -3,6 +3,10 @@
 ; Target Architecture: OmniBus 16-bit Deterministic Protocol Engine
 ; ==============================================================================
 .clock 50000000
+.const NUM_CORES 2
+.const DEFAULT_IMEM_SIZE 128
+.const DEFAULT_FIFO_DEPTH 16
+.const DEFAULT_BAUD_DIV 433
 .const PIN_TX 0
 .const PIN_RX 1
 .const PIN_SCK 2

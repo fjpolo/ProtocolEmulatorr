@@ -28,6 +28,7 @@ def test_wishbone_runner():
     runner = get_runner(sim)
     runner.build(
         sources=sources,
+        includes=[rtl_dir],
         hdl_toplevel="OmniBus_Wishbone",
         always=True,
         waves=waves,

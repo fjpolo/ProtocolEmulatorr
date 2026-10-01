@@ -15,26 +15,33 @@ from .codegen import OmniCCodeGen
 
 
 def get_default_include_dir() -> str:
-    """Returns the path to sdk/include/omnic/."""
+    """Returns the primary path to sdk/include/omnic/."""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.abspath(os.path.join(current_dir, "..", "..", "include", "omnic"))
+
+
+def get_default_include_dirs() -> List[str]:
+    """Returns the paths to sdk/include/omnic/ and rtl/."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
     sdk_include = os.path.abspath(os.path.join(current_dir, "..", "..", "include", "omnic"))
-    return sdk_include
+    rtl_include = os.path.abspath(os.path.join(current_dir, "..", "..", "..", "rtl"))
+    return [d for d in [sdk_include, rtl_include] if os.path.isdir(d)]
 
 
 class Preprocessor:
-    """Handles #include, #define macro expansions, and header guards."""
+    """Handles #include, `include, #define, `define macro expansions, and header guards."""
 
     def __init__(self, include_paths: Optional[List[str]] = None):
         self.include_paths = include_paths or []
-        default_inc = get_default_include_dir()
-        if os.path.isdir(default_inc) and default_inc not in self.include_paths:
-            self.include_paths.append(default_inc)
+        for default_inc in get_default_include_dirs():
+            if default_inc not in self.include_paths:
+                self.include_paths.append(default_inc)
         self.included_files: Set[str] = set()
         self.func_macros: Dict[str, Tuple[List[str], str]] = {}  # name -> (param_list, body)
         self.obj_macros: Dict[str, str] = {}  # name -> value
 
     def process(self, source: str, base_dir: str = ".") -> str:
-        # Pass 1: Resolve #include and extract macros
+        # Pass 1: Resolve #include / `include and extract macros
         lines = source.splitlines()
         expanded_lines: List[str] = []
 
@@ -42,11 +49,12 @@ class Preprocessor:
             stripped = line.strip()
 
             # Skip header guards
-            if stripped.startswith("#ifndef") or stripped.startswith("#endif"):
+            if stripped.startswith("#ifndef") or stripped.startswith("#endif") or \
+               stripped.startswith("`ifndef") or stripped.startswith("`endif"):
                 continue
 
-            # Match #include "..." or #include <...>
-            inc_match = re.match(r'^\s*#include\s+["<](.*?)[">]', stripped)
+            # Match #include "..." or `include "..." or <...>
+            inc_match = re.match(r'^\s*[#`]?include\s+["<](.*?)[">]', stripped)
             if inc_match:
                 header_name = inc_match.group(1)
                 header_path = self._resolve_header(header_name, base_dir)
@@ -63,16 +71,27 @@ class Preprocessor:
                     expanded_lines.append(f"// [Warning: Include not found: {header_name}]")
                 continue
 
-            # Match function-like macro: #define NAME(a, b) REPLACEMENT
-            func_macro_match = re.match(r'^\s*#define\s+([a-zA-Z0-9_]+)\s*\((.*?)\)\s+(.*)', stripped)
+            # Match function-like macro: #define NAME(a, b) REPLACEMENT or `define NAME(...)
+            func_macro_match = re.match(r'^\s*[#`]?define\s+([a-zA-Z0-9_]+)\s*\((.*?)\)\s+(.*)', stripped)
             if func_macro_match:
                 macro_name = func_macro_match.group(1)
                 params = [p.strip() for p in func_macro_match.group(2).split(",") if p.strip()]
                 body = func_macro_match.group(3).strip()
-                # Strip trailing comments from body
                 if "//" in body:
                     body = body.split("//")[0].strip()
                 self.func_macros[macro_name] = (params, body)
+                continue
+
+            # Match object-like macro: #define NAME VALUE or `define NAME VALUE
+            obj_macro_match = re.match(r'^\s*[#`]?define\s+([a-zA-Z0-9_]+)\s+(.+)', stripped)
+            if obj_macro_match:
+                macro_name = obj_macro_match.group(1)
+                body = obj_macro_match.group(2).strip()
+                if "//" in body:
+                    body = body.split("//")[0].strip()
+                self.obj_macros[macro_name] = body
+                # Also record as constant in scope
+                expanded_lines.append(f"#define {macro_name} {body}")
                 continue
 
             expanded_lines.append(line)
@@ -80,7 +99,6 @@ class Preprocessor:
         # Pass 2: Expand function-like macros across lines
         text = "\n".join(expanded_lines)
         for macro_name, (params, body) in self.func_macros.items():
-            # Match macro_name(...)
             pattern = re.compile(rf'\b{macro_name}\s*\((.*?)\)', re.DOTALL)
             def replace_macro(m):
                 args_str = m.group(1)
@@ -92,7 +110,6 @@ class Preprocessor:
             text = pattern.sub(replace_macro, text)
 
         return text
-
 
     def _resolve_header(self, header_name: str, base_dir: str) -> Optional[str]:
         # Check base_dir first
