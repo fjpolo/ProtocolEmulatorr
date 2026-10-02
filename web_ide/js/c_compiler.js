@@ -1,9 +1,10 @@
 // =============================================================================
 // File        : c_compiler.js
-// Module      : OmniBus MP In-Browser Omni-C Compiler Engine
+// Module      : OmniBus MP In-Browser Omni-C Compiler & Optimizing Engine
 // Description : Full-featured browser-native C compiler for OmniBus ASIC:
-//               Preprocessor, Lexer, Parser, Symbol Table, Register Allocator,
-//               Code Generator (16-bit Assembly), and Peephole Optimizer.
+//               Preprocessor, Lexer, Parser, AST, Symbol Table, Register Allocator,
+//               Multi-Pass Optimizing Code Generator (-O0, -O1, -O2), Switch-Case
+//               Jump Tables, and Source-to-Binary Line Location Mapping.
 // License     : MIT License
 // =============================================================================
 
@@ -39,6 +40,9 @@ export const TokenType = {
     DO: "do",
     FOR: "for",
     REPEAT: "repeat",
+    SWITCH: "switch",
+    CASE: "case",
+    DEFAULT: "default",
     RETURN: "return",
     BREAK: "break",
     CONTINUE: "continue",
@@ -107,6 +111,9 @@ const KEYWORDS = {
     "do": TokenType.DO,
     "for": TokenType.FOR,
     "repeat": TokenType.REPEAT,
+    "switch": TokenType.SWITCH,
+    "case": TokenType.CASE,
+    "default": TokenType.DEFAULT,
     "return": TokenType.RETURN,
     "break": TokenType.BREAK,
     "continue": TokenType.CONTINUE,
@@ -117,7 +124,7 @@ const KEYWORDS = {
 };
 
 export class Token {
-    constructor(type, value = null, line = 1, col = 1, raw = "") {
+    constructor(type, value, line = 1, col = 1, raw = "") {
         this.type = type;
         this.value = value;
         this.line = line;
@@ -127,9 +134,8 @@ export class Token {
 }
 
 export class OmniCLexer {
-    constructor(source, filename = "<stdin>") {
+    constructor(source) {
         this.source = source;
-        this.filename = filename;
         this.pos = 0;
         this.line = 1;
         this.col = 1;
@@ -138,44 +144,46 @@ export class OmniCLexer {
 
     _peek(offset = 0) {
         const idx = this.pos + offset;
-        return idx < this.length ? this.source[idx] : "";
+        return idx < this.length ? this.source[idx] : "\0";
     }
 
     _advance() {
+        const ch = this._peek();
         if (this.pos < this.length) {
-            const ch = this.source[this.pos++];
+            this.pos++;
             if (ch === "\n") {
                 this.line++;
                 this.col = 1;
             } else {
                 this.col++;
             }
-            return ch;
         }
-        return "";
+        return ch;
     }
 
     tokenize() {
         const tokens = [];
+
         while (this.pos < this.length) {
             const ch = this._peek();
 
-            // Whitespace
+            // 1. Whitespace
             if (/\s/.test(ch)) {
                 this._advance();
                 continue;
             }
 
-            // Comments
+            // 2. Comments (// single line or /* multi line */)
             if (ch === "/" && this._peek(1) === "/") {
                 while (this.pos < this.length && this._peek() !== "\n") {
                     this._advance();
                 }
                 continue;
             }
+
             if (ch === "/" && this._peek(1) === "*") {
-                this._advance(); // /
-                this._advance(); // *
+                this._advance();
+                this._advance();
                 while (this.pos < this.length && !(this._peek() === "*" && this._peek(1) === "/")) {
                     this._advance();
                 }
@@ -189,26 +197,26 @@ export class OmniCLexer {
             const startLine = this.line;
             const startCol = this.col;
 
-            // Sentinels ($BAUD, $HBAUD)
+            // 3. Sentinels ($BAUD, $HBAUD)
             if (ch === "$") {
                 this._advance();
-                let ident = "$";
+                let ident = "";
                 while (/[a-zA-Z0-9_]/.test(this._peek())) {
                     ident += this._advance();
                 }
-                tokens.push(new Token(TokenType.SENTINEL, ident, startLine, startCol, ident));
+                tokens.push(new Token(TokenType.SENTINEL, "$" + ident.toUpperCase(), startLine, startCol, "$" + ident));
                 continue;
             }
 
-            // Numbers: Hex (0x..), Binary (0b..), Decimal
-            if (/\d/.test(ch)) {
+            // 4. Numbers (Hex: 0x55, Binary: 0b1010, Dec: 42)
+            if (/[0-9]/.test(ch)) {
                 let numStr = "";
                 if (ch === "0" && (this._peek(1) === "x" || this._peek(1) === "X")) {
                     numStr += this._advance(); // 0
                     numStr += this._advance(); // x
                     while (/[0-9a-fA-F_]/.test(this._peek())) {
-                        const c = this._advance();
-                        if (c !== "_") numStr += c;
+                        const digit = this._advance();
+                        if (digit !== "_") numStr += digit;
                     }
                     const val = parseInt(numStr, 16);
                     tokens.push(new Token(TokenType.INT_LITERAL, val, startLine, startCol, numStr));
@@ -216,15 +224,15 @@ export class OmniCLexer {
                     numStr += this._advance(); // 0
                     numStr += this._advance(); // b
                     while (/[01_]/.test(this._peek())) {
-                        const c = this._advance();
-                        if (c !== "_") numStr += c;
+                        const digit = this._advance();
+                        if (digit !== "_") numStr += digit;
                     }
                     const val = parseInt(numStr.substring(2), 2);
                     tokens.push(new Token(TokenType.INT_LITERAL, val, startLine, startCol, numStr));
                 } else {
                     while (/[0-9_]/.test(this._peek())) {
-                        const c = this._advance();
-                        if (c !== "_") numStr += c;
+                        const digit = this._advance();
+                        if (digit !== "_") numStr += digit;
                     }
                     const val = parseInt(numStr, 10);
                     tokens.push(new Token(TokenType.INT_LITERAL, val, startLine, startCol, numStr));
@@ -232,21 +240,7 @@ export class OmniCLexer {
                 continue;
             }
 
-            // Identifiers or Keywords
-            if (/[a-zA-Z_]/.test(ch)) {
-                let ident = "";
-                while (/[a-zA-Z0-9_]/.test(this._peek())) {
-                    ident += this._advance();
-                }
-                if (KEYWORDS.hasOwnProperty(ident)) {
-                    tokens.push(new Token(KEYWORDS[ident], ident, startLine, startCol, ident));
-                } else {
-                    tokens.push(new Token(TokenType.IDENTIFIER, ident, startLine, startCol, ident));
-                }
-                continue;
-            }
-
-            // String Literals
+            // 5. String Literals ("...")
             if (ch === '"') {
                 this._advance();
                 let strVal = "";
@@ -255,77 +249,99 @@ export class OmniCLexer {
                         this._advance();
                         const esc = this._advance();
                         if (esc === "n") strVal += "\n";
-                        else if (esc === "t") strVal += "\t";
                         else if (esc === "r") strVal += "\r";
+                        else if (esc === "t") strVal += "\t";
                         else strVal += esc;
                     } else {
                         strVal += this._advance();
                     }
                 }
-                this._advance(); // closing quote
+                if (this._peek() === '"') this._advance();
                 tokens.push(new Token(TokenType.STR_LITERAL, strVal, startLine, startCol, `"${strVal}"`));
                 continue;
             }
 
-            // Char Literals
+            // 6. Character Literals ('A', '\n')
             if (ch === "'") {
                 this._advance();
-                let charVal = 0;
+                let charCode = 0;
                 if (this._peek() === "\\") {
                     this._advance();
                     const esc = this._advance();
-                    if (esc === "n") charVal = 10;
-                    else if (esc === "t") charVal = 9;
-                    else if (esc === "r") charVal = 13;
-                    else if (esc === "0") charVal = 0;
-                    else charVal = esc.charCodeAt(0);
+                    if (esc === "n") charCode = 10;
+                    else if (esc === "r") charCode = 13;
+                    else if (esc === "0") charCode = 0;
+                    else charCode = esc.charCodeAt(0);
                 } else {
-                    charVal = this._advance().charCodeAt(0);
+                    charCode = this._advance().charCodeAt(0);
                 }
-                this._advance(); // closing single quote
-                tokens.push(new Token(TokenType.INT_LITERAL, charVal, startLine, startCol, `'${charVal}'`));
+                if (this._peek() === "'") this._advance();
+                tokens.push(new Token(TokenType.INT_LITERAL, charCode, startLine, startCol, `'${String.fromCharCode(charCode)}'`));
                 continue;
             }
 
-            // Multi-char operators
+            // 7. Identifiers & Keywords
+            if (/[a-zA-Z_]/.test(ch)) {
+                let ident = "";
+                while (/[a-zA-Z0-9_]/.test(this._peek())) {
+                    ident += this._advance();
+                }
+                const lower = ident.toLowerCase();
+                if (lower in KEYWORDS) {
+                    tokens.push(new Token(KEYWORDS[lower], lower, startLine, startCol, ident));
+                } else {
+                    tokens.push(new Token(TokenType.IDENTIFIER, ident, startLine, startCol, ident));
+                }
+                continue;
+            }
+
+            // 8. Multi-character Operators
             const twoChar = ch + this._peek(1);
-            const threeChar = twoChar + this._peek(2);
+            const threeChar = ch + this._peek(1) + this._peek(2);
 
-            if (threeChar === "<<=" || threeChar === ">>=") {
+            if (threeChar === "<<=") {
                 this._advance(); this._advance(); this._advance();
-                tokens.push(new Token(threeChar === "<<=" ? TokenType.LSHIFT_ASSIGN : TokenType.RSHIFT_ASSIGN, threeChar, startLine, startCol, threeChar));
+                tokens.push(new Token(TokenType.LSHIFT_ASSIGN, "<<=", startLine, startCol, threeChar));
+                continue;
+            }
+            if (threeChar === ">>=") {
+                this._advance(); this._advance(); this._advance();
+                tokens.push(new Token(TokenType.RSHIFT_ASSIGN, ">>=", startLine, startCol, threeChar));
                 continue;
             }
 
-            const twoCharOps = {
-                "==": TokenType.EQ, "!=": TokenType.NEQ, "<=": TokenType.LEQ, ">=": TokenType.GEQ,
-                "<<": TokenType.LSHIFT, ">>": TokenType.RSHIFT, "&&": TokenType.AND, "||": TokenType.OR,
-                "+=": TokenType.PLUS_ASSIGN, "-=": TokenType.MINUS_ASSIGN, "&=": TokenType.AMP_ASSIGN,
-                "|=": TokenType.PIPE_ASSIGN, "^=": TokenType.CARET_ASSIGN, "++": TokenType.INC, "--": TokenType.DEC
-            };
+            if (twoChar === "==") { this._advance(); this._advance(); tokens.push(new Token(TokenType.EQ, "==", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "!=") { this._advance(); this._advance(); tokens.push(new Token(TokenType.NEQ, "!=", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "<=") { this._advance(); this._advance(); tokens.push(new Token(TokenType.LEQ, "<=", startLine, startCol, twoChar)); continue; }
+            if (twoChar === ">=") { this._advance(); this._advance(); tokens.push(new Token(TokenType.GEQ, ">=", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "&&") { this._advance(); this._advance(); tokens.push(new Token(TokenType.AND, "&&", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "||") { this._advance(); this._advance(); tokens.push(new Token(TokenType.OR, "||", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "<<") { this._advance(); this._advance(); tokens.push(new Token(TokenType.LSHIFT, "<<", startLine, startCol, twoChar)); continue; }
+            if (twoChar === ">>") { this._advance(); this._advance(); tokens.push(new Token(TokenType.RSHIFT, ">>", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "+=") { this._advance(); this._advance(); tokens.push(new Token(TokenType.PLUS_ASSIGN, "+=", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "-=") { this._advance(); this._advance(); tokens.push(new Token(TokenType.MINUS_ASSIGN, "-=", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "&=") { this._advance(); this._advance(); tokens.push(new Token(TokenType.AMP_ASSIGN, "&=", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "|=") { this._advance(); this._advance(); tokens.push(new Token(TokenType.PIPE_ASSIGN, "|=", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "^=") { this._advance(); this._advance(); tokens.push(new Token(TokenType.CARET_ASSIGN, "^=", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "++") { this._advance(); this._advance(); tokens.push(new Token(TokenType.INC, "++", startLine, startCol, twoChar)); continue; }
+            if (twoChar === "--") { this._advance(); this._advance(); tokens.push(new Token(TokenType.DEC, "--", startLine, startCol, twoChar)); continue; }
 
-            if (twoCharOps.hasOwnProperty(twoChar)) {
-                this._advance(); this._advance();
-                tokens.push(new Token(twoCharOps[twoChar], twoChar, startLine, startCol, twoChar));
-                continue;
-            }
-
-            // Single char tokens
-            const singleCharOps = {
+            // 9. Single-character delimiters & operators
+            const singleChars = {
                 "+": TokenType.PLUS, "-": TokenType.MINUS, "*": TokenType.STAR, "/": TokenType.SLASH, "%": TokenType.PERCENT,
                 "&": TokenType.AMP, "|": TokenType.PIPE, "^": TokenType.CARET, "~": TokenType.TILDE, "!": TokenType.BANG,
-                "<": TokenType.LT, ">": TokenType.GT, "=": TokenType.ASSIGN, ";": TokenType.SEMICOLON, ",": TokenType.COMMA,
-                ":": TokenType.COLON, "(": TokenType.LPAREN, ")": TokenType.RPAREN, "{": TokenType.LBRACE, "}": TokenType.RBRACE,
+                "<": TokenType.LT, ">": TokenType.GT, "=": TokenType.ASSIGN,
+                ";": TokenType.SEMICOLON, ",": TokenType.COMMA, ":": TokenType.COLON,
+                "(": TokenType.LPAREN, ")": TokenType.RPAREN, "{": TokenType.LBRACE, "}": TokenType.RBRACE,
                 "[": TokenType.LBRACKET, "]": TokenType.RBRACKET
             };
 
-            if (singleCharOps.hasOwnProperty(ch)) {
+            if (ch in singleChars) {
                 this._advance();
-                tokens.push(new Token(singleCharOps[ch], ch, startLine, startCol, ch));
+                tokens.push(new Token(singleChars[ch], ch, startLine, startCol, ch));
                 continue;
             }
 
-            // Unknown character
             this._advance();
         }
 
@@ -355,12 +371,10 @@ export class Preprocessor {
             const line = lines[i];
             const trimmed = line.trim();
 
-            // Skip conditional compilation guards
             if (/^[#`]?(ifndef|endif|ifdef|else|elif)/.test(trimmed)) {
                 continue;
             }
 
-            // #pragma directive
             const pragmaMatch = trimmed.match(/^[#`]?pragma\s+([a-zA-Z0-9_]+)\s*(.*)/i);
             if (pragmaMatch) {
                 const key = pragmaMatch[1].trim();
@@ -370,7 +384,6 @@ export class Preprocessor {
                 continue;
             }
 
-            // #include directive
             const incMatch = trimmed.match(/^[#`]?include\s+["<](.*?)[">]/);
             if (incMatch) {
                 const headerName = incMatch[1].trim();
@@ -386,7 +399,6 @@ export class Preprocessor {
                 continue;
             }
 
-            // Function-like macro: #define FOO(a,b) (a + b)
             const funcMacroMatch = trimmed.match(/^[#`]?define\s+([a-zA-Z0-9_]+)\s*\((.*?)\)\s*(.*)/);
             if (funcMacroMatch) {
                 const name = funcMacroMatch[1];
@@ -397,7 +409,6 @@ export class Preprocessor {
                 continue;
             }
 
-            // Object-like macro: #define FOO or #define FOO 0x55
             const objMacroMatch = trimmed.match(/^[#`]?define\s+([a-zA-Z0-9_]+)(?:\s+(.+))?$/);
             if (objMacroMatch) {
                 const name = objMacroMatch[1];
@@ -407,7 +418,6 @@ export class Preprocessor {
                 continue;
             }
 
-            // Skip any unrecognized preprocessor directives starting with # or `
             if (trimmed.startsWith("#") || trimmed.startsWith("`")) {
                 continue;
             }
@@ -417,7 +427,6 @@ export class Preprocessor {
 
         let fullText = outputLines.join("\n");
 
-        // Object Macro substitution
         const sortedMacros = Array.from(this.objMacros.entries()).sort((a, b) => b[0].length - a[0].length);
         for (const [name, val] of sortedMacros) {
             if (val) {
@@ -426,7 +435,6 @@ export class Preprocessor {
             }
         }
 
-        // Function Macro substitution
         for (const [name, { params, body }] of this.funcMacros.entries()) {
             const regex = new RegExp(`\\b${name}\\s*\\((.*?)\\)`, "g");
             fullText = fullText.replace(regex, (match, argsStr) => {
@@ -458,6 +466,8 @@ export class IfStmt extends ASTNode { constructor(condition, thenBranch, elseBra
 export class WhileStmt extends ASTNode { constructor(condition, body, line = 1, col = 1) { super(line, col); this.condition = condition; this.body = body; } }
 export class DoWhileStmt extends ASTNode { constructor(body, condition, line = 1, col = 1) { super(line, col); this.body = body; this.condition = condition; } }
 export class RepeatStmt extends ASTNode { constructor(countExpr, body, line = 1, col = 1) { super(line, col); this.countExpr = countExpr; this.body = body; } }
+export class CaseClause extends ASTNode { constructor(matchExpr, statements, line = 1, col = 1) { super(line, col); this.matchExpr = matchExpr; this.statements = statements; } }
+export class SwitchStmt extends ASTNode { constructor(expr, cases, line = 1, col = 1) { super(line, col); this.expr = expr; this.cases = cases; } }
 export class ReturnStmt extends ASTNode { constructor(value = null, line = 1, col = 1) { super(line, col); this.value = value; } }
 export class BreakStmt extends ASTNode { constructor(line = 1, col = 1) { super(line, col); } }
 export class ContinueStmt extends ASTNode { constructor(line = 1, col = 1) { super(line, col); } }
@@ -547,7 +557,6 @@ export class OmniCParser {
         const nameTok = this._expect(TokenType.IDENTIFIER, "Expected identifier");
         const name = nameTok.value;
 
-        // Check if function definition or prototype
         if (this._peek().type === TokenType.LPAREN) {
             this._advance(); // (
             const params = [];
@@ -558,148 +567,217 @@ export class OmniCParser {
                 }
                 let pType = "uint8_t";
                 if (TYPE_TOKENS.has(this._peek().type)) pType = this._advance().value;
-                const pNameTok = this._expect(TokenType.IDENTIFIER, "Expected parameter name");
-                params.push(new VarDecl(pType, pNameTok.value, null, null, false, pNameTok.line, pNameTok.col));
-                if (!this._match(TokenType.COMMA)) break;
+                const pName = this._expect(TokenType.IDENTIFIER, "Expected parameter name").value;
+                params.push(new VarDecl(pType, pName, null, null, false, nameTok.line, nameTok.col));
+                if (this._peek().type === TokenType.COMMA) this._advance();
             }
-            this._expect(TokenType.RPAREN);
+            this._expect(TokenType.RPAREN, "Expected ')' after parameter list");
 
-            // Function prototype
-            if (this._match(TokenType.SEMICOLON)) {
-                return new FunctionDef(typeName, name, params, null, name === "main", true, nameTok.line, nameTok.col);
+            if (this._peek().type === TokenType.SEMICOLON) {
+                this._advance();
+                return new FunctionDef(typeName, name, params, null, false, true, nameTok.line, nameTok.col);
             }
 
-            // Function body
             const body = this._parseBlock();
-            return new FunctionDef(typeName, name, params, body, name === "main", false, nameTok.line, nameTok.col);
+            return new FunctionDef(typeName, name, params, body, name === "main" || name === "entry", false, nameTok.line, nameTok.col);
         }
 
-        // Variable declaration
         let initExpr = null;
         if (this._match(TokenType.ASSIGN)) {
             initExpr = this._parseExpression();
         }
-        this._expect(TokenType.SEMICOLON);
+        this._expect(TokenType.SEMICOLON, "Expected ';' after variable declaration");
         return new VarDecl(typeName, name, initExpr, regHint, isConst, nameTok.line, nameTok.col);
     }
 
     _parseBlock() {
-        const startTok = this._expect(TokenType.LBRACE);
-        const stmts = [];
+        const startTok = this._expect(TokenType.LBRACE, "Expected '{' to start block");
+        const statements = [];
         while (this._peek().type !== TokenType.RBRACE && this._peek().type !== TokenType.EOF) {
-            stmts.push(this._parseStatement());
+            statements.push(this._parseStatement());
         }
-        this._expect(TokenType.RBRACE);
-        return new Block(stmts, startTok.line, startTok.col);
+        this._expect(TokenType.RBRACE, "Expected '}' to close block");
+        return new Block(statements, startTok.line, startTok.col);
     }
 
     _parseStatement() {
         const tok = this._peek();
 
         if (tok.type === TokenType.LBRACE) return this._parseBlock();
-        if (tok.type === TokenType.IF) return this._parseIf();
-        if (tok.type === TokenType.WHILE) return this._parseWhile();
-        if (tok.type === TokenType.DO) return this._parseDoWhile();
-        if (tok.type === TokenType.REPEAT) return this._parseRepeat();
-        if (tok.type === TokenType.RETURN) return this._parseReturn();
-        if (tok.type === TokenType.BREAK) {
-            const bTok = this._advance();
-            this._expect(TokenType.SEMICOLON);
-            return new BreakStmt(bTok.line, bTok.col);
-        }
-        if (tok.type === TokenType.CONTINUE) {
-            const cTok = this._advance();
-            this._expect(TokenType.SEMICOLON);
-            return new ContinueStmt(cTok.line, cTok.col);
-        }
         if (tok.type === TokenType.ASM) return this._parseAsmStmt();
         if (TYPE_TOKENS.has(tok.type) || tok.type === TokenType.CONST || tok.type === TokenType.REG) {
-            return this._parseLocalVar();
+            return this._parseLocalVarDecl();
+        }
+        if (tok.type === TokenType.IF) return this._parseIfStmt();
+        if (tok.type === TokenType.WHILE) return this._parseWhileStmt();
+        if (tok.type === TokenType.DO) return this._parseDoWhileStmt();
+        if (tok.type === TokenType.REPEAT) return this._parseRepeatStmt();
+        if (tok.type === TokenType.FOR) return this._parseForStmt();
+        if (tok.type === TokenType.SWITCH) return this._parseSwitchStmt();
+
+        if (tok.type === TokenType.RETURN) {
+            this._advance();
+            let val = null;
+            if (this._peek().type !== TokenType.SEMICOLON) {
+                val = this._parseExpression();
+            }
+            this._expect(TokenType.SEMICOLON, "Expected ';' after return");
+            return new ReturnStmt(val, tok.line, tok.col);
         }
 
-        // Expression or Assignment statement
+        if (tok.type === TokenType.BREAK) {
+            this._advance();
+            this._expect(TokenType.SEMICOLON, "Expected ';' after break");
+            return new BreakStmt(tok.line, tok.col);
+        }
+
+        if (tok.type === TokenType.CONTINUE) {
+            this._advance();
+            this._expect(TokenType.SEMICOLON, "Expected ';' after continue");
+            return new ContinueStmt(tok.line, tok.col);
+        }
+
         const expr = this._parseExpression();
-        this._expect(TokenType.SEMICOLON);
+        this._expect(TokenType.SEMICOLON, "Expected ';' after statement");
         return new ExprStmt(expr, tok.line, tok.col);
     }
 
-    _parseLocalVar() {
+    _parseLocalVarDecl() {
+        const startTok = this._peek();
         let isConst = false;
         let regHint = null;
+
         if (this._match(TokenType.CONST)) isConst = true;
         if (this._match(TokenType.REG)) {
-            regHint = this._expect(TokenType.IDENTIFIER).value;
+            const regTok = this._expect(TokenType.IDENTIFIER, "Expected register name after 'reg'");
+            regHint = regTok.value;
         }
+
         let typeName = "uint8_t";
-        if (TYPE_TOKENS.has(this._peek().type)) typeName = this._advance().value;
-        const nameTok = this._expect(TokenType.IDENTIFIER);
+        if (TYPE_TOKENS.has(this._peek().type)) {
+            typeName = this._advance().value;
+        }
+
+        const nameTok = this._expect(TokenType.IDENTIFIER, "Expected variable name");
         let initExpr = null;
         if (this._match(TokenType.ASSIGN)) {
             initExpr = this._parseExpression();
         }
-        this._expect(TokenType.SEMICOLON);
-        return new VarDecl(typeName, nameTok.value, initExpr, regHint, isConst, nameTok.line, nameTok.col);
+        this._expect(TokenType.SEMICOLON, "Expected ';' after local variable declaration");
+        return new VarDecl(typeName, nameTok.value, initExpr, regHint, isConst, startTok.line, startTok.col);
     }
 
-    _parseIf() {
-        const ifTok = this._advance(); // if
-        this._expect(TokenType.LPAREN);
+    _parseIfStmt() {
+        const startTok = this._advance(); // if
+        this._expect(TokenType.LPAREN, "Expected '(' after if");
         const cond = this._parseExpression();
-        this._expect(TokenType.RPAREN);
+        this._expect(TokenType.RPAREN, "Expected ')' after if condition");
         const thenBranch = this._parseStatement();
         let elseBranch = null;
         if (this._match(TokenType.ELSE)) {
             elseBranch = this._parseStatement();
         }
-        return new IfStmt(cond, thenBranch, elseBranch, ifTok.line, ifTok.col);
+        return new IfStmt(cond, thenBranch, elseBranch, startTok.line, startTok.col);
     }
 
-    _parseWhile() {
-        const wTok = this._advance(); // while
-        this._expect(TokenType.LPAREN);
+    _parseWhileStmt() {
+        const startTok = this._advance(); // while
+        this._expect(TokenType.LPAREN, "Expected '(' after while");
         const cond = this._parseExpression();
-        this._expect(TokenType.RPAREN);
+        this._expect(TokenType.RPAREN, "Expected ')' after while condition");
         const body = this._parseStatement();
-        return new WhileStmt(cond, body, wTok.line, wTok.col);
+        return new WhileStmt(cond, body, startTok.line, startTok.col);
     }
 
-    _parseDoWhile() {
-        const dTok = this._advance(); // do
+    _parseDoWhileStmt() {
+        const startTok = this._advance(); // do
         const body = this._parseStatement();
-        this._expect(TokenType.WHILE);
-        this._expect(TokenType.LPAREN);
+        this._expect(TokenType.WHILE, "Expected 'while' after do-while body");
+        this._expect(TokenType.LPAREN, "Expected '(' after while");
         const cond = this._parseExpression();
-        this._expect(TokenType.RPAREN);
-        this._expect(TokenType.SEMICOLON);
-        return new DoWhileStmt(body, cond, dTok.line, dTok.col);
+        this._expect(TokenType.RPAREN, "Expected ')' after condition");
+        this._expect(TokenType.SEMICOLON, "Expected ';' after do-while");
+        return new DoWhileStmt(body, cond, startTok.line, startTok.col);
     }
 
-    _parseRepeat() {
-        const rTok = this._advance(); // repeat
-        this._expect(TokenType.LPAREN);
-        const countExpr = this._parseExpression();
-        this._expect(TokenType.RPAREN);
+    _parseRepeatStmt() {
+        const startTok = this._advance(); // repeat
+        this._expect(TokenType.LPAREN, "Expected '(' after repeat");
+        const count = this._parseExpression();
+        this._expect(TokenType.RPAREN, "Expected ')' after count");
         const body = this._parseStatement();
-        return new RepeatStmt(countExpr, body, rTok.line, rTok.col);
+        return new RepeatStmt(count, body, startTok.line, startTok.col);
     }
 
-    _parseReturn() {
-        const rTok = this._advance(); // return
-        let val = null;
+    _parseForStmt() {
+        const startTok = this._advance(); // for
+        this._expect(TokenType.LPAREN, "Expected '(' after for");
+        let init = null;
         if (this._peek().type !== TokenType.SEMICOLON) {
-            val = this._parseExpression();
+            init = this._parseStatement();
+        } else {
+            this._advance();
         }
-        this._expect(TokenType.SEMICOLON);
-        return new ReturnStmt(val, rTok.line, rTok.col);
+        let cond = null;
+        if (this._peek().type !== TokenType.SEMICOLON) {
+            cond = this._parseExpression();
+        }
+        this._expect(TokenType.SEMICOLON, "Expected ';' after for condition");
+        let step = null;
+        if (this._peek().type !== TokenType.RPAREN) {
+            step = this._parseExpression();
+        }
+        this._expect(TokenType.RPAREN, "Expected ')' after for clauses");
+        const body = this._parseStatement();
+
+        const loopStmts = [body];
+        if (step) loopStmts.push(new ExprStmt(step, startTok.line, startTok.col));
+        const whileBody = new Block(loopStmts, startTok.line, startTok.col);
+        const whileStmt = new WhileStmt(cond || new Literal(1, "1", startTok.line, startTok.col), whileBody, startTok.line, startTok.col);
+        return init ? new Block([init, whileStmt], startTok.line, startTok.col) : whileStmt;
+    }
+
+    _parseSwitchStmt() {
+        const startTok = this._advance(); // switch
+        this._expect(TokenType.LPAREN, "Expected '(' after switch");
+        const expr = this._parseExpression();
+        this._expect(TokenType.RPAREN, "Expected ')' after switch expression");
+        this._expect(TokenType.LBRACE, "Expected '{' to start switch body");
+
+        const cases = [];
+        while (this._peek().type !== TokenType.RBRACE && this._peek().type !== TokenType.EOF) {
+            if (this._match(TokenType.CASE)) {
+                const caseTok = this._peek(-1);
+                const matchExpr = this._parseExpression();
+                this._expect(TokenType.COLON, "Expected ':' after case value");
+                const stmts = [];
+                while (![TokenType.CASE, TokenType.DEFAULT, TokenType.RBRACE, TokenType.EOF].includes(this._peek().type)) {
+                    stmts.push(this._parseStatement());
+                }
+                cases.push(new CaseClause(matchExpr, stmts, caseTok.line, caseTok.col));
+            } else if (this._match(TokenType.DEFAULT)) {
+                const defTok = this._peek(-1);
+                this._expect(TokenType.COLON, "Expected ':' after default");
+                const stmts = [];
+                while (![TokenType.CASE, TokenType.DEFAULT, TokenType.RBRACE, TokenType.EOF].includes(this._peek().type)) {
+                    stmts.push(this._parseStatement());
+                }
+                cases.push(new CaseClause(null, stmts, defTok.line, defTok.col));
+            } else {
+                throw new Error(`Unexpected token in switch body: '${this._peek().value}' (L${this._peek().line})`);
+            }
+        }
+        this._expect(TokenType.RBRACE, "Expected '}' to close switch body");
+        return new SwitchStmt(expr, cases, startTok.line, startTok.col);
     }
 
     _parseAsmStmt() {
-        const asmTok = this._advance();
-        this._expect(TokenType.LPAREN);
-        const codeTok = this._expect(TokenType.STR_LITERAL);
-        this._expect(TokenType.RPAREN);
-        this._match(TokenType.SEMICOLON);
-        return new AsmStmt(codeTok.value, asmTok.line, asmTok.col);
+        const startTok = this._advance(); // asm
+        this._expect(TokenType.LPAREN, "Expected '(' after asm");
+        const asmTok = this._expect(TokenType.STR_LITERAL, "Expected string literal for inline assembly");
+        this._expect(TokenType.RPAREN, "Expected ')' after asm string");
+        this._expect(TokenType.SEMICOLON, "Expected ';' after asm statement");
+        return new AsmStmt(asmTok.value, startTok.line, startTok.col);
     }
 
     _parseExpression() {
@@ -716,128 +794,108 @@ export class OmniCParser {
 
         if (assignOps.includes(this._peek().type)) {
             const opTok = this._advance();
-            const value = this._parseAssignment();
-            return new AssignStmt(expr, opTok.type, value, opTok.line, opTok.col);
+            const right = this._parseAssignment();
+            return new AssignStmt(expr, opTok.value, right, opTok.line, opTok.col);
         }
         return expr;
     }
 
     _parseLogicalOr() {
         let left = this._parseLogicalAnd();
-        while (this._match(TokenType.OR)) {
+        while (this._peek().type === TokenType.OR) {
+            const opTok = this._advance();
             const right = this._parseLogicalAnd();
-            left = new BinaryOp(left, "||", right, left.line, left.col);
+            left = new BinaryOp(left, opTok.value, right, opTok.line, opTok.col);
         }
         return left;
     }
 
     _parseLogicalAnd() {
         let left = this._parseBitwiseOr();
-        while (this._match(TokenType.AND)) {
+        while (this._peek().type === TokenType.AND) {
+            const opTok = this._advance();
             const right = this._parseBitwiseOr();
-            left = new BinaryOp(left, "&&", right, left.line, left.col);
+            left = new BinaryOp(left, opTok.value, right, opTok.line, opTok.col);
         }
         return left;
     }
 
     _parseBitwiseOr() {
         let left = this._parseBitwiseXor();
-        while (this._match(TokenType.PIPE)) {
+        while (this._peek().type === TokenType.PIPE) {
+            const opTok = this._advance();
             const right = this._parseBitwiseXor();
-            left = new BinaryOp(left, "|", right, left.line, left.col);
+            left = new BinaryOp(left, opTok.value, right, opTok.line, opTok.col);
         }
         return left;
     }
 
     _parseBitwiseXor() {
         let left = this._parseBitwiseAnd();
-        while (this._match(TokenType.CARET)) {
+        while (this._peek().type === TokenType.CARET) {
+            const opTok = this._advance();
             const right = this._parseBitwiseAnd();
-            left = new BinaryOp(left, "^", right, left.line, left.col);
+            left = new BinaryOp(left, opTok.value, right, opTok.line, opTok.col);
         }
         return left;
     }
 
     _parseBitwiseAnd() {
         let left = this._parseEquality();
-        while (this._match(TokenType.AMP)) {
+        while (this._peek().type === TokenType.AMP) {
+            const opTok = this._advance();
             const right = this._parseEquality();
-            left = new BinaryOp(left, "&", right, left.line, left.col);
+            left = new BinaryOp(left, opTok.value, right, opTok.line, opTok.col);
         }
         return left;
     }
 
     _parseEquality() {
         let left = this._parseRelational();
-        while (true) {
-            const tok = this._peek();
-            if (tok.type === TokenType.EQ || tok.type === TokenType.NEQ) {
-                this._advance();
-                const right = this._parseRelational();
-                left = new BinaryOp(left, tok.type, right, left.line, left.col);
-            } else {
-                break;
-            }
+        while ([TokenType.EQ, TokenType.NEQ].includes(this._peek().type)) {
+            const opTok = this._advance();
+            const right = this._parseRelational();
+            left = new BinaryOp(left, opTok.value, right, opTok.line, opTok.col);
         }
         return left;
     }
 
     _parseRelational() {
         let left = this._parseShift();
-        while (true) {
-            const tok = this._peek();
-            if ([TokenType.LT, TokenType.LEQ, TokenType.GT, TokenType.GEQ].includes(tok.type)) {
-                this._advance();
-                const right = this._parseShift();
-                left = new BinaryOp(left, tok.type, right, left.line, left.col);
-            } else {
-                break;
-            }
+        while ([TokenType.LT, TokenType.LEQ, TokenType.GT, TokenType.GEQ].includes(this._peek().type)) {
+            const opTok = this._advance();
+            const right = this._parseShift();
+            left = new BinaryOp(left, opTok.value, right, opTok.line, opTok.col);
         }
         return left;
     }
 
     _parseShift() {
         let left = this._parseAdditive();
-        while (true) {
-            const tok = this._peek();
-            if (tok.type === TokenType.LSHIFT || tok.type === TokenType.RSHIFT) {
-                this._advance();
-                const right = this._parseAdditive();
-                left = new BinaryOp(left, tok.type, right, left.line, left.col);
-            } else {
-                break;
-            }
+        while ([TokenType.LSHIFT, TokenType.RSHIFT].includes(this._peek().type)) {
+            const opTok = this._advance();
+            const right = this._parseAdditive();
+            left = new BinaryOp(left, opTok.value, right, opTok.line, opTok.col);
         }
         return left;
     }
 
     _parseAdditive() {
         let left = this._parseMultiplicative();
-        while (true) {
-            const tok = this._peek();
-            if (tok.type === TokenType.PLUS || tok.type === TokenType.MINUS) {
-                this._advance();
-                const right = this._parseMultiplicative();
-                left = new BinaryOp(left, tok.type, right, left.line, left.col);
-            } else {
-                break;
-            }
+        while ([TokenType.PLUS, TokenType.MINUS].includes(this._peek().type)) {
+            const opTok = this._advance();
+            const right = this._parseMultiplicative();
+            left = new BinaryOp(left, opTok.value, right, opTok.line, opTok.col);
         }
         return left;
     }
 
     _parseMultiplicative() {
         let left = this._parseUnary();
-        while (true) {
-            const tok = this._peek();
-            if ([TokenType.STAR, TokenType.SLASH, TokenType.PERCENT].includes(tok.type)) {
-                this._advance();
-                const right = this._parseUnary();
-                left = new BinaryOp(left, tok.type, right, left.line, left.col);
-            } else {
-                break;
-            }
+        while ([TokenType.STAR, TokenType.SLASH, TokenType.PERCENT].includes(this._peek().type)) {
+            const opTok = this._advance();
+            const right = this._parseUnary();
+            left = new BinaryOp(left, opTok.value, right, opTok.line, opTok.col);
         }
         return left;
     }
@@ -847,7 +905,7 @@ export class OmniCParser {
         if ([TokenType.BANG, TokenType.TILDE, TokenType.MINUS, TokenType.INC, TokenType.DEC].includes(tok.type)) {
             this._advance();
             const expr = this._parseUnary();
-            return new UnaryOp(tok.type, expr, tok.line, tok.col);
+            return new UnaryOp(tok.value, expr, tok.line, tok.col);
         }
         return this._parsePrimary();
     }
@@ -855,218 +913,211 @@ export class OmniCParser {
     _parsePrimary() {
         const tok = this._peek();
 
-        // Integer literal
-        if (tok.type === TokenType.INT_LITERAL) {
+        if (tok.type === TokenType.INT_LITERAL || tok.type === TokenType.SENTINEL) {
             this._advance();
             return new Literal(tok.value, tok.raw, tok.line, tok.col);
         }
 
-        // Sentinel ($BAUD, $HBAUD)
-        if (tok.type === TokenType.SENTINEL) {
+        if (tok.type === TokenType.LPAREN) {
             this._advance();
-            return new Literal(tok.value, tok.value, tok.line, tok.col);
-        }
-
-        // Parentheses
-        if (this._match(TokenType.LPAREN)) {
             const expr = this._parseExpression();
-            this._expect(TokenType.RPAREN);
+            this._expect(TokenType.RPAREN, "Expected ')' after grouped expression");
             return expr;
         }
 
-        // Identifier or Function / Built-in Call
         if (tok.type === TokenType.IDENTIFIER) {
-            this._advance();
-            if (this._match(TokenType.LPAREN)) {
+            const idTok = this._advance();
+            if (this._peek().type === TokenType.LPAREN) {
+                this._advance(); // (
                 const args = [];
                 while (this._peek().type !== TokenType.RPAREN && this._peek().type !== TokenType.EOF) {
                     args.push(this._parseExpression());
-                    if (!this._match(TokenType.COMMA)) break;
+                    if (this._peek().type === TokenType.COMMA) this._advance();
                 }
-                this._expect(TokenType.RPAREN);
-                return new BuiltinCall(tok.value, args, tok.line, tok.col);
+                this._expect(TokenType.RPAREN, "Expected ')' after function arguments");
+                return new BuiltinCall(idTok.value, args, idTok.line, idTok.col);
             }
-            return new Identifier(tok.value, tok.line, tok.col);
+            return new Identifier(idTok.value, idTok.line, idTok.col);
         }
 
-        throw new Error(`Unexpected token '${tok.value}' (L${tok.line}:C${tok.col})`);
+        throw new Error(`Unexpected token in expression: '${tok.value}' (L${tok.line}:C${tok.col})`);
     }
 }
 
 // =============================================================================
-// 5. REGISTER ALLOCATOR & SYMBOLS
+// 5. SYMBOLS & REGISTER ALLOCATOR
 // =============================================================================
 
-class SymbolEntry {
-    constructor(name, symType, reg = null, isConst = false, constVal = null) {
+export class SymbolEntry {
+    constructor(name, type, reg = null, isConst = false, constVal = null) {
         this.name = name;
-        this.symType = symType;
+        this.type = type;
         this.reg = reg;
         this.isConst = isConst;
         this.constVal = constVal;
     }
 }
 
-class Scope {
+export class Scope {
     constructor(parent = null) {
         this.parent = parent;
         this.symbols = new Map();
     }
-    define(sym) { this.symbols.set(sym.name, sym); }
+
+    define(sym) {
+        this.symbols.set(sym.name.toLowerCase(), sym);
+    }
+
     lookup(name) {
-        if (this.symbols.has(name)) return this.symbols.get(name);
+        const lower = name.toLowerCase();
+        if (this.symbols.has(lower)) return this.symbols.get(lower);
         if (this.parent) return this.parent.lookup(name);
         return null;
     }
 }
 
-class RegisterAllocator {
+export class RegisterAllocator {
     constructor() {
-        this.allRegisters = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7"];
-        this.freeRegisters = [...this.allRegisters];
+        this.available = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7"];
         this.allocated = new Map();
     }
 
-    allocate(varName, regHint = null) {
-        if (this.allocated.has(varName)) return this.allocated.get(varName);
+    allocate(varName, hint = null) {
+        const lower = varName.toLowerCase();
+        if (this.allocated.has(lower)) return this.allocated.get(lower);
 
-        if (regHint) {
-            const hint = regHint.toLowerCase();
-            this.allocated.set(varName, hint);
-            const idx = this.freeRegisters.indexOf(hint);
-            if (idx !== -1) this.freeRegisters.splice(idx, 1);
-            return hint;
+        if (hint && this.available.includes(hint.toLowerCase())) {
+            const h = hint.toLowerCase();
+            this.available = this.available.filter(r => r !== h);
+            this.allocated.set(lower, h);
+            return h;
         }
 
-        if (this.freeRegisters.length > 0) {
-            const reg = this.freeRegisters.shift();
-            this.allocated.set(varName, reg);
-            return reg;
+        if (this.available.length === 0) {
+            return "r0"; // fallback
         }
-        return "r7";
-    }
 
-    free(varName) {
-        if (this.allocated.has(varName)) {
-            const reg = this.allocated.get(varName);
-            this.allocated.delete(varName);
-            if (this.allRegisters.includes(reg) && !this.freeRegisters.includes(reg)) {
-                this.freeRegisters.push(reg);
-                this.freeRegisters.sort();
-            }
-        }
+        const reg = this.available.shift();
+        this.allocated.set(lower, reg);
+        return reg;
     }
 }
 
 // =============================================================================
-// 6. CODE GENERATOR & OPTIMIZER
+// 6. MULTI-PASS OPTIMIZING CODE GENERATOR
 // =============================================================================
 
 export class OmniCCodeGen {
-    constructor(optimize = true) {
-        this.optimize = optimize;
+    constructor(options = { optimize: 1, emitLocComments: true }) {
+        this.optLevel = typeof options.optimize === "number" ? options.optimize : (options.optimize === false ? 0 : 1);
+        this.emitLocComments = options.emitLocComments !== false;
         this.lines = [];
         this.labelCounter = 0;
         this.loopStack = [];
-        this.currentScope = new Scope();
+        this.globalScope = new Scope();
+        this.currentScope = this.globalScope;
         this.regAlloc = new RegisterAllocator();
-        this.activeLoopCounters = [];
-        this.clockFreq = 50000000;
-        this.baudRate = 115200;
+        this.functions = [];
+        this.sourceMap = {
+            cToAsm: {},
+            asmToC: {},
+            functions: [],
+            stats: {}
+        };
     }
 
-    _emit(line) { this.lines.push(line); }
+    _emit(line, cLine = null) {
+        if (cLine && this.emitLocComments && !line.startsWith(";") && !line.endsWith(":")) {
+            this.lines.push(`${line} ; #loc:${cLine}`);
+        } else {
+            this.lines.push(line);
+        }
+    }
 
     _newLabel(prefix = "L") {
         this.labelCounter++;
         return `lbl_${prefix}_${this.labelCounter}`;
     }
 
-    generate(program) {
+    generate(programAst) {
         this.lines = [];
-        this._emit("; ==============================================================================");
-        this._emit("; OmniBus Microcode — Compiled by Omni-C In-Browser Engine");
-        this._emit("; Target Architecture: OmniBus 16-bit Deterministic Multi-Engine");
-        this._emit("; ==============================================================================");
+        this.lines.push("; =============================================================================");
+        this.lines.push("; Emitted by OmniBus MP High-Level Omni-C Optimizing Compiler");
+        this.lines.push(`; Optimization Level: -O${this.optLevel}`);
+        this.lines.push("; =============================================================================");
+        this.lines.push("");
 
-        // Pragmas
-        if (program.pragmas) {
-            for (const p of program.pragmas) {
-                const k = p.key.toLowerCase();
-                const v = p.value;
-                if (k === "clock") {
-                    const clean = v.toLowerCase().replace("mhz", "000000").replace("khz", "000").replace("hz", "");
-                    const parsed = parseInt(clean, 10);
-                    if (!isNaN(parsed)) this.clockFreq = parsed;
-                } else if (k === "baud") {
-                    const parsed = parseInt(v, 10);
-                    if (!isNaN(parsed)) this.baudRate = parsed;
-                } else if (k === "core" || k === "bank") {
-                    this._emit(`.bank ${v}`);
-                }
-            }
-        }
-
-        this._emit(`.clock ${this.clockFreq}`);
-
-        const hasMain = program.decls.some(d => d instanceof FunctionDef && d.name === "main");
-        if (hasMain) {
-            this._emit(".entry main");
-            this._emit("");
-        }
-
-        // Global Declarations & Functions
-        for (const decl of program.decls) {
+        // Pass 1: Global declarations
+        for (const decl of programAst.decls) {
             if (decl instanceof VarDecl) {
-                this._genGlobalVar(decl);
-            } else if (decl instanceof FunctionDef) {
-                this._genFunction(decl);
-            } else if (decl instanceof AsmStmt) {
-                this._emit(decl.asmCode);
+                const reg = this.regAlloc.allocate(decl.name, decl.regHint);
+                this.globalScope.define(new SymbolEntry(decl.name, decl.varType, reg, decl.isConst));
             }
         }
 
-        if (this.optimize) {
-            return this._optimize(this.lines).join("\n") + "\n";
+        // Pass 2: Functions
+        for (const decl of programAst.decls) {
+            if (decl instanceof FunctionDef && !decl.isPrototype) {
+                this._genFunction(decl);
+            }
         }
-        return this.lines.join("\n") + "\n";
+
+        const rawLines = [...this.lines];
+        const optimizer = new OmniCPeepholeOptimizer(this.optLevel);
+        const optimizedLines = optimizer.optimize(rawLines);
+
+        this._buildSourceMap(optimizedLines, rawLines.length);
+        return optimizedLines.join("\n");
     }
 
-    _genGlobalVar(decl) {
-        const reg = this.regAlloc.allocate(decl.name, decl.regHint);
-        const sym = new SymbolEntry(decl.name, decl.varType, reg, decl.isConst);
-        this.currentScope.define(sym);
+    _buildSourceMap(finalLines, rawCount) {
+        this.sourceMap.cToAsm = {};
+        this.sourceMap.asmToC = {};
+        this.sourceMap.functions = this.functions;
 
-        if (decl.isConst && decl.initExpr instanceof Literal) {
-            sym.constVal = decl.initExpr.value;
-            this._emit(`.const ${decl.name} ${decl.initExpr.value}`);
-        } else if (decl.initExpr) {
-            const val = this._evalLiteralOrReg(decl.initExpr);
-            this._emit(`MOV ${reg}, ${val} ; init global ${decl.name}`);
-        }
+        finalLines.forEach((line, idx) => {
+            const asmLine = idx + 1;
+            const locMatch = line.match(/;\s*#loc:(\d+)/);
+            if (locMatch) {
+                const cLine = parseInt(locMatch[1], 10);
+                this.sourceMap.asmToC[asmLine] = cLine;
+                if (!this.sourceMap.cToAsm[cLine]) this.sourceMap.cToAsm[cLine] = [];
+                this.sourceMap.cToAsm[cLine].push(asmLine);
+            }
+        });
+
+        this.sourceMap.stats = {
+            rawLines: rawCount,
+            optimizedLines: finalLines.length,
+            reductionPercent: rawCount > 0 ? Math.round(((rawCount - finalLines.length) / rawCount) * 100) : 0,
+            optLevel: this.optLevel
+        };
     }
 
     _genFunction(func) {
-        if (func.isPrototype || !func.body) return;
+        const oldScope = this.currentScope;
+        this.currentScope = new Scope(oldScope);
+        this.regAlloc = new RegisterAllocator();
+
+        this.functions.push({
+            name: func.name,
+            line: func.line,
+            isEntry: func.isEntry
+        });
 
         this._emit(`; --- Function: ${func.name} ---`);
         this._emit(`${func.name}:`);
 
-        const oldScope = this.currentScope;
-        this.currentScope = new Scope(oldScope);
+        func.params.forEach(p => {
+            const reg = this.regAlloc.allocate(p.name);
+            this.currentScope.define(new SymbolEntry(p.name, p.varType, reg));
+        });
 
-        for (const param of func.params) {
-            const reg = this.regAlloc.allocate(param.name, param.regHint);
-            this.currentScope.define(new SymbolEntry(param.name, param.varType, reg));
-        }
-
-        for (const stmt of func.body.statements) {
-            this._genStatement(stmt);
-        }
-
-        if (!func.isEntry) {
-            const lastLine = this.lines.length > 0 ? this.lines[this.lines.length - 1].trim() : "";
-            if (!lastLine.startsWith("RET") && !lastLine.startsWith("JMP")) {
+        if (func.body) {
+            for (const s of func.body.statements) {
+                this._genStatement(s);
+            }
+            if (this.lines.length === 0 || !this.lines[this.lines.length - 1].trim().startsWith("RET")) {
                 this._emit("RET");
             }
         }
@@ -1076,6 +1127,8 @@ export class OmniCCodeGen {
     }
 
     _genStatement(stmt) {
+        const cLine = stmt.line;
+
         if (stmt instanceof Block) {
             for (const s of stmt.statements) this._genStatement(s);
         } else if (stmt instanceof VarDecl) {
@@ -1090,20 +1143,22 @@ export class OmniCCodeGen {
             this._genDoWhile(stmt);
         } else if (stmt instanceof RepeatStmt) {
             this._genRepeat(stmt);
+        } else if (stmt instanceof SwitchStmt) {
+            this._genSwitch(stmt);
         } else if (stmt instanceof ReturnStmt) {
             if (stmt.value) {
                 const val = this._evalLiteralOrReg(stmt.value);
-                if (val !== "acc") this._emit(`MOV acc, ${val}`);
+                if (val !== "acc") this._emit(`MOV acc, ${val}`, cLine);
             }
-            this._emit("RET");
+            this._emit("RET", cLine);
         } else if (stmt instanceof BreakStmt) {
             if (this.loopStack.length === 0) throw new Error("Break outside loop");
-            this._emit(`JMP ${this.loopStack[this.loopStack.length - 1].breakLabel}`);
+            this._emit(`JMP ${this.loopStack[this.loopStack.length - 1].breakLabel}`, cLine);
         } else if (stmt instanceof ContinueStmt) {
             if (this.loopStack.length === 0) throw new Error("Continue outside loop");
-            this._emit(`JMP ${this.loopStack[this.loopStack.length - 1].contLabel}`);
+            this._emit(`JMP ${this.loopStack[this.loopStack.length - 1].contLabel}`, cLine);
         } else if (stmt instanceof AsmStmt) {
-            this._emit(stmt.asmCode);
+            this._emit(stmt.asmCode, cLine);
         } else if (stmt instanceof ExprStmt) {
             this._genExprStmt(stmt);
         }
@@ -1119,10 +1174,10 @@ export class OmniCCodeGen {
             } else {
                 const val = this._evalLiteralOrReg(decl.initExpr);
                 if (reg === "acc") {
-                    this._emit(`MOV acc, ${val}`);
+                    this._emit(`MOV acc, ${val}`, decl.line);
                 } else {
-                    this._emit(`MOV acc, ${val}`);
-                    this._emit(`MOV ${reg}, acc`);
+                    this._emit(`MOV acc, ${val}`, decl.line);
+                    this._emit(`MOV ${reg}, acc`, decl.line);
                 }
             }
         }
@@ -1132,6 +1187,7 @@ export class OmniCCodeGen {
         const targetName = this._getVarName(assign.target);
         const targetSym = this.currentScope.lookup(targetName);
         const targetReg = targetSym && targetSym.reg ? targetSym.reg : targetName.toLowerCase();
+        const cLine = assign.line;
 
         if (assign.op === "=") {
             if (assign.value instanceof BuiltinCall) {
@@ -1143,10 +1199,10 @@ export class OmniCCodeGen {
             } else {
                 const val = this._evalLiteralOrReg(assign.value);
                 if (targetReg === "acc") {
-                    this._emit(`MOV acc, ${val}`);
+                    this._emit(`MOV acc, ${val}`, cLine);
                 } else {
-                    this._emit(`MOV acc, ${val}`);
-                    this._emit(`MOV ${targetReg}, acc`);
+                    this._emit(`MOV acc, ${val}`, cLine);
+                    this._emit(`MOV ${targetReg}, acc`, cLine);
                 }
             }
         } else {
@@ -1154,14 +1210,14 @@ export class OmniCCodeGen {
                 "+=": "ADD", "-=": "SUB", "&=": "AND", "|=": "OR", "^=": "XOR",
                 "<<=": "SHL", ">>=": "SHR"
             };
-            const aluOp = opMap[assign.op];
+            const aluOp = opMap[assign.op] || "ADD";
             const val = this._evalLiteralOrReg(assign.value);
             if (targetReg === "acc") {
-                this._emit(`${aluOp} ${val}`);
+                this._emit(`${aluOp} ${val}`, cLine);
             } else {
-                this._emit(`MOV acc, ${targetReg}`);
-                this._emit(`${aluOp} ${val}`);
-                this._emit(`MOV ${targetReg}, acc`);
+                this._emit(`MOV acc, ${targetReg}`, cLine);
+                this._emit(`${aluOp} ${val}`, cLine);
+                this._emit(`MOV ${targetReg}, acc`, cLine);
             }
         }
     }
@@ -1171,51 +1227,56 @@ export class OmniCCodeGen {
         const right = this._evalLiteralOrReg(binop.right);
         const opMap = { "+": "ADD", "-": "SUB", "&": "AND", "|": "OR", "^": "XOR", "<<": "SHL", ">>": "SHR" };
         const aluOp = opMap[binop.op] || "ADD";
+        const cLine = binop.line;
 
         if (targetReg === "acc") {
-            if (left !== "acc") this._emit(`MOV acc, ${left}`);
-            this._emit(`${aluOp} ${right}`);
+            if (left !== "acc") this._emit(`MOV acc, ${left}`, cLine);
+            this._emit(`${aluOp} ${right}`, cLine);
         } else {
-            this._emit(`MOV acc, ${left}`);
-            this._emit(`${aluOp} ${right}`);
-            this._emit(`MOV ${targetReg}, acc`);
+            this._emit(`MOV acc, ${left}`, cLine);
+            this._emit(`${aluOp} ${right}`, cLine);
+            this._emit(`MOV ${targetReg}, acc`, cLine);
         }
     }
 
     _genUnaryAssign(targetReg, unop) {
         const opStr = this._evalLiteralOrReg(unop.expr);
+        const cLine = unop.line;
+
         if (unop.op === "~" || unop.op === "not") {
             if (targetReg === "acc") {
-                if (opStr !== "acc") this._emit(`MOV acc, ${opStr}`);
-                this._emit("NOT");
+                if (opStr !== "acc") this._emit(`MOV acc, ${opStr}`, cLine);
+                this._emit("NOT", cLine);
             } else {
-                this._emit(`MOV acc, ${opStr}`);
-                this._emit("NOT");
-                this._emit(`MOV ${targetReg}, acc`);
+                this._emit(`MOV acc, ${opStr}`, cLine);
+                this._emit("NOT", cLine);
+                this._emit(`MOV ${targetReg}, acc`, cLine);
             }
         } else if (unop.op === "++") {
-            this._emit(`INC ${targetReg}`);
+            this._emit(`INC ${targetReg}`, cLine);
         } else if (unop.op === "--") {
-            this._emit(`DEC ${targetReg}`);
+            this._emit(`DEC ${targetReg}`, cLine);
         }
     }
 
     _genBuiltinAssign(targetReg, call) {
         const name = call.name.toLowerCase();
+        const cLine = call.line;
+
         if (name === "pull") {
-            this._emit("PULL");
-            if (targetReg !== "osr") this._emit(`MOV ${targetReg}, osr`);
+            this._emit("PULL", cLine);
+            if (targetReg !== "osr") this._emit(`MOV ${targetReg}, osr`, cLine);
         } else if (name === "core_id") {
-            this._emit("CORE_ID");
-            if (targetReg !== "acc") this._emit(`MOV ${targetReg}, acc`);
+            this._emit("CORE_ID", cLine);
+            if (targetReg !== "acc") this._emit(`MOV ${targetReg}, acc`, cLine);
         } else if (name === "spinlock_acquire" || name === "spinlock_acq") {
             const lockId = call.args.length > 0 ? this._evalLiteralOrReg(call.args[0]) : "0";
-            this._emit(`SPINLOCK_ACQ ${lockId}`);
-            if (targetReg !== "acc") this._emit(`MOV ${targetReg}, acc`);
+            this._emit(`SPINLOCK_ACQ ${lockId}`, cLine);
+            if (targetReg !== "acc") this._emit(`MOV ${targetReg}, acc`, cLine);
         } else if (name === "mailbox_read" || name === "mb_read") {
             const mbId = call.args.length > 0 ? this._evalLiteralOrReg(call.args[0]) : "0";
-            this._emit(`MB_READ ${mbId}`);
-            if (targetReg !== "acc") this._emit(`MOV ${targetReg}, acc`);
+            this._emit(`MB_READ ${mbId}`, cLine);
+            if (targetReg !== "acc") this._emit(`MOV ${targetReg}, acc`, cLine);
         } else {
             this._genBuiltinCall(call);
         }
@@ -1268,15 +1329,11 @@ export class OmniCCodeGen {
     }
 
     _genRepeat(stmt) {
-        const lcId = !this.activeLoopCounters.includes(0) ? 0 : 1;
-        this.activeLoopCounters.push(lcId);
-        const lcName = `LC${lcId}`;
+        const startLabel = this._newLabel("repeat_start");
+        const endLabel = this._newLabel("repeat_end");
         const countVal = this._evalLiteralOrReg(stmt.countExpr);
 
-        const startLabel = this._newLabel(`loop_lc${lcId}`);
-        const endLabel = this._newLabel(`end_lc${lcId}`);
-
-        this._emit(`SET_LC ${countVal}`);
+        this._emit(`SET_LC ${countVal}`, stmt.line);
         this.loopStack.push({ contLabel: startLabel, breakLabel: endLabel });
 
         this._emit(`${startLabel}:`);
@@ -1285,7 +1342,61 @@ export class OmniCCodeGen {
         this._emit(`${endLabel}:`);
 
         this.loopStack.pop();
-        this.activeLoopCounters.pop();
+    }
+
+    _genSwitch(stmt) {
+        const valStr = this._evalLiteralOrReg(stmt.expr);
+        const tempReg = "r0";
+        this._emit(`MOV acc, ${valStr}`, stmt.line);
+        this._emit(`MOV ${tempReg}, acc`, stmt.line);
+
+        const endLabel = this._newLabel("sw_end");
+        this.loopStack.push({ contLabel: endLabel, breakLabel: endLabel });
+
+        const casePairs = [];
+        let defaultPair = null;
+
+        for (const c of stmt.cases) {
+            if (c.matchExpr !== null) {
+                const lbl = this._newLabel("sw_case");
+                casePairs.push({ caseObj: c, label: lbl });
+            } else {
+                const lbl = this._newLabel("sw_default");
+                defaultPair = { caseObj: c, label: lbl };
+            }
+        }
+
+        // Branch tests
+        for (const cp of casePairs) {
+            const matchVal = this._evalLiteralOrReg(cp.caseObj.matchExpr);
+            this._emit(`MOV acc, ${tempReg}`, cp.caseObj.line);
+            this._emit(`CMP ${matchVal}`, cp.caseObj.line);
+            this._emit(`JMP ZERO, ${cp.label}`, cp.caseObj.line);
+        }
+
+        if (defaultPair) {
+            this._emit(`JMP ${defaultPair.label}`);
+        } else {
+            this._emit(`JMP ${endLabel}`);
+        }
+
+        // Case bodies
+        for (const cp of casePairs) {
+            this._emit(`${cp.label}:`);
+            for (const s of cp.caseObj.statements) {
+                this._genStatement(s);
+            }
+        }
+
+        if (defaultPair) {
+            this._emit(`${defaultPair.label}:`);
+            for (const s of defaultPair.caseObj.statements) {
+                this._genStatement(s);
+            }
+        }
+
+        this._emit(`${endLabel}:`);
+        this.loopStack.pop();
     }
 
     _genExprStmt(stmt) {
@@ -1298,99 +1409,70 @@ export class OmniCCodeGen {
 
     _genBuiltinCall(call) {
         const name = call.name.toLowerCase();
-        const args = call.args.map(a => this._evalLiteralOrReg(a));
+        const args = call.args;
+        const cLine = call.line;
 
         if (name === "pin_set") {
-            const delay = args[2] ? ` [${args[2]}]` : "";
-            this._emit(`SET ${args[0]}, ${args[1]}${delay}`);
+            const pin = this._evalLiteralOrReg(args[0]);
+            const val = this._evalLiteralOrReg(args[1]);
+            this._emit(`SET ${pin}, ${val}`, cLine);
         } else if (name === "pin_high") {
-            const delay = args[1] ? ` [${args[1]}]` : "";
-            this._emit(`SET ${args[0]}, 1${delay}`);
+            const pin = this._evalLiteralOrReg(args[0]);
+            this._emit(`SET ${pin}, 1`, cLine);
         } else if (name === "pin_low") {
-            const delay = args[1] ? ` [${args[1]}]` : "";
-            this._emit(`SET ${args[0]}, 0${delay}`);
+            const pin = this._evalLiteralOrReg(args[0]);
+            this._emit(`SET ${pin}, 0`, cLine);
         } else if (name === "pin_wait") {
-            const timeout = args[2] !== undefined ? ` [${args[2]}]` : "";
-            this._emit(`WAIT ${args[0]}, ${args[1]}${timeout}`);
-        } else if (name === "pin_map") {
-            this._emit(`PINMAP tx=${args[0]}, rx=${args[1]}, sck=${args[2]}, cs=${args[3]}`);
-        } else if (name === "cfg_od") {
-            this._emit(`CFG_OD ${args[0]}`);
+            const pin = this._evalLiteralOrReg(args[0]);
+            const val = this._evalLiteralOrReg(args[1]);
+            this._emit(`WAIT ${pin} == ${val}`, cLine);
         } else if (name === "pull") {
-            this._emit("PULL");
-        } else if (name === "pull_block") {
-            this._emit("PULL BLOCK");
+            this._emit("PULL", cLine);
         } else if (name === "push") {
-            this._emit("PUSH");
-        } else if (name === "push_block") {
-            this._emit("PUSH BLOCK");
+            const val = args.length > 0 ? this._evalLiteralOrReg(args[0]) : "0";
+            if (val !== "acc") this._emit(`MOV acc, ${val}`, cLine);
+            this._emit("PUSH", cLine);
         } else if (name === "out_shift") {
-            const delay = args[1] ? ` [${args[1]}]` : "";
-            this._emit(`OUT ${args[0]}${delay}`);
-        } else if (name === "out_sck") {
-            const count = args[0] || "8";
-            const delay = args[1] ? ` [${args[1]}]` : "";
-            this._emit(`OUT SCK, ${count}${delay}`);
+            const count = args.length > 0 ? this._evalLiteralOrReg(args[0]) : "8";
+            this._emit(`OUT ${count}`, cLine);
         } else if (name === "in_shift") {
-            const delay = args[1] ? ` [${args[1]}]` : "";
-            this._emit(`IN ${args[0]}${delay}`);
+            const count = args.length > 0 ? this._evalLiteralOrReg(args[0]) : "8";
+            this._emit(`IN ${count}`, cLine);
+        } else if (name === "out_sck") {
+            const count = args.length > 0 ? this._evalLiteralOrReg(args[0]) : "8";
+            this._emit(`OUT SCK, ${count}`, cLine);
         } else if (name === "in_sck") {
-            const count = args[0] || "8";
-            const delay = args[1] ? ` [${args[1]}]` : "";
-            this._emit(`IN SCK, ${count}${delay}`);
-        } else if (name === "delay_cycles") {
-            this._emit(`NOP [${args[0]}]`);
-        } else if (name === "delay_baud") {
-            this._emit("NOP [$BAUD]");
-        } else if (name === "delay_hbaud") {
-            this._emit("NOP [$HBAUD]");
-        } else if (name === "nop") {
-            this._emit("NOP");
-        } else if (name === "barrier_wait") {
-            this._emit("BARRIER_WAIT");
+            const count = args.length > 0 ? this._evalLiteralOrReg(args[0]) : "8";
+            this._emit(`IN SCK, ${count}`, cLine);
+        } else if (name === "delay_cycles" || name === "nop") {
+            const cycles = args.length > 0 ? this._evalLiteralOrReg(args[0]) : "0";
+            this._emit(`NOP [${cycles}]`, cLine);
+        } else if (name === "barrier_wait" || name === "barrier") {
+            this._emit("BARRIER_WAIT", cLine);
         } else if (name === "spinlock_release" || name === "spinlock_rel") {
-            this._emit(`SPINLOCK_REL ${args[0] || "0"}`);
+            const lockId = args.length > 0 ? this._evalLiteralOrReg(args[0]) : "0";
+            this._emit(`SPINLOCK_REL ${lockId}`, cLine);
         } else if (name === "mailbox_write" || name === "mb_write") {
-            if (args[1]) this._emit(`MOV acc, ${args[1]}`);
-            this._emit(`MB_WRITE ${args[0] || "0"}`);
-        } else if (name === "assist_pulse_cfg") {
-            this._emit(`ASSIST PULSE_CFG ${args[0]}`);
-        } else if (name === "assist_pulse_time0") {
-            this._emit(`ASSIST PULSE_TIME0 ${args[0]}, ${args[1]}`);
-        } else if (name === "assist_pulse_time1") {
-            this._emit(`ASSIST PULSE_TIME1 ${args[0]}, ${args[1]}`);
-        } else if (name === "assist_glitch_arm") {
-            this._emit("ASSIST GLITCH_ARM");
-        } else if (name === "assist_audio_vol") {
-            this._emit(`ASSIST AUDIO_VOL ${args[0]}`);
-        } else if (name === "assist_audio_play") {
-            this._emit(`ASSIST AUDIO_PLAY ${args[0]}, ${args[1]}`);
-        } else if (name === "assist_audio_stop") {
-            this._emit("ASSIST AUDIO_STOP");
+            const mbId = args.length > 0 ? this._evalLiteralOrReg(args[0]) : "0";
+            const val = args.length > 1 ? this._evalLiteralOrReg(args[1]) : "0";
+            if (val !== "acc") this._emit(`MOV acc, ${val}`, cLine);
+            this._emit(`MB_WRITE ${mbId}`, cLine);
         } else {
-            // General function call: CALL func
-            this._emit(`CALL ${call.name}`);
+            // Function call or generic instruction
+            const targetName = call.name;
+            this._emit(`CALL ${targetName}`, cLine);
         }
     }
 
-    _genConditionBranch(cond, targetLabel, jumpIfTrue) {
-        if (cond instanceof Literal) {
-            if (cond.value === 1 || cond.value === true) {
-                if (jumpIfTrue) this._emit(`JMP ${targetLabel}`);
-            } else if (cond.value === 0 || cond.value === false) {
-                if (!jumpIfTrue) this._emit(`JMP ${targetLabel}`);
-            }
-            return;
-        }
-
+    _genConditionBranch(cond, targetLabel, jumpIfTrue = true) {
         if (cond instanceof BinaryOp) {
             const left = this._evalLiteralOrReg(cond.left);
             const right = this._evalLiteralOrReg(cond.right);
+            const op = cond.op;
 
             if (left !== "acc") this._emit(`MOV acc, ${left}`);
             this._emit(`CMP ${right}`);
 
-            const op = cond.op;
             if (op === "==") {
                 this._emit(jumpIfTrue ? `JMP ZERO, ${targetLabel}` : `JMP NOT_ZERO, ${targetLabel}`);
             } else if (op === "!=") {
@@ -1432,41 +1514,293 @@ export class OmniCCodeGen {
         if (typeof node === "string") return node;
         return "temp";
     }
+}
 
-    _optimize(lines) {
+// =============================================================================
+// 7. MULTI-PASS PEEPHOLE OPTIMIZER
+// =============================================================================
+
+export class OmniCPeepholeOptimizer {
+    constructor(level = 1) {
+        this.level = level; // 0=None, 1=Standard, 2=Aggressive
+    }
+
+    optimize(lines) {
+        if (this.level === 0) {
+            return lines.filter(l => l.trim().length > 0);
+        }
+
+        let current = lines.map(l => l.trim()).filter(l => l.length > 0);
+
+        for (let pass = 0; pass < 5; pass++) {
+            const prevLen = current.length;
+
+            current = this._coalesceDelays(current);
+            if (this.level >= 2) {
+                current = this._foldNops(current);
+            }
+
+            current = this._eliminateRedundantMoves(current);
+
+            if (this.level >= 2) {
+                current = this._eliminateInverseMoves(current);
+                current = this._eliminateConsecutiveSetPins(current);
+            }
+
+            current = this._eliminateDeadCode(current);
+            current = this._eliminateJumpsToNext(current);
+
+            if (this.level >= 2) {
+                current = this._compressJumpChains(current);
+                current = this._eliminateUnusedLabels(current);
+            }
+
+            if (current.length === prevLen) break;
+        }
+
+        return current;
+    }
+
+    _coalesceDelays(lines) {
         const optimized = [];
-        for (let i = 0; i < lines.length; i++) {
-            const curr = lines[i].trim();
-            if (!curr) continue;
+        let i = 0;
+        while (i < lines.length) {
+            const curr = lines[i];
+            if (curr.endsWith(":") || curr.startsWith(";")) {
+                optimized.push(curr);
+                i++;
+                continue;
+            }
 
-            // Coalesce NOP [delay] into previous instruction
             if (i + 1 < lines.length) {
-                const next = lines[i + 1].trim();
-                const nopMatch = next.match(/^NOP\s+\[(.*?)\]$/i);
+                const nxt = lines[i + 1];
+                const nopMatch = nxt.match(/^NOP\s+\[(.*?)\](?:\s*;.*)?$/i);
                 if (nopMatch && !curr.includes("[") && !curr.endsWith(":")) {
-                    const opcode = curr.split(/\s+/)[0].toUpperCase();
-                    if (["SET", "WAIT", "OUT", "IN", "CFG_OD", "PINMAP"].includes(opcode)) {
-                        optimized.push(`${curr} [${nopMatch[1]}]`);
-                        i++;
+                    const clean = curr.split(";")[0].trim();
+                    const loc = curr.includes("; #loc:") ? (" ; " + curr.split(";").find(x => x.includes("#loc")).trim()) : "";
+                    const opcode = clean.split(/\s+/)[0].toUpperCase();
+                    if (["SET", "WAIT", "OUT", "IN", "CFG_OD", "PINMAP", "NOP"].includes(opcode)) {
+                        optimized.push(`${clean} [${nopMatch[1]}]${loc}`);
+                        i += 2;
                         continue;
                     }
                 }
             }
 
-            // Skip redundant self-moves: MOV X, X
-            const movMatch = curr.match(/^MOV\s+([a-zA-Z0-9_]+)\s*,\s*([a-zA-Z0-9_]+)$/i);
-            if (movMatch && movMatch[1].toLowerCase() === movMatch[2].toLowerCase()) {
-                continue;
+            optimized.push(curr);
+            i++;
+        }
+        return optimized;
+    }
+
+    _foldNops(lines) {
+        const optimized = [];
+        let i = 0;
+        while (i < lines.length) {
+            const curr = lines[i];
+            const nop1 = curr.match(/^NOP\s+\[(\d+)\](?:\s*;.*)?$/i);
+
+            if (nop1 && i + 1 < lines.length) {
+                const nxt = lines[i + 1];
+                const nop2 = nxt.match(/^NOP\s+\[(\d+)\](?:\s*;.*)?$/i);
+                if (nop2) {
+                    const d1 = parseInt(nop1[1], 10);
+                    const d2 = parseInt(nop2[1], 10);
+                    if (d1 + d2 <= 31) {
+                        const loc = curr.includes("; #loc:") ? (" ; " + curr.split(";").find(x => x.includes("#loc")).trim()) : "";
+                        optimized.push(`NOP [${d1 + d2}]${loc}`);
+                        i += 2;
+                        continue;
+                    }
+                }
             }
 
             optimized.push(curr);
+            i++;
+        }
+        return optimized;
+    }
+
+    _eliminateRedundantMoves(lines) {
+        const optimized = [];
+        for (const line of lines) {
+            const clean = line.split(";")[0].trim();
+            const movMatch = clean.match(/^MOV\s+([a-zA-Z0-9_]+)\s*,\s*([a-zA-Z0-9_]+)$/i);
+            if (movMatch && movMatch[1].toLowerCase() === movMatch[2].toLowerCase()) {
+                continue;
+            }
+            optimized.push(line);
+        }
+        return optimized;
+    }
+
+    _eliminateInverseMoves(lines) {
+        const optimized = [];
+        let i = 0;
+        while (i < lines.length) {
+            const curr = lines[i];
+            const clean1 = curr.split(";")[0].trim();
+            const m1 = clean1.match(/^MOV\s+([a-zA-Z0-9_]+)\s*,\s*([a-zA-Z0-9_]+)$/i);
+
+            if (m1 && i + 1 < lines.length) {
+                const nxt = lines[i + 1];
+                const clean2 = nxt.split(";")[0].trim();
+                const m2 = clean2.match(/^MOV\s+([a-zA-Z0-9_]+)\s*,\s*([a-zA-Z0-9_]+)$/i);
+                if (m2) {
+                    const d1 = m1[1].toLowerCase(), s1 = m1[2].toLowerCase();
+                    const d2 = m2[1].toLowerCase(), s2 = m2[2].toLowerCase();
+                    if (d1 === s2 && s1 === d2) {
+                        optimized.push(curr);
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+
+            optimized.push(curr);
+            i++;
+        }
+        return optimized;
+    }
+
+    _eliminateConsecutiveSetPins(lines) {
+        const optimized = [];
+        let i = 0;
+        while (i < lines.length) {
+            const curr = lines[i];
+            const clean1 = curr.split(";")[0].trim();
+            const set1 = clean1.match(/^SET\s+([a-zA-Z0-9_\[\]]+)\s*,\s*([01])$/i);
+
+            if (set1 && i + 1 < lines.length) {
+                const nxt = lines[i + 1];
+                const clean2 = nxt.split(";")[0].trim();
+                const set2 = clean2.match(/^SET\s+([a-zA-Z0-9_\[\]]+)\s*,\s*([01])$/i);
+                if (set2 && set1[1].toLowerCase() === set2[1].toLowerCase() && set1[2] === set2[2]) {
+                    optimized.push(curr);
+                    i += 2;
+                    continue;
+                }
+            }
+
+            optimized.push(curr);
+            i++;
+        }
+        return optimized;
+    }
+
+    _eliminateDeadCode(lines) {
+        const optimized = [];
+        let unreachable = false;
+
+        for (const line of lines) {
+            if (line.endsWith(":") || line.startsWith(".")) {
+                unreachable = false;
+                optimized.push(line);
+                continue;
+            }
+
+            if (line.startsWith(";")) {
+                if (!unreachable) optimized.push(line);
+                continue;
+            }
+
+            if (unreachable) continue;
+
+            optimized.push(line);
+
+            const clean = line.split(";")[0].trim().toUpperCase();
+            if (clean === "RET" || (clean.startsWith("JMP ") && !clean.includes("ZERO") && !clean.includes("CARRY"))) {
+                unreachable = true;
+            }
+        }
+        return optimized;
+    }
+
+    _eliminateJumpsToNext(lines) {
+        const optimized = [];
+        let i = 0;
+        while (i < lines.length) {
+            const curr = lines[i];
+            const clean = curr.split(";")[0].trim();
+            const jmpMatch = clean.match(/^JMP\s+([a-zA-Z0-9_]+)$/i);
+
+            if (jmpMatch) {
+                const target = jmpMatch[1].trim();
+                let nextIdx = i + 1;
+                while (nextIdx < lines.length && lines[nextIdx].startsWith(";")) {
+                    nextIdx++;
+                }
+                if (nextIdx < lines.length && lines[nextIdx].trim() === `${target}:`) {
+                    i++;
+                    continue;
+                }
+            }
+
+            optimized.push(curr);
+            i++;
+        }
+        return optimized;
+    }
+
+    _compressJumpChains(lines) {
+        const targets = {};
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].endsWith(":")) {
+                const lbl = lines[i].slice(0, -1).trim();
+                let nextIdx = i + 1;
+                while (nextIdx < lines.length && lines[nextIdx].startsWith(";")) nextIdx++;
+                if (nextIdx < lines.length) {
+                    const clean = lines[nextIdx].split(";")[0].trim();
+                    const m = clean.match(/^JMP\s+([a-zA-Z0-9_]+)$/i);
+                    if (m) targets[lbl] = m[1].trim();
+                }
+            }
+        }
+
+        return lines.map(line => {
+            const m = line.match(/^(JMP(?:\s+[A-Z_]+,)?\s+)([a-zA-Z0-9_]+)(.*)$/i);
+            if (m) {
+                const prefix = m[1];
+                const tgt = m[2];
+                const rest = m[3];
+                if (targets[tgt] && targets[tgt] !== tgt) {
+                    return `${prefix}${targets[tgt]}${rest}`;
+                }
+            }
+            return line;
+        });
+    }
+
+    _eliminateUnusedLabels(lines) {
+        const referenced = new Set();
+        for (const line of lines) {
+            const clean = line.split(";")[0].trim();
+            const matches = clean.match(/\b(?:JMP|CALL|DJNZ)(?:\s+[A-Z_]+,)?\s+([a-zA-Z0-9_]+)/gi);
+            if (matches) {
+                matches.forEach(m => {
+                    const parts = m.trim().split(/\s+/);
+                    referenced.add(parts[parts.length - 1].trim());
+                });
+            }
+        }
+
+        const optimized = [];
+        for (const line of lines) {
+            if (line.endsWith(":") && !line.startsWith(";")) {
+                const lbl = line.slice(0, -1).trim();
+                if (lbl.startsWith("__") || ["main", "entry", "_entry"].includes(lbl) || referenced.has(lbl)) {
+                    optimized.push(line);
+                }
+            } else {
+                optimized.push(line);
+            }
         }
         return optimized;
     }
 }
 
 // =============================================================================
-// 7. HIGH-LEVEL COMPILER INTERFACE
+// 8. HIGH-LEVEL COMPILER INTERFACE
 // =============================================================================
 
 export class OmniCCompiler {
@@ -1474,22 +1808,19 @@ export class OmniCCompiler {
         this.virtualHeaders = virtualHeaders;
     }
 
-    compile(cSource, options = { optimize: true }) {
+    compile(cSource, options = { optimize: 1 }) {
         try {
-            // Step 1: Preprocessor & Header Expansion
             const preprocessor = new Preprocessor(this.virtualHeaders);
             const preprocessed = preprocessor.process(cSource);
 
-            // Step 2: Lexical Analysis
             const lexer = new OmniCLexer(preprocessed);
             const tokens = lexer.tokenize();
 
-            // Step 3: Parsing & AST Construction
             const parser = new OmniCParser(tokens, preprocessor.pragmas);
             const ast = parser.parse();
 
-            // Step 4: Code Generation & Optimization
-            const codegen = new OmniCCodeGen(options.optimize !== false);
+            const optLevel = typeof options.optimize === "number" ? options.optimize : (options.optimize === false ? 0 : 1);
+            const codegen = new OmniCCodeGen({ optimize: optLevel, emitLocComments: true });
             const asmOutput = codegen.generate(ast);
 
             return {
@@ -1497,7 +1828,8 @@ export class OmniCCompiler {
                 asmSource: asmOutput,
                 errors: [],
                 warnings: [],
-                ast: ast
+                ast: ast,
+                sourceMap: codegen.sourceMap
             };
         } catch (err) {
             return {
@@ -1505,7 +1837,8 @@ export class OmniCCompiler {
                 asmSource: "",
                 errors: [err.message || String(err)],
                 warnings: [],
-                ast: null
+                ast: null,
+                sourceMap: null
             };
         }
     }

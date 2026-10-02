@@ -104,6 +104,23 @@ class RepeatStmt(ASTNode):
         self.counter_id = counter_id  # 0 for LC0, 1 for LC1
 
 
+class CaseClause(ASTNode):
+    """Case or Default clause in a switch statement."""
+    def __init__(self, match_expr: Optional[ASTNode], statements: List[ASTNode],
+                 line: int = 1, col: int = 1):
+        super().__init__(line, col)
+        self.match_expr = match_expr  # None for default
+        self.statements = statements
+
+
+class SwitchStmt(ASTNode):
+    """Switch statement switch (expr) { case V: ... default: ... }."""
+    def __init__(self, expr: ASTNode, cases: List[CaseClause], line: int = 1, col: int = 1):
+        super().__init__(line, col)
+        self.expr = expr
+        self.cases = cases
+
+
 class ReturnStmt(ASTNode):
     """Function return statement (RET)."""
     def __init__(self, value: Optional[ASTNode] = None, line: int = 1, col: int = 1):

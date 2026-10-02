@@ -33,6 +33,11 @@ export class OmniBusAssembler {
         this.warnings = [];
         this.machineCode = [];
         this.debugMap = [];
+        this.pcToCLine = {};
+        this.cLineToPCs = {};
+        this.pcToAsmLine = {};
+        this.asmLineToPC = {};
+        this.bankUsage = [0, 0, 0, 0];
         this.entryLabel = null;
         this.entryPoint = 0;
     }
@@ -333,6 +338,11 @@ export class OmniBusAssembler {
         // Pass 2: Instruction Encoding
         this.machineCode = [];
         this.debugMap = [];
+        this.pcToCLine = {};
+        this.cLineToPCs = {};
+        this.pcToAsmLine = {};
+        this.asmLineToPC = {};
+        this.bankUsage = [0, 0, 0, 0];
 
         for (const item of parsedLines) {
             if (item.isEmpty || item.isDirective || item.isLabelOnly) {
@@ -342,6 +352,28 @@ export class OmniBusAssembler {
             try {
                 const word16 = this.encodeInstruction(item.text, item.pc, item.lineNum);
                 this.machineCode.push(word16);
+                
+                // Track per-bank memory usage (32 words per bank, up to 4 banks = 128 words)
+                const bankIdx = Math.floor(item.pc / 32);
+                if (bankIdx >= 0 && bankIdx < 4) {
+                    this.bankUsage[bankIdx]++;
+                }
+
+                // Line mappings
+                this.pcToAsmLine[item.pc] = item.lineNum;
+                this.asmLineToPC[item.lineNum] = item.pc;
+
+                // Check for C source location tag: #loc:<line>
+                const locMatch = item.raw.match(/#loc:(\d+)/);
+                if (locMatch) {
+                    const cLine = parseInt(locMatch[1], 10);
+                    this.pcToCLine[item.pc] = cLine;
+                    if (!this.cLineToPCs[cLine]) {
+                        this.cLineToPCs[cLine] = [];
+                    }
+                    this.cLineToPCs[cLine].push(item.pc);
+                }
+
                 this.debugMap.push({
                     pc: item.pc,
                     lineNum: item.lineNum,
@@ -363,6 +395,11 @@ export class OmniBusAssembler {
             constants: this.constants,
             errors: this.errors,
             warnings: this.warnings,
+            pcToCLine: this.pcToCLine,
+            cLineToPCs: this.cLineToPCs,
+            pcToAsmLine: this.pcToAsmLine,
+            asmLineToPC: this.asmLineToPC,
+            bankUsage: this.bankUsage,
             hexListing: this.getHexListing(),
             verilogHex: this.getVerilogMemHex()
         };

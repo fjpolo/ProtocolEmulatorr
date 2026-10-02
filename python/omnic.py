@@ -43,7 +43,8 @@ Examples:
     parser.add_argument("--bin", help="Output raw binary instruction file (.bin)")
     parser.add_argument("--mem", help="Output Verilog $readmemh format file (.mem)")
     parser.add_argument("--header", help="Output C header file with binary array (.h)")
-    parser.add_argument("--no-opt", action="store_true", help="Disable peephole optimizer & sidecar delay packing")
+    parser.add_argument("-O", "--optimize", type=int, choices=[0, 1, 2], default=1, help="Optimization level: 0=None, 1=Standard (default), 2=Aggressive")
+    parser.add_argument("--no-opt", action="store_true", help="Disable optimizer (equivalent to -O0)")
     parser.add_argument("--verify", action="store_true", help="Verify generated assembly with omnibus_asm.py")
 
     args = parser.parse_args()
@@ -54,7 +55,8 @@ Examples:
 
     print(f"[*] Compiling Omni-C source '{args.source}'...")
 
-    compiler = OmniCCompiler(include_paths=args.include, optimize=not args.no_opt)
+    opt_level = 0 if args.no_opt else args.optimize
+    compiler = OmniCCompiler(include_paths=args.include, optimize=opt_level)
     try:
         asm_code = compiler.compile_file(args.source)
     except Exception as e:

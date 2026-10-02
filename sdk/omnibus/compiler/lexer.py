@@ -38,6 +38,9 @@ class TokenType:
     DO = "do"
     FOR = "for"
     REPEAT = "repeat"
+    SWITCH = "switch"
+    CASE = "case"
+    DEFAULT = "default"
     RETURN = "return"
     BREAK = "break"
     CONTINUE = "continue"
@@ -107,6 +110,9 @@ KEYWORDS = {
     "do": TokenType.DO,
     "for": TokenType.FOR,
     "repeat": TokenType.REPEAT,
+    "switch": TokenType.SWITCH,
+    "case": TokenType.CASE,
+    "default": TokenType.DEFAULT,
     "return": TokenType.RETURN,
     "break": TokenType.BREAK,
     "continue": TokenType.CONTINUE,

@@ -215,6 +215,18 @@ body {
     box-shadow: 0 0 12px var(--accent-emerald-glow);
 }
 
+.btn-warning {
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.05));
+    border-color: var(--accent-amber);
+    color: var(--accent-amber);
+}
+
+.btn-warning:hover:not(:disabled) {
+    background: var(--accent-amber);
+    color: #000;
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.4);
+}
+
 .btn-sm {
     padding: 2px 7px;
     font-size: 10px;
@@ -435,18 +447,80 @@ body.is-resizing .bottom-dock {
 }
 
 .line-numbers {
-    width: 44px;
+    width: 52px;
     background: #080C14;
     color: var(--text-dim);
     font-family: var(--font-mono);
     font-size: var(--editor-font-size, 13px);
     line-height: var(--editor-line-height, 20px);
-    padding: 10px 8px;
+    padding: 10px 0;
     text-align: right;
     user-select: none;
     border-right: 1px solid var(--border-subtle);
     overflow: hidden;
     flex-shrink: 0;
+}
+
+.gutter-line {
+    height: var(--editor-line-height, 20px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 6px 0 4px;
+    cursor: pointer;
+    position: relative;
+    box-sizing: border-box;
+    transition: background 0.1s;
+}
+
+.gutter-line:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-main);
+}
+
+.gutter-line .bp-marker {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    visibility: hidden;
+    background: var(--accent-crimson);
+    box-shadow: 0 0 6px var(--accent-crimson);
+    flex-shrink: 0;
+}
+
+.gutter-line:hover .bp-marker {
+    visibility: visible;
+    opacity: 0.4;
+}
+
+.gutter-line.has-breakpoint .bp-marker {
+    visibility: visible !important;
+    opacity: 1.0 !important;
+    animation: bp-pulse 2s infinite ease-in-out;
+}
+
+@keyframes bp-pulse {
+    0%, 100% { transform: scale(1); box-shadow: 0 0 6px var(--accent-crimson); }
+    50% { transform: scale(1.2); box-shadow: 0 0 10px var(--accent-crimson); }
+}
+
+.gutter-line.active-line {
+    background: rgba(245, 158, 11, 0.25) !important;
+    color: #FFF !important;
+    font-weight: bold;
+}
+
+.gutter-line .exec-arrow {
+    position: absolute;
+    right: 2px;
+    color: var(--accent-amber);
+    font-size: 10px;
+    display: none;
+}
+
+.gutter-line.active-line .exec-arrow {
+    display: inline-block;
 }
 
 .code-textarea {
@@ -1435,5 +1509,133 @@ body.is-resizing .bottom-dock {
     color: var(--primary-cyan);
     border-color: var(--primary-cyan);
     font-weight: bold;
+}
+
+/* =============================================================================
+   Debugger Watch & Memory Bank Capacity (Task 38)
+   ============================================================================= */
+
+.debugger-watch-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.debug-reg-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+}
+
+.debug-reg-cell {
+    background: #080C14;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+    padding: 3px 5px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+    transition: all 0.2s;
+}
+
+.debug-reg-cell:hover {
+    border-color: rgba(0, 240, 255, 0.3);
+}
+
+.debug-reg-cell .d-lbl {
+    font-size: 8px;
+    font-family: var(--font-mono);
+    color: var(--primary-cyan);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.debug-reg-cell .d-val {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: #FFFFFF;
+    font-weight: 600;
+}
+
+/* Bank Memory Capacity Gauges */
+.bank-capacity-container {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.bank-bar-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.bank-bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+}
+
+.bank-progress-track {
+    height: 6px;
+    background: #080C14;
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    position: relative;
+}
+
+.bank-progress-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+.fill-bank-0 { background: linear-gradient(90deg, #00B4D8, #00F0FF); box-shadow: 0 0 8px var(--primary-cyan-glow); }
+.fill-bank-1 { background: linear-gradient(90deg, #7C3AED, #8B5CF6); box-shadow: 0 0 8px var(--accent-purple-glow); }
+.fill-bank-2 { background: linear-gradient(90deg, #059669, #10B981); box-shadow: 0 0 8px var(--accent-emerald-glow); }
+.fill-bank-3 { background: linear-gradient(90deg, #D97706, #F59E0B); box-shadow: 0 0 8px rgba(245, 158, 11, 0.3); }
+.bank-progress-fill.over-limit { background: #F43F5E !important; box-shadow: 0 0 10px #F43F5E !important; }
+
+/* Breakpoints list */
+.breakpoints-list-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-height: 22px;
+    align-items: center;
+}
+
+.bp-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(244, 63, 94, 0.15);
+    color: var(--accent-crimson);
+    border: 1px solid rgba(244, 63, 94, 0.4);
+    font-size: 9px;
+    font-family: var(--font-mono);
+    cursor: default;
+}
+
+.bp-chip .bp-remove {
+    cursor: pointer;
+    opacity: 0.7;
+    margin-left: 2px;
+}
+
+.bp-chip .bp-remove:hover {
+    opacity: 1;
+    color: #FFF;
 }
 

@@ -8,7 +8,7 @@
 from typing import List, Dict, Optional, Any, Union, Tuple, Set
 from .ast_nodes import (
     ASTNode, Program, FunctionDef, Block, VarDecl, AssignStmt, IfStmt,
-    WhileStmt, DoWhileStmt, RepeatStmt, ReturnStmt, BreakStmt, ContinueStmt,
+    WhileStmt, DoWhileStmt, RepeatStmt, SwitchStmt, CaseClause, ReturnStmt, BreakStmt, ContinueStmt,
     GotoStmt, LabelStmt, AsmStmt, ExprStmt, BinaryOp, UnaryOp, Identifier,
     Literal, BuiltinCall, PragmaDirective
 )
@@ -26,8 +26,9 @@ class CodeGenError(Exception):
 class OmniCCodeGen:
     """Code generator that translates Omni-C AST into OmniBus 16-bit Assembly."""
 
-    def __init__(self, optimize: bool = True):
+    def __init__(self, optimize: Union[bool, int] = True, emit_loc_comments: bool = True):
         self.optimize = optimize
+        opt_level = 0 if optimize is False else (optimize if isinstance(optimize, int) else 1)
         self.lines: List[str] = []
         self.label_counter = 0
         self.loop_stack: List[Tuple[str, str]] = []  # (continue_label, break_label)
@@ -35,7 +36,8 @@ class OmniCCodeGen:
         self.reg_alloc = RegisterAllocator()
         self.clock_freq = 50_000_000
         self.baud_rate = 115200
-        self.optimizer = PeepholeOptimizer(optimize_delays=True, eliminate_dead_code=True)
+        self.emit_loc_comments = emit_loc_comments
+        self.optimizer = PeepholeOptimizer(level=opt_level, optimize_delays=True, eliminate_dead_code=True)
         self.allocated_lcs: Set[int] = set()
         self.active_loop_counters: List[int] = []
 
@@ -167,6 +169,8 @@ class OmniCCodeGen:
             self._gen_do_while(stmt)
         elif isinstance(stmt, RepeatStmt):
             self._gen_repeat(stmt)
+        elif isinstance(stmt, SwitchStmt):
+            self._gen_switch(stmt)
         elif isinstance(stmt, ReturnStmt):
             self._gen_return(stmt)
         elif isinstance(stmt, BreakStmt):
@@ -187,6 +191,53 @@ class OmniCCodeGen:
             self._gen_expr_stmt(stmt)
         else:
             raise CodeGenError(f"Unhandled statement type: {type(stmt).__name__}", stmt.line)
+
+    def _gen_switch(self, stmt: SwitchStmt):
+        # Evaluate switch expression into ACC, then save to a register
+        val_str = self._eval_literal_or_reg(stmt.expr)
+        temp_reg = "r0"
+        self._emit(f"MOV acc, {val_str}")
+        self._emit(f"MOV {temp_reg}, acc")
+
+        end_label = self._new_label("sw_end")
+        self.loop_stack.append((end_label, end_label))
+
+        case_pairs: List[Tuple[CaseClause, str]] = []
+        default_pair: Optional[Tuple[CaseClause, str]] = None
+
+        for case in stmt.cases:
+            if case.match_expr is not None:
+                lbl = self._new_label("sw_case")
+                case_pairs.append((case, lbl))
+            else:
+                lbl = self._new_label("sw_default")
+                default_pair = (case, lbl)
+
+        # Dispatch compare tests
+        for case, lbl in case_pairs:
+            match_val = self._eval_literal_or_reg(case.match_expr)
+            self._emit(f"MOV acc, {temp_reg}")
+            self._emit(f"CMP {match_val}")
+            self._emit(f"JMP JZ {lbl}")
+
+        if default_pair:
+            self._emit(f"JMP {default_pair[1]}")
+        else:
+            self._emit(f"JMP {end_label}")
+
+        # Emit case blocks
+        for case, lbl in case_pairs:
+            self._emit(f"{lbl}:")
+            for s in case.statements:
+                self._gen_statement(s)
+
+        if default_pair:
+            self._emit(f"{default_pair[1]}:")
+            for s in default_pair[0].statements:
+                self._gen_statement(s)
+
+        self._emit(f"{end_label}:")
+        self.loop_stack.pop()
 
     def _gen_local_var(self, var: VarDecl):
         reg = self.reg_alloc.allocate(var.name, var.reg_hint)

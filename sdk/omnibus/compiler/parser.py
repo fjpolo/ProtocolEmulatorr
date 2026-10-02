@@ -9,7 +9,7 @@ from typing import List, Optional, Any, Union
 from .lexer import Token, TokenType, OmniCLexer, LexerError
 from .ast_nodes import (
     ASTNode, Program, FunctionDef, Block, VarDecl, AssignStmt, IfStmt,
-    WhileStmt, DoWhileStmt, RepeatStmt, ReturnStmt, BreakStmt, ContinueStmt,
+    WhileStmt, DoWhileStmt, RepeatStmt, SwitchStmt, CaseClause, ReturnStmt, BreakStmt, ContinueStmt,
     GotoStmt, LabelStmt, AsmStmt, ExprStmt, BinaryOp, UnaryOp, Identifier,
     Literal, BuiltinCall, PragmaDirective
 )
@@ -252,6 +252,10 @@ class OmniCParser:
 
         if tok.type == TokenType.FOR:
             return self._parse_for_stmt()
+
+        # Switch Statement
+        if tok.type == TokenType.SWITCH:
+            return self._parse_switch_stmt()
 
         # Return Statement
         if tok.type == TokenType.RETURN:
@@ -562,6 +566,36 @@ class OmniCParser:
         if init_stmt:
             return Block([init_stmt, while_stmt], line=start_tok.line, col=start_tok.col)
         return while_stmt
+
+    def _parse_switch_stmt(self) -> SwitchStmt:
+        start_tok = self._advance()  # 'switch'
+        self._expect(TokenType.LPAREN, "Expected '(' after switch")
+        expr = self._parse_expression()
+        self._expect(TokenType.RPAREN, "Expected ')' after switch expression")
+        self._expect(TokenType.LBRACE, "Expected '{' to start switch body")
+
+        cases: List[CaseClause] = []
+        while self._peek().type != TokenType.RBRACE and self._peek().type != TokenType.EOF:
+            if self._match(TokenType.CASE):
+                case_tok = self._peek(-1)
+                match_expr = self._parse_expression()
+                self._expect(TokenType.COLON, "Expected ':' after case value")
+                stmts: List[ASTNode] = []
+                while self._peek().type not in (TokenType.CASE, TokenType.DEFAULT, TokenType.RBRACE, TokenType.EOF):
+                    stmts.append(self._parse_statement())
+                cases.append(CaseClause(match_expr, stmts, line=case_tok.line, col=case_tok.col))
+            elif self._match(TokenType.DEFAULT):
+                def_tok = self._peek(-1)
+                self._expect(TokenType.COLON, "Expected ':' after default")
+                stmts: List[ASTNode] = []
+                while self._peek().type not in (TokenType.CASE, TokenType.DEFAULT, TokenType.RBRACE, TokenType.EOF):
+                    stmts.append(self._parse_statement())
+                cases.append(CaseClause(None, stmts, line=def_tok.line, col=def_tok.col))
+            else:
+                raise ParserError(f"Unexpected token in switch body: {self._peek()}", line=self._peek().line, col=self._peek().col)
+
+        self._expect(TokenType.RBRACE, "Expected '}' to close switch body")
+        return SwitchStmt(expr, cases, line=start_tok.line, col=start_tok.col)
 
     # -------------------------------------------------------------------------
     # Expression Parsing (Precedence Climbing)

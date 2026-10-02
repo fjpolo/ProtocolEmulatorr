@@ -35,6 +35,11 @@ class OmniBusApp {
         this.compiledData = null;
         this.editingMarkerId = null;
 
+        // Optimization & Source Debugger State (Task 38)
+        this.optLevel = 2; // 0, 1, 2
+        this.breakpoints = new Set(); // Set of line numbers (1-indexed)
+        this.currentExecLine = null;
+
         // Workspace Layout & Editor State
         this.editorFontSize = 13;
         this.isWordWrap = false;
@@ -79,6 +84,12 @@ class OmniBusApp {
         this.speedLabel = document.getElementById("speed-label");
         this.labelNumCores = document.getElementById("label-num-cores");
 
+        // Optimization & Debugging Controls
+        this.optLevelSelect = document.getElementById("opt-level-select");
+        this.optSavingsBadge = document.getElementById("opt-savings-badge");
+        this.bpCountBadge = document.getElementById("bp-count-badge");
+        this.btnStepCLine = document.getElementById("btn-step-c-line");
+
         // Language & Editor Controls
         this.btnModeC = document.getElementById("btn-mode-c");
         this.btnModeAsm = document.getElementById("btn-mode-asm");
@@ -104,6 +115,22 @@ class OmniBusApp {
         this.btnExportHex = document.getElementById("btn-export-hex");
         this.btnInjectTx = document.getElementById("btn-inject-tx");
         this.inputTxByte = document.getElementById("input-tx-byte");
+
+        // Debug Watch Panel DOM
+        this.debugPcLoc = document.getElementById("debug-pc-loc");
+        this.dbgRegAcc = document.getElementById("dbg-reg-acc");
+        this.dbgRegFlags = document.getElementById("dbg-reg-flags");
+        this.dbgRegLc0 = document.getElementById("dbg-reg-lc0");
+        this.dbgRegLc1 = document.getElementById("dbg-reg-lc1");
+        this.dbgRegR = Array.from({ length: 8 }, (_, i) => document.getElementById(`dbg-reg-r${i}`));
+        this.dbgRegOsr = document.getElementById("dbg-reg-osr");
+        this.dbgRegIsr = document.getElementById("dbg-reg-isr");
+        this.dbgRegStack = document.getElementById("dbg-reg-stack");
+        this.dbgRegState = document.getElementById("dbg-reg-state");
+        this.bankUsageElems = Array.from({ length: 4 }, (_, i) => document.getElementById(`bank-usage-${i}`));
+        this.bankFillElems = Array.from({ length: 4 }, (_, i) => document.getElementById(`bank-fill-${i}`));
+        this.breakpointsListContainer = document.getElementById("breakpoints-list-container");
+        this.btnClearAllBps = document.getElementById("btn-clear-all-bps");
 
         // Waveform & Zoom Controls
         this.btnZoomIn = document.getElementById("btn-zoom-in");
@@ -255,9 +282,30 @@ class OmniBusApp {
         if (this.btnViewAsm) this.btnViewAsm.addEventListener("click", () => this.openAsmModal());
         if (this.btnViewHeaders) this.btnViewHeaders.addEventListener("click", () => this.openHeadersModal());
 
+        // Optimization Selector & Debugging
+        if (this.optLevelSelect) {
+            this.optLevelSelect.addEventListener("change", (e) => {
+                this.optLevel = parseInt(e.target.value, 10);
+                this.log(`Omni-C Optimizer Level set to: -O${this.optLevel}`);
+                this.assembleCode();
+            });
+        }
+        if (this.bpCountBadge) {
+            this.bpCountBadge.addEventListener("click", () => this.clearBreakpoints());
+        }
+
         this.codeEditor.addEventListener("input", () => this.updateLineNumbers());
         this.codeEditor.addEventListener("scroll", () => {
             this.lineNumbers.scrollTop = this.codeEditor.scrollTop;
+        });
+
+        // Gutter Click to toggle Breakpoint
+        this.lineNumbers.addEventListener("click", (e) => {
+            const lineElem = e.target.closest(".gutter-line");
+            if (lineElem) {
+                const lineNum = parseInt(lineElem.getAttribute("data-line"), 10);
+                if (lineNum) this.toggleBreakpoint(lineNum);
+            }
         });
 
         this.speedSlider.addEventListener("input", (e) => {
@@ -269,6 +317,7 @@ class OmniBusApp {
         this.btnAssemble.addEventListener("click", () => this.assembleCode());
         this.btnRun.addEventListener("click", () => this.startSimulation());
         this.btnPause.addEventListener("click", () => this.pauseSimulation());
+        if (this.btnStepCLine) this.btnStepCLine.addEventListener("click", () => this.stepCLine());
         this.btnStepInst.addEventListener("click", () => this.stepInstruction());
         this.btnStepCycle.addEventListener("click", () => this.stepCycle());
         this.btnReset.addEventListener("click", () => this.resetSimulation());
@@ -443,6 +492,31 @@ class OmniBusApp {
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "e") {
                 e.preventDefault();
                 this.openAsmModal();
+                return;
+            }
+
+            if (e.key === "F9") {
+                e.preventDefault();
+                this.stepCLine();
+                return;
+            }
+
+            if (e.key === "F8") {
+                e.preventDefault();
+                this.stepInstruction();
+                return;
+            }
+
+            if (e.key === "F7") {
+                e.preventDefault();
+                this.stepCycle();
+                return;
+            }
+
+            if (e.key === "F5") {
+                e.preventDefault();
+                if (this.emulator.running) this.pauseSimulation();
+                else this.startSimulation();
                 return;
             }
 
@@ -1249,7 +1323,123 @@ class OmniBusApp {
 
     updateLineNumbers() {
         const lines = this.codeEditor.value.split("\n").length;
-        this.lineNumbers.innerHTML = Array.from({ length: lines }, (_, i) => i + 1).join("<br>");
+        let html = "";
+        for (let i = 1; i <= lines; i++) {
+            const hasBp = this.breakpoints.has(i);
+            const isActive = (this.currentExecLine === i);
+            const classes = ["gutter-line"];
+            if (hasBp) classes.push("has-breakpoint");
+            if (isActive) classes.push("active-line");
+            html += `<div class="${classes.join(" ")}" data-line="${i}" title="Line ${i}${hasBp ? ' (Breakpoint active)' : ' (Click to set breakpoint)'}"><span class="bp-marker">●</span><span class="line-num">${i}</span><span class="exec-arrow">▶</span></div>`;
+        }
+        this.lineNumbers.innerHTML = html;
+    }
+
+    updateActiveLineGutter() {
+        if (!this.lineNumbers) return;
+        const lines = this.lineNumbers.querySelectorAll(".gutter-line");
+        lines.forEach(elem => {
+            const lineNum = parseInt(elem.getAttribute("data-line"), 10);
+            if (lineNum === this.currentExecLine) {
+                elem.classList.add("active-line");
+            } else {
+                elem.classList.remove("active-line");
+            }
+        });
+    }
+
+    toggleBreakpoint(line) {
+        if (this.breakpoints.has(line)) {
+            this.breakpoints.delete(line);
+            this.log(`Removed breakpoint at Line ${line}.`);
+        } else {
+            this.breakpoints.add(line);
+            const mappedPCs = (this.currentLanguage === "c") ? (this.assembler.cLineToPCs[line] || []) : [this.assembler.asmLineToPC[line]];
+            const validPCs = mappedPCs.filter(p => p !== undefined);
+            const pcStr = validPCs.map(p => "0x" + p.toString(16).padStart(2, "0").toUpperCase()).join(", ");
+            this.log(`Set breakpoint at ${this.currentLanguage === "c" ? "C Line" : "ASM Line"} ${line} ${pcStr ? `(PC: ${pcStr})` : '(Pending next compilation)'}`);
+        }
+        this.updateLineNumbers();
+        this.updateBreakpointsUi();
+    }
+
+    clearBreakpoints() {
+        this.breakpoints.clear();
+        this.updateLineNumbers();
+        this.updateBreakpointsUi();
+        this.log("Cleared all breakpoints.");
+    }
+
+    isBreakpointHit(pc) {
+        if (this.breakpoints.size === 0) return { hit: false };
+        if (this.currentLanguage === "c") {
+            const cLine = this.assembler.pcToCLine ? this.assembler.pcToCLine[pc] : null;
+            if (cLine && this.breakpoints.has(cLine)) {
+                return { hit: true, line: cLine, pc };
+            }
+        } else {
+            const asmLine = this.assembler.pcToAsmLine ? this.assembler.pcToAsmLine[pc] : null;
+            if (asmLine && this.breakpoints.has(asmLine)) {
+                return { hit: true, line: asmLine, pc };
+            }
+        }
+        return { hit: false };
+    }
+
+    updateBreakpointsUi() {
+        const bpArray = Array.from(this.breakpoints).sort((a, b) => a - b);
+        if (this.bpCountBadge) {
+            if (bpArray.length > 0) {
+                this.bpCountBadge.textContent = `● ${bpArray.length} BP${bpArray.length > 1 ? 's' : ''}`;
+                this.bpCountBadge.style.display = "inline-block";
+            } else {
+                this.bpCountBadge.style.display = "none";
+            }
+        }
+
+        if (this.btnClearAllBps) {
+            this.btnClearAllBps.style.display = (bpArray.length > 0) ? "inline-block" : "none";
+        }
+
+        if (this.breakpointsListContainer) {
+            if (bpArray.length === 0) {
+                this.breakpointsListContainer.innerHTML = `<span style="font-size: 10px; color: var(--text-dim);">No breakpoints set. Click line numbers in editor gutter to toggle.</span>`;
+                return;
+            }
+
+            let html = "";
+            bpArray.forEach(line => {
+                const mappedPCs = (this.currentLanguage === "c") ? (this.assembler.cLineToPCs[line] || []) : [this.assembler.asmLineToPC[line]];
+                const validPCs = (mappedPCs || []).filter(p => p !== undefined);
+                const pcStr = validPCs.map(p => "0x" + p.toString(16).padStart(2, "0").toUpperCase()).join(",");
+                html += `
+                    <div class="bp-chip" title="Breakpoint on Line ${line}">
+                        <span>L${line}${pcStr ? ` (${pcStr})` : ''}</span>
+                        <span class="bp-remove" onclick="event.stopPropagation(); window.app?.toggleBreakpoint(${line})" title="Remove Breakpoint">✕</span>
+                    </div>
+                `;
+            });
+            this.breakpointsListContainer.innerHTML = html;
+        }
+    }
+
+    updateBankUsageUi() {
+        const bankUsage = this.assembler.bankUsage || [0, 0, 0, 0];
+        for (let b = 0; b < 4; b++) {
+            const count = bankUsage[b] || 0;
+            const pct = Math.min(100, Math.round((count / 32) * 100));
+            const isOver = count > 32;
+
+            if (this.bankUsageElems[b]) {
+                this.bankUsageElems[b].textContent = `${count} / 32 (${pct}%)${isOver ? ' OVERFLOW' : ''}`;
+                this.bankUsageElems[b].style.color = isOver ? "var(--accent-crimson)" : "var(--text-muted)";
+            }
+            if (this.bankFillElems[b]) {
+                this.bankFillElems[b].style.width = `${Math.min(100, pct)}%`;
+                if (isOver) this.bankFillElems[b].classList.add("over-limit");
+                else this.bankFillElems[b].classList.remove("over-limit");
+            }
+        }
     }
 
     assembleCode() {
@@ -1257,23 +1447,37 @@ class OmniBusApp {
         let asmSource = source;
 
         if (this.currentLanguage === "c") {
-            this.log("[Omni-C] Preprocessing & compiling C source with standard libraries...");
-            const cResult = this.cCompiler.compile(source);
+            this.log(`[Omni-C] Preprocessing & compiling C source with standard libraries (-O${this.optLevel})...`);
+            const cResult = this.cCompiler.compile(source, { optimize: this.optLevel });
 
             if (!cResult.success) {
                 this.statusBadge.textContent = "C SYNTAX ERR";
                 this.statusBadge.className = "status-badge err";
                 this.log(`[Error] Omni-C Compilation failed:`);
                 cResult.errors.forEach(err => this.log(`  ${err}`));
+                if (this.optSavingsBadge) this.optSavingsBadge.style.display = "none";
                 return false;
             }
 
             asmSource = cResult.asmSource;
             this.lastEmittedAsm = asmSource;
             const asmLines = asmSource.split("\n").filter(l => l.trim()).length;
-            this.log(`[Omni-C] Generated ${asmLines} lines of 16-bit OmniBus Assembly.`);
+            
+            if (cResult.sourceMap && cResult.sourceMap.unoptimizedLines > 0) {
+                const saved = cResult.sourceMap.savedLines;
+                const pct = Math.max(0, Math.round((saved / cResult.sourceMap.unoptimizedLines) * 100));
+                if (this.optSavingsBadge) {
+                    this.optSavingsBadge.textContent = `-${pct}% (${saved} saved)`;
+                    this.optSavingsBadge.style.display = "inline-block";
+                }
+                this.log(`[Omni-C] Generated ${asmLines} lines of 16-bit OmniBus Assembly (Optimizer: -${pct}% words saved, ${cResult.sourceMap.passesRun} passes).`);
+            } else {
+                if (this.optSavingsBadge) this.optSavingsBadge.style.display = "none";
+                this.log(`[Omni-C] Generated ${asmLines} lines of 16-bit OmniBus Assembly.`);
+            }
         } else {
             this.lastEmittedAsm = source;
+            if (this.optSavingsBadge) this.optSavingsBadge.style.display = "none";
         }
 
         const result = this.assembler.assemble(asmSource);
@@ -1293,6 +1497,8 @@ class OmniBusApp {
         this.emulator.loadProgram(this.compiledData);
         this.log(`[Assemble] Successfully loaded ${this.compiledData.length} instructions into multi-bank IMEM.`);
         this.renderHexDisasm();
+        this.updateBankUsageUi();
+        this.updateBreakpointsUi();
         this.updateUi();
         return true;
     }
@@ -1307,12 +1513,23 @@ class OmniBusApp {
         this.btnPause.disabled = false;
         this.btnStepInst.disabled = true;
         this.btnStepCycle.disabled = true;
+        if (this.btnStepCLine) this.btnStepCLine.disabled = true;
 
         const loop = () => {
             if (!this.emulator.running) return;
 
             for (let i = 0; i < this.execSpeed; i++) {
                 this.emulator.stepCycle();
+
+                // Breakpoint check across all active cores
+                for (let c = 0; c < this.emulator.numCores; c++) {
+                    const bpHit = this.isBreakpointHit(this.emulator.cores[c].pc);
+                    if (bpHit.hit) {
+                        this.pauseSimulation();
+                        this.log(`[Breakpoint Hit] Stopped simulation at ${this.currentLanguage === "c" ? "C Line" : "ASM Line"} ${bpHit.line} (Core ${c} PC: 0x${this.emulator.cores[c].pc.toString(16).padStart(2, "0").toUpperCase()})`);
+                        return;
+                    }
+                }
             }
 
             this.updateUi();
@@ -1338,9 +1555,58 @@ class OmniBusApp {
         this.btnPause.disabled = true;
         this.btnStepInst.disabled = false;
         this.btnStepCycle.disabled = false;
+        if (this.btnStepCLine) this.btnStepCLine.disabled = false;
 
         this.log(`Simulation paused at cycle ${this.emulator.totalCycles}.`);
         this.updateUi();
+        this.waveform?.render();
+    }
+
+    stepCLine() {
+        if (!this.compiledData) {
+            if (!this.assembleCode()) return;
+        }
+
+        const emu = this.emulator;
+        const core0 = emu.cores[0];
+
+        if (this.currentLanguage === "c") {
+            const startCLine = this.assembler.pcToCLine[core0.pc] || null;
+            let maxSteps = 5000;
+            let hitBp = false;
+
+            while (maxSteps-- > 0) {
+                emu.stepCycle();
+
+                // Check breakpoints
+                for (let c = 0; c < emu.numCores; c++) {
+                    const bpHit = this.isBreakpointHit(emu.cores[c].pc);
+                    if (bpHit.hit) {
+                        hitBp = true;
+                        this.log(`[Breakpoint Hit] Stopped at C Line ${bpHit.line} (Core ${c} PC: 0x${emu.cores[c].pc.toString(16).padStart(2, "0").toUpperCase()})`);
+                        break;
+                    }
+                }
+                if (hitBp) break;
+
+                const currCLine = this.assembler.pcToCLine[core0.pc] || null;
+                if (currCLine !== null && currCLine !== startCLine) {
+                    break;
+                }
+                if (core0.state === "HALTED") {
+                    this.log("[Debugger] Core 0 HALTED.");
+                    break;
+                }
+            }
+        } else {
+            this.stepInstruction();
+            return;
+        }
+
+        this.updateUi();
+        if (this.waveform?.autoFollow) {
+            this.waveform.ensureVisible(emu.totalCycles);
+        }
         this.waveform?.render();
     }
 
@@ -1387,9 +1653,43 @@ class OmniBusApp {
     updateUi() {
         const emu = this.emulator;
         const numCores = emu.numCores || 2;
+        const core0 = emu.cores[0];
 
         if (this.valCycles) {
             this.valCycles.textContent = `${emu.totalCycles} Cycles`;
+        }
+
+        // Active Source Line Tracking
+        const activeLine = (this.currentLanguage === "c") ? (this.assembler.pcToCLine[core0.pc] || null) : (this.assembler.pcToAsmLine[core0.pc] || null);
+        if (activeLine !== this.currentExecLine) {
+            this.currentExecLine = activeLine;
+            this.updateActiveLineGutter();
+        }
+
+        // Debug Watch Inspector Panel Update
+        if (this.debugPcLoc) {
+            this.debugPcLoc.textContent = (this.currentLanguage === "c") ? 
+                `C Line: ${this.currentExecLine || '—'} [PC: 0x${core0.pc.toString(16).padStart(2, "0").toUpperCase()}]` : 
+                `ASM Line: ${this.currentExecLine || '—'} [PC: 0x${core0.pc.toString(16).padStart(2, "0").toUpperCase()}]`;
+        }
+
+        if (this.dbgRegAcc) this.dbgRegAcc.textContent = `0x${core0.acc.toString(16).padStart(2, "0").toUpperCase()}`;
+        if (this.dbgRegFlags) this.dbgRegFlags.textContent = `Z:${core0.flags.z ? 1 : 0} C:${core0.flags.c ? 1 : 0} N:${core0.flags.n ? 1 : 0}`;
+        if (this.dbgRegLc0) this.dbgRegLc0.textContent = core0.lc0;
+        if (this.dbgRegLc1) this.dbgRegLc1.textContent = core0.lc1;
+
+        for (let r = 0; r < 8; r++) {
+            if (this.dbgRegR[r]) {
+                this.dbgRegR[r].textContent = `0x${(core0.r[r] || 0).toString(16).padStart(2, "0").toUpperCase()}`;
+            }
+        }
+
+        if (this.dbgRegOsr) this.dbgRegOsr.textContent = `0x${(core0.osr || 0).toString(16).padStart(2, "0").toUpperCase()}`;
+        if (this.dbgRegIsr) this.dbgRegIsr.textContent = `0x${(core0.isr || 0).toString(16).padStart(2, "0").toUpperCase()}`;
+        if (this.dbgRegStack) this.dbgRegStack.textContent = `Depth: ${core0.callSp || 0}`;
+        if (this.dbgRegState) {
+            this.dbgRegState.textContent = core0.state;
+            this.dbgRegState.style.color = (core0.state === "HALTED") ? "var(--accent-crimson)" : (core0.state === "BARRIER_WAIT" ? "var(--accent-pink)" : "var(--accent-emerald)");
         }
 
         // Multi-Core Slices

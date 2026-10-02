@@ -56,11 +56,22 @@
                 </select>
             </div>
 
+            <!-- Omni-C Multi-Pass Optimizer Level -->
+            <div class="toolbar-group" id="opt-level-group" title="Omni-C Multi-Pass Optimizer Level (-O0 None, -O1 Standard, -O2 Aggressive)">
+                <label for="opt-level-select" class="toolbar-label">Opt:</label>
+                <select id="opt-level-select" class="select-control" style="font-weight: 600; color: var(--primary-cyan);">
+                    <option value="0">-O0 (None)</option>
+                    <option value="1">-O1 (Standard)</option>
+                    <option value="2" selected>-O2 (Aggressive)</option>
+                </select>
+            </div>
+
             <!-- Execution Controls -->
             <div class="btn-group">
                 <button id="btn-assemble" class="btn btn-primary" title="Assemble Microcode (Ctrl+B)">⚡ Assemble</button>
                 <button id="btn-run" class="btn btn-success" title="Run Continuous Simulation">▶ Run</button>
                 <button id="btn-pause" class="btn" disabled title="Pause Simulation">⏸ Pause</button>
+                <button id="btn-step-c-line" class="btn btn-warning" title="Step Over C Source Line (F9)">⤵ Step Line</button>
                 <button id="btn-step-inst" class="btn" title="Step 1 Instruction (All Cores)">⏭ Step Inst</button>
                 <button id="btn-step-cycle" class="btn" title="Step 1 Clock Cycle">⏱ Step Cyc</button>
                 <button id="btn-reset" class="btn" title="Reset Multi-Engine">↺ Reset</button>
@@ -105,6 +116,9 @@
                     <!-- Emitted ASM & Headers -->
                     <button id="btn-view-asm" class="btn btn-sm" title="View Emitted OmniBus Assembly from C (Ctrl+E)">📋 Emitted ASM</button>
                     <button id="btn-view-headers" class="btn btn-sm" title="Explore Virtual Standard C Headers (<uart.h>, <spi.h>, etc.)">📚 Headers</button>
+                    <!-- Badges -->
+                    <span id="opt-savings-badge" class="scale-badge" style="display: none; background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border-color: var(--accent-emerald);" title="Optimizer instruction count reduction">-0%</span>
+                    <span id="bp-count-badge" class="scale-badge" style="display: none; background: rgba(244, 63, 94, 0.15); color: var(--accent-crimson); border-color: var(--accent-crimson); cursor: pointer;" title="Active Breakpoints (Click to Clear)">● 0 BPs</span>
                     <!-- Maximize Editor Toggle -->
                     <button id="btn-maximize-editor" class="btn btn-sm btn-primary" title="Maximize Editor / Restore (Full view for writing code)">⛶ Maximize</button>
                     <div id="status-badge" class="status-badge ok">READY</div>
@@ -318,6 +332,65 @@
                 <button id="btn-toggle-inspector" class="btn btn-sm" title="Collapse / Expand Inspector Panel (Alt+I)">✕ Collapse</button>
             </div>
             
+            <!-- Source Debugger Watch & Memory Bank Gauge (Task 38) -->
+            <div class="card debugger-watch-card" id="debugger-watch-card">
+                <div class="card-title">
+                    <span>🔍 Debug Watch & Memory Banks</span>
+                    <span id="debug-pc-loc" style="font-size: 10px; color: var(--accent-amber); font-family: var(--font-mono);">C Line: —</span>
+                </div>
+                
+                <!-- Core 0 Registers Watch Table -->
+                <div class="fabric-section-title">Core 0 Execution Registers</div>
+                <div class="debug-reg-grid">
+                    <div class="debug-reg-cell"><span class="d-lbl">ACC</span><span class="d-val" id="dbg-reg-acc">0x00</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">FLAGS</span><span class="d-val" id="dbg-reg-flags">Z:1 C:0 N:0</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">LC0</span><span class="d-val" id="dbg-reg-lc0">0</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">LC1</span><span class="d-val" id="dbg-reg-lc1">0</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">R0</span><span class="d-val" id="dbg-reg-r0">0x00</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">R1</span><span class="d-val" id="dbg-reg-r1">0x00</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">R2</span><span class="d-val" id="dbg-reg-r2">0x00</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">R3</span><span class="d-val" id="dbg-reg-r3">0x00</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">R4</span><span class="d-val" id="dbg-reg-r4">0x00</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">R5</span><span class="d-val" id="dbg-reg-r5">0x00</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">R6</span><span class="d-val" id="dbg-reg-r6">0x00</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">R7</span><span class="d-val" id="dbg-reg-r7">0x00</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">OSR</span><span class="d-val" id="dbg-reg-osr">0x00</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">ISR</span><span class="d-val" id="dbg-reg-isr">0x00</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">STACK</span><span class="d-val" id="dbg-reg-stack">Depth: 0</span></div>
+                    <div class="debug-reg-cell"><span class="d-lbl">STATE</span><span class="d-val" id="dbg-reg-state" style="color: var(--accent-emerald);">FETCH</span></div>
+                </div>
+
+                <!-- 4 Memory Banks Capacity Gauge (32 words each = 128 total) -->
+                <div class="fabric-section-title" style="margin-top: 10px;">Per-Bank Microcode Capacity (32 Words / Bank)</div>
+                <div class="bank-capacity-container">
+                    <div class="bank-bar-row">
+                        <div class="bank-bar-label"><span>Bank 0 (C0)</span><span id="bank-usage-0">0 / 32 (0%)</span></div>
+                        <div class="bank-progress-track"><div class="bank-progress-fill fill-bank-0" id="bank-fill-0" style="width: 0%;"></div></div>
+                    </div>
+                    <div class="bank-bar-row">
+                        <div class="bank-bar-label"><span>Bank 1 (C1)</span><span id="bank-usage-1">0 / 32 (0%)</span></div>
+                        <div class="bank-progress-track"><div class="bank-progress-fill fill-bank-1" id="bank-fill-1" style="width: 0%;"></div></div>
+                    </div>
+                    <div class="bank-bar-row">
+                        <div class="bank-bar-label"><span>Bank 2 (C2)</span><span id="bank-usage-2">0 / 32 (0%)</span></div>
+                        <div class="bank-progress-track"><div class="bank-progress-fill fill-bank-2" id="bank-fill-2" style="width: 0%;"></div></div>
+                    </div>
+                    <div class="bank-bar-row">
+                        <div class="bank-bar-label"><span>Bank 3 (C3)</span><span id="bank-usage-3">0 / 32 (0%)</span></div>
+                        <div class="bank-progress-track"><div class="bank-progress-fill fill-bank-3" id="bank-fill-3" style="width: 0%;"></div></div>
+                    </div>
+                </div>
+
+                <!-- Breakpoints List & Actions -->
+                <div class="fabric-section-title" style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                    <span>Source Breakpoints</span>
+                    <button class="btn-unlock" id="btn-clear-all-bps" style="display: none; padding: 1px 6px; font-size: 9px;" onclick="window.app?.clearBreakpoints()">Clear All</button>
+                </div>
+                <div id="breakpoints-list-container" class="breakpoints-list-container">
+                    <span style="font-size: 10px; color: var(--text-dim);">No breakpoints set. Click line numbers in editor gutter to toggle.</span>
+                </div>
+            </div>
+
             <!-- Shared Synchronization Fabric Card -->
             <div class="card sync-fabric-card">
                 <div class="card-title">

@@ -152,6 +152,9 @@ class OmniCCompiler:
 
         return asm_output
 
+    def compile_string(self, source: str, base_dir: str = ".", filename: str = "<stdin>") -> str:
+        return self.compile_source(source, base_dir=base_dir, filename=filename)
+
     def compile_file(self, filepath: str, output_asm: Optional[str] = None) -> str:
         base_dir = os.path.dirname(os.path.abspath(filepath))
         with open(filepath, "r", encoding="utf-8") as f:
